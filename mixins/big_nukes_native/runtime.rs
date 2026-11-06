@@ -1503,4 +1503,17 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn uranium_ore_is_generated_deep_and_rare() {
+        let feature: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/worldgen/configured_feature/ore_uranium.json")).unwrap();
+        let states: Vec<&str> = feature["targets"].as_array().unwrap().iter().map(|t| t["state"].as_str().unwrap()).collect();
+        assert_eq!(states, ["big_nukes:uranium_ore", "big_nukes:deepslate_uranium_ore"]);
+        let placed: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/worldgen/placed_feature/ore_uranium.json")).unwrap();
+        let p = placed["placement"].as_array().unwrap();
+        assert_eq!(p[0]["count"], 2);
+        assert_eq!(p[2]["height"]["max_inclusive"]["absolute"], 16);
+        let modifier: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/neoforge/biome_modifier/add_uranium.json")).unwrap();
+        assert_eq!((modifier["features"].as_str(), modifier["step"].as_str()), (Some("big_nukes:ore_uranium"), Some("underground_ores")));
+    }
 }
