@@ -1410,6 +1410,28 @@ fn loaded(dimension: &str, pos: [i32; 3]) -> bool {
 /// A right click with an item, in the air or on a block that let it through:
 /// a linked remote sets its bomb off. A bomb in a loaded chunk of the player's
 /// level is checked and taken away at once; any other goes with its wave's crater.
+/// A right click on a block with a remote: the game asks the block's item use
+/// first, and only when nothing claims it the use in the air. Claiming it here
+/// keeps a click on the ground from setting a bomb off; the remote fires only
+/// when aimed at nothing.
+pub(in crate::game) fn use_item_on(game: &mut Game<'_>, stack: &ItemStack, claimed: &mut bool) {
+    if *claimed || &*stack.item != rules::REMOTE || !game.native_on(rules::ID) {
+        return;
+    }
+    *claimed = true;
+    let (Some(who), Some((now, _))) = (game.native_acting_player(), clock(game)) else {
+        return;
+    };
+    {
+        let mut last = lock(&LAST_USE);
+        if *last == Some((who.uuid, now)) {
+            return;
+        }
+        *last = Some((who.uuid, now));
+    }
+    game.native_tell(who.uuid, Text::translate("big_nukes.remote.aim", &[]));
+}
+
 pub(in crate::game) fn use_item(game: &mut Game<'_>, stack: &ItemStack, claimed: &mut bool) {
     if *claimed || &*stack.item != rules::REMOTE || !game.native_on(rules::ID) {
         return;

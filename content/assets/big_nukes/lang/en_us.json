@@ -23,6 +23,7 @@
   "big_nukes.remote.no_receiver": "This bomb has no receiver: put a receiver detonator in it to link a remote.",
   "big_nukes.remote.linked": "Remote linked: %s at %s.",
   "big_nukes.remote.spent": "This bomb has already gone off.",
+  "big_nukes.remote.aim": "Aim the remote at the sky to set the bomb off.",
   "big_nukes.remote.not_linked": "This remote isn't linked: right-click a bomb with a receiver.",
   "big_nukes.remote.fired": "The bomb at %s has gone off.",
   "big_nukes.remote.gone": "The bomb is gone.",

@@ -55,6 +55,8 @@ The native half knows the assets half is installed when the loot table `big_nuke
 - `native_use_item` (API 13) runs for a right click in the air and for one on a block whose use let it through; it
   has the hand's stack but not the hand, and the acting player is `native_acting_player`. A click on a bomb with the
   remote should not reach it, as the bomb's right click is canceled (read in the source, not yet seen in the game).
+  `native_use_item_on` runs first for a click on a block (`game.rs`, the item phase), and a claim there skips
+  `native_use_item`; the mod claims every remote click on a block, so the remote fires only aimed at the sky.
 - `native_block_changed` is `GameLevel`'s, not `Game`'s, and runs for every `Level.setBlock`. A bulk edit
   (`native_edit_blocks`) writes as `fill ... strict` does and reports nothing, so a blast's crater is checked for the
   recorded bombs after each chunk. The level may set a block while the mod's state is locked (a command run during a
