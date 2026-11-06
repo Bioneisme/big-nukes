@@ -6,7 +6,7 @@
 // each tick of its own dimension's level, within a time budget, as
 // `native_edit_blocks` only edits the level being ticked.
 
-use crate::game::{Game, NativeBlockEdit, NativeBlockRun, NativeHeightmap, big_nukes as rules};
+use crate::game::{Game, NativeBlockEdit, NativeBlockRun, NativeFalling, NativeHeightmap, big_nukes as rules};
 use horizon_client::{
     mod_api::{NativeCommand, NativeServerPlayer, ServerTickPhase, WorldPhase},
     text::{self, ClickEvent, Style, Text},
@@ -30,6 +30,8 @@ struct State {
     saved: rules::Saved,
     /// Blasts whose refused edit is already in the log.
     warned: BTreeSet<u64>,
+    /// Blasts whose opening (the fireball and the debris) has been shown.
+    opened: BTreeSet<u64>,
     /// Something changed since the last save. A wave whose far chunks never load
     /// never ends, so saving only on changes keeps it from costing forever.
     dirty: bool,
@@ -54,7 +56,7 @@ fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Option<State>>> {
             .and_then(|b| serde_json::from_slice(&b).map_err(|e| log::warn!("[big_nukes] waves.json: {e}")).ok())
             .unwrap_or_default();
         log::info!("[big_nukes] Big Nukes {} in {}", rules::VERSION, dir.display());
-        *guard = Some(State { dir, saved, warned: BTreeSet::new(), dirty: false });
+        *guard = Some(State { dir, saved, warned: BTreeSet::new(), opened: BTreeSet::new(), dirty: false });
     }
     Some(guard)
 }
@@ -84,6 +86,14 @@ pub(in crate::game) fn logged_in(game: &mut Game<'_>, player: u128, name: &str) 
     }
     if world_items!(game).has_loot_table(rules::ASSETS_MARKER) {
         game.native_run_command(&format!("tag {name} add big_nukes.native"));
+        // Someone joining mid-blast still hears what's on its way.
+        let dimension = game.native_server_players().into_iter().find(|p| p.uuid == player).map(|p| p.dimension);
+        let news = dimension
+            .and_then(|d| state(game).and_then(|g| g.as_ref().map(|st| st.saved.waves.news(&d, st.saved.tick))))
+            .unwrap_or_default();
+        for n in &news {
+            send(game, player, n);
+        }
         return;
     }
     const ASSETS_PAGE: &str = "https://playhorizon.dev/mods/big_nukes";
@@ -121,8 +131,12 @@ pub(in crate::game) fn perform(game: &mut Game<'_>, player: &NativeServerPlayer,
                 let Some(mut guard) = state(game) else { return };
                 let st = guard.as_mut().expect("opened");
                 match st.saved.blast(&player.dimension, center, radius) {
-                    Some(_) => {
+                    Some(id) => {
                         save(st);
+                        let news: Vec<rules::News> =
+                            st.saved.waves.news(&player.dimension, st.saved.tick).into_iter().filter(|n| n.id == id).collect();
+                        drop(guard);
+                        tell_dimension(game, &player.dimension, &news);
                         Text::translate("big_nukes.blast.started", &[Text::literal(radius.to_string())])
                     }
                     None => Text::translate("big_nukes.blast.dimension", &[]),
@@ -138,6 +152,78 @@ pub(in crate::game) fn perform(game: &mut Game<'_>, player: &NativeServerPlayer,
 fn usage() -> Text {
     let n = |v: u32| Text::literal(v.to_string());
     Text::translate("big_nukes.blast.usage", &[n(rules::MIN_RADIUS), n(rules::MAX_RADIUS)])
+}
+
+// ---- the blast's effects, on the server ---------------------------------------------
+
+fn send(game: &mut Game<'_>, player: u128, news: &rules::News) {
+    let Ok(bytes) = serde_json::to_vec(news) else { return };
+    if let Err(e) = game.native_net_send_to_player(player, rules::NEWS_CHANNEL, &bytes) {
+        log::warn!("[big_nukes] telling a player of blast {}: {e}", news.id);
+    }
+}
+
+/// Every player in `dimension` hears of the blasts.
+fn tell_dimension(game: &mut Game<'_>, dimension: &str, news: &[rules::News]) {
+    for p in game.native_server_players().into_iter().filter(|p| p.dimension == dimension) {
+        for n in news {
+            send(game, p.uuid, n);
+        }
+    }
+}
+
+/// A command in the blast's dimension; false is logged once a blast.
+fn run_in(game: &mut Game<'_>, warned: &mut BTreeSet<u64>, blast: &rules::Blast, command: &str) {
+    if !game.native_run_command(&format!("execute in {} run {command}", blast.dimension)) && warned.insert(blast.id) {
+        log::warn!("[big_nukes] blast {}: a command failed: {command}", blast.id);
+    }
+}
+
+fn particle(id: &str, at: [f64; 3], spread: [f64; 3], speed: f64, count: u32) -> String {
+    format!(
+        "particle {id} {:.1} {:.1} {:.1} {:.1} {:.1} {:.1} {speed:.2} {count} force",
+        at[0], at[1], at[2], spread[0], spread[1], spread[2]
+    )
+}
+
+/// Smoke on the front and over the center, the opening's fireball and debris,
+/// and the damage of the ground the front crossed this tick.
+fn effects(game: &mut Game<'_>, st: &mut State, dimension: &str) {
+    for (blast, from, to, age) in st.saved.waves.fronts(dimension, st.saved.tick) {
+        let [cx, cy, cz] = blast.center.map(|v| v as f64 + 0.5);
+        if age < 20 && st.opened.insert(blast.id) {
+            run_in(game, &mut st.warned, &blast, &particle("minecraft:explosion_emitter", [cx, cy + 2.0, cz], [2.0, 2.0, 2.0], 0.0, 6));
+            let registry = &game.pack.assets.registry;
+            let thrown: Vec<_> = rules::debris(&blast)
+                .into_iter()
+                .filter_map(|(pos, v, block)| Some((pos, v, registry.default_state(block)?)))
+                .collect();
+            for (pos, v, state) in thrown {
+                game.native_spawn_falling_block(&blast.dimension, state, pos, v, NativeFalling { drop_item: false, hurts: true });
+            }
+        }
+        if age % 4 == 0 {
+            for at in rules::front_ring(&blast, age) {
+                run_in(game, &mut st.warned, &blast, &particle("minecraft:campfire_signal_smoke", at, [2.0, 1.0, 2.0], 0.02, 4));
+                run_in(game, &mut st.warned, &blast, &particle("minecraft:large_smoke", at, [3.0, 0.5, 3.0], 0.05, 6));
+            }
+            if to < 512.0 {
+                for h in [10.0, 20.0, 30.0, 40.0] {
+                    run_in(game, &mut st.warned, &blast, &particle("minecraft:campfire_signal_smoke", [cx, cy + h, cz], [3.0, 2.0, 3.0], 0.05, 8));
+                }
+            }
+        }
+        for (a, b, amount) in rules::damage_band(blast.radius, from, to) {
+            run_in(
+                game,
+                &mut st.warned,
+                &blast,
+                &format!(
+                    "execute as @e[x={cx:.1},y={cy:.1},z={cz:.1},distance={a:.1}..{b:.1}] run damage @s {amount:.1} big_nukes:blast at {cx:.1} {cy:.1} {cz:.1}"
+                ),
+            );
+        }
+    }
 }
 
 // ---- ticks, chunks and the world's phases ----------------------------------------
@@ -161,6 +247,7 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     }
     let Some(mut guard) = state(game) else { return };
     let st = guard.as_mut().expect("opened");
+    effects(game, st, dimension);
     if st.saved.waves.idle(dimension) {
         return;
     }

@@ -469,6 +469,20 @@ pub fn news_of(blast: &Blast, now_tick: u64, start: u64) -> News {
 }
 
 impl Waves {
+    /// The running fronts of `dimension`: each blast with the ground its front
+    /// crossed since the last tick (from, to) and its age in ticks.
+    pub fn fronts(&self, dimension: &str, now_tick: u64) -> Vec<(Blast, f64, f64, u64)> {
+        self.waves
+            .iter()
+            .filter(|w| w.blast.dimension == dimension)
+            .filter_map(|w| {
+                let age = now_tick.saturating_sub(w.start);
+                let from = age.saturating_sub(1) as f64 * FRONT_SPEED;
+                (from <= w.blast.radius as f64 * (1.0 + BORDER)).then(|| (w.blast.clone(), from, age as f64 * FRONT_SPEED, age))
+            })
+            .collect()
+    }
+
     /// The blasts of `dimension` still worth telling a player about.
     pub fn news(&self, dimension: &str, now_tick: u64) -> Vec<News> {
         self.waves
@@ -1168,5 +1182,17 @@ mod tests {
         assert_eq!(t["scaling"], "never");
         let en = language("en_us");
         assert!(en.contains_key("death.attack.big_nukes.blast") && en.contains_key("death.attack.big_nukes.blast.player"));
+    }
+
+    #[test]
+    fn fronts_report_the_band_passed_this_tick() {
+        let mut w = Waves::default();
+        w.start(blast([0, 64, 0], 100, 1, World::OVERWORLD), 10);
+        let f = w.fronts(OW, 14);
+        assert_eq!(f.len(), 1);
+        assert_eq!((f[0].0.id, f[0].1, f[0].2, f[0].3), (1, 7.5, 10.0, 4));
+        assert_eq!(w.fronts(OW, 10)[0].1, 0.0, "the first tick starts at the center");
+        assert!(w.fronts("minecraft:the_nether", 14).is_empty());
+        assert!(w.fronts(OW, 10 + 46).is_empty(), "past the reach of 112 blocks");
     }
 }
