@@ -3,7 +3,7 @@
 
     python tools/make_textures.py
 
-Writes content/assets/big_nukes/textures/{block,item}/*.png.
+Writes content/assets/big_nukes/textures/{block,item}/*.png and gui/centrifuge.png.
 """
 import random
 from pathlib import Path
@@ -250,4 +250,94 @@ REMOTE = [
 ]
 save(item(REMOTE, {"a": (30, 30, 34, 255), "b": (70, 74, 82, 255), "e": (90, 200, 120, 255),
                    "r": (220, 40, 40, 255), "c": (160, 160, 170, 255), "d": (150, 150, 160, 255)}), "item", "remote")
+
+
+# ---- the centrifuge's screen ----
+# 176x166 like a furnace's, and right of it the lit flame (176, 0) and the full
+# arrow (176, 14) that glue.rs draws over the empty ones. No random here, so the
+# textures above stay the same.
+def rect(im, x, y, w, h, c):
+    for yy in range(y, y + h):
+        for xx in range(x, x + w):
+            im.putpixel((xx, yy), c)
+
+
+def slot(im, x, y, size=18):
+    """A slot's frame, at the item's corner minus one (the output's is bigger)."""
+    rect(im, x - 1, y - 1, size, size, (255, 255, 255, 255))
+    rect(im, x - 1, y - 1, size - 1, size - 1, (55, 55, 55, 255))
+    rect(im, x, y, size - 2, size - 2, (139, 139, 139, 255))
+
+
+FLAME_SHAPE = [
+    "......##......",
+    "......##......",
+    ".....###......",
+    ".....####.....",
+    "....#####.....",
+    "....######....",
+    "...#######....",
+    "...########...",
+    "..#########...",
+    "..##########..",
+    ".###########..",
+    ".############.",
+    "..##########..",
+    "...########...",
+]
+
+
+def arrow_shape(x, y):
+    if x < 14:
+        return 6 <= y <= 10
+    return abs(y - 8) <= 8 - (x - 14) * 0.85
+
+
+def flame(im, ox, oy, lit):
+    for y, row in enumerate(FLAME_SHAPE):
+        for x, ch in enumerate(row):
+            if ch != "#":
+                continue
+            if not lit:
+                c = (139, 139, 139, 255)
+            else:
+                # Green-gold from the tip down, a paler core.
+                core = row.count("#") > 4 and abs(x + 0.5 - (row.index("#") + row.count("#") / 2)) < row.count("#") / 4
+                c = shade((230, 240, 90), 1.0 - y * 0.03) if y < 5 else shade((110, 220, 70), 1.0 - (y - 5) * 0.05)
+                if core and y > 4:
+                    c = (200, 255, 150, 255)
+            im.putpixel((ox + x, oy + y), c)
+
+
+def arrow(im, ox, oy, full):
+    for y in range(17):
+        for x in range(24):
+            if arrow_shape(x, y):
+                if not full:
+                    c = (139, 139, 139, 255)
+                else:
+                    c = (150, 240, 100, 255) if y in (6, 0) or not arrow_shape(x, y - 1) else (80, 190, 60, 255)
+                im.putpixel((ox + x, oy + y), c)
+
+
+gui = Image.new("RGBA", (200, 166), CLEAR)
+rect(gui, 0, 0, 176, 166, (198, 198, 198, 255))
+rect(gui, 0, 0, 176, 2, (255, 255, 255, 255))
+rect(gui, 0, 0, 2, 166, (255, 255, 255, 255))
+rect(gui, 0, 164, 176, 2, (85, 85, 85, 255))
+rect(gui, 174, 0, 2, 166, (85, 85, 85, 255))
+# Where the slots are: glue.rs has the same numbers.
+slot(gui, 56, 17)
+slot(gui, 56, 53)
+slot(gui, 112, 31, 26)
+for row in range(3):
+    for col in range(9):
+        slot(gui, 8 + col * 18, 84 + row * 18)
+for col in range(9):
+    slot(gui, 8 + col * 18, 142)
+flame(gui, 57, 37, False)
+arrow(gui, 79, 34, False)
+flame(gui, 176, 0, True)
+arrow(gui, 176, 14, True)
+save(gui, "gui", "centrifuge")
 print("textures written")

@@ -8,11 +8,16 @@
 
 use crate::game::{Game, NativeBlockEdit, NativeBlockRun, NativeFalling, NativeHeightmap, NativeShake, big_nukes as rules};
 use horizon_client::{
+    containers::{ModBlockEntity, ModContainer},
     hud::HudBatch,
-    mod_api::{NativeCommand, NativeServerPlayer, ServerTickPhase, WorldPhase},
+    items::ItemStack,
+    lang,
+    mod_api::{NativeCommand, NativeScreen, NativeServerPlayer, ServerTickPhase, WorldPhase},
     text::{self, ClickEvent, Style, Text},
 };
+use horizon_core::geometry::Direction;
 use horizon_mods::content::{Block, BlockProperties, Item, Rarity};
+use horizon_world::nbt::{Compound, JavaString, Tag};
 use std::{
     collections::{BTreeSet, HashMap},
     fs,
@@ -457,4 +462,240 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
     *state = None;
     *lock(&LOADED) = None;
     lock(&HEARD).clear();
+}
+
+// ---- the centrifuge --------------------------------------------------------------
+//
+// Its state lives in its block entity, so it moves with the chunk's save: `nbt`
+// holds the rules' `Centrifuge` as JSON, `items` the three slots, `data` what its
+// screen shows.
+
+pub(in crate::game) fn block_entity(block: &str, entity: &mut Option<(String, Compound)>) {
+    if block == rules::CENTRIFUGE && entity.is_none() {
+        *entity = Some((rules::CENTRIFUGE.to_owned(), Compound::default()));
+    }
+}
+
+pub(in crate::game) fn block_entity_ticks(block: &str, ticks: &mut bool) {
+    if block == rules::CENTRIFUGE {
+        *ticks = true;
+    }
+}
+
+/// A furnace's sides: hoppers put raw uranium in from above and fuel from the
+/// sides, and take enriched uranium from below.
+pub(in crate::game) fn container(block: &str, container: &mut Option<ModContainer>) {
+    if block == rules::CENTRIFUGE {
+        let mut faces: [Vec<usize>; 6] = std::array::from_fn(|_| vec![rules::FUEL_SLOT]);
+        faces[Direction::Down as usize] = vec![rules::OUTPUT_SLOT];
+        faces[Direction::Up as usize] = vec![rules::INPUT_SLOT];
+        *container = Some(ModContainer {
+            slots: rules::CENTRIFUGE_SLOTS,
+            faces,
+            inputs: vec![rules::INPUT_SLOT, rules::FUEL_SLOT],
+            outputs: vec![rules::OUTPUT_SLOT],
+            menu: Some(rules::CENTRIFUGE.to_owned()),
+        });
+    }
+}
+
+/// What a hopper may put in: raw uranium in its slot, fuel in the other.
+pub(in crate::game) fn accepts(game: &Game<'_>, entity: &ModBlockEntity, slot: usize, stack: &ItemStack, cancel: &mut bool) {
+    if entity.id != rules::CENTRIFUGE || *cancel {
+        return;
+    }
+    let raw = &*stack.item == rules::RAW_URANIUM;
+    *cancel = match slot {
+        rules::INPUT_SLOT => !raw,
+        rules::FUEL_SLOT => raw || burn_time(game, stack) <= 0,
+        _ => true,
+    };
+}
+
+fn key_name() -> JavaString {
+    JavaString::from("centrifuge")
+}
+
+fn load(entity: &ModBlockEntity) -> Option<rules::Centrifuge> {
+    match entity.nbt.get(&key_name()) {
+        Some(Tag::ByteArray(bytes)) => serde_json::from_slice(bytes).ok(),
+        _ => None,
+    }
+}
+
+fn store(entity: &mut ModBlockEntity, centrifuge: &rules::Centrifuge) {
+    if let Ok(bytes) = serde_json::to_vec(centrifuge) {
+        entity.nbt.insert(key_name(), Tag::ByteArray(bytes));
+    }
+}
+
+// --- internals ---
+// The game's own table, which no hook point offers: it may change with a new
+// Horizon revision, so it stays here. The same burn table as the quarry's.
+
+fn burn_time(game: &Game<'_>, stack: &ItemStack) -> i32 {
+    game.res.providers().burn_time(world_items!(game), stack, false)
+}
+// --- end of internals ---
+
+fn stack_of(item: &str) -> ItemStack {
+    ItemStack { item: item.into(), count: 1, damage: 0, extra: None }
+}
+
+/// One fuel out of its slot; a lava bucket leaves its bucket.
+fn take_fuel(entity: &mut ModBlockEntity) {
+    let Some(stack) = entity.items[rules::FUEL_SLOT].as_mut() else {
+        return;
+    };
+    let lava = &*stack.item == "minecraft:lava_bucket";
+    stack.count -= 1;
+    if stack.count == 0 {
+        entity.items[rules::FUEL_SLOT] = lava.then(|| stack_of("minecraft:bucket"));
+    }
+}
+
+/// One raw uranium out, one enriched uranium in.
+fn make(entity: &mut ModBlockEntity) {
+    if let Some(input) = entity.items[rules::INPUT_SLOT].as_mut() {
+        input.count -= 1;
+        if input.count == 0 {
+            entity.items[rules::INPUT_SLOT] = None;
+        }
+    }
+    match entity.items[rules::OUTPUT_SLOT].as_mut() {
+        Some(out) => out.count += 1,
+        None => entity.items[rules::OUTPUT_SLOT] = Some(stack_of(rules::ENRICHED_URANIUM)),
+    }
+}
+
+pub(in crate::game) fn tick(game: &mut Game<'_>, entity: &mut ModBlockEntity) {
+    if entity.id != rules::CENTRIFUGE || !game.native_on(rules::ID) {
+        return;
+    }
+    if entity.items.len() < rules::CENTRIFUGE_SLOTS {
+        entity.items.resize(rules::CENTRIFUGE_SLOTS, None);
+    }
+    let was = load(entity);
+    let mut centrifuge = was.unwrap_or_default();
+    let input = entity.items[rules::INPUT_SLOT].as_ref().filter(|s| &*s.item == rules::RAW_URANIUM).map_or(0, |s| s.count);
+    let fuel = entity.items[rules::FUEL_SLOT]
+        .as_ref()
+        .filter(|s| &*s.item != rules::RAW_URANIUM)
+        .map(|s| burn_time(game, s))
+        .filter(|t| *t > 0)
+        .map(i32::unsigned_abs);
+    let most = game.native_max_stack_size(rules::ENRICHED_URANIUM).unwrap_or(64);
+    let room = match &entity.items[rules::OUTPUT_SLOT] {
+        None => true,
+        Some(s) => &*s.item == rules::ENRICHED_URANIUM && s.count < most,
+    };
+    let step = centrifuge.step(input, fuel, room);
+    if step.took_fuel {
+        take_fuel(entity);
+    }
+    if step.made {
+        make(entity);
+    }
+    let data = centrifuge.data().to_vec();
+    if entity.data != data {
+        entity.data = data;
+    }
+    if was != Some(centrifuge) {
+        store(entity, &centrifuge);
+    }
+}
+
+/// A shift-click from the inventory: raw uranium to its slot, fuel to its slot,
+/// nothing else. One from the centrifuge goes the game's way, to the inventory.
+pub(in crate::game) fn quick_move(game: &Game<'_>, entity: &mut ModBlockEntity, container_slots: usize, slot: usize, stack: &mut ItemStack, handled: &mut bool) {
+    if entity.id != rules::CENTRIFUGE || slot < container_slots {
+        return;
+    }
+    *handled = true;
+    if entity.items.len() < rules::CENTRIFUGE_SLOTS {
+        entity.items.resize(rules::CENTRIFUGE_SLOTS, None);
+    }
+    let to = if &*stack.item == rules::RAW_URANIUM {
+        rules::INPUT_SLOT
+    } else if burn_time(game, stack) > 0 {
+        rules::FUEL_SLOT
+    } else {
+        return;
+    };
+    let most = game.native_max_stack_size(&stack.item).unwrap_or(64);
+    match entity.items[to].as_mut() {
+        None => {
+            entity.items[to] = Some(stack.clone());
+            stack.count = 0;
+        }
+        Some(have) if have.item == stack.item => {
+            let moved = most.saturating_sub(have.count).min(stack.count);
+            have.count += moved;
+            stack.count -= moved;
+        }
+        Some(_) => {}
+    }
+}
+
+// ---- the centrifuge's screen -----------------------------------------------------
+
+/// Where the screen's parts are, from its top left: tools/make_textures.py draws
+/// them in the same places. Slots are the items' corners.
+const INPUT_AT: [f32; 2] = [56.0, 17.0];
+const FUEL_AT: [f32; 2] = [56.0, 53.0];
+const OUTPUT_AT: [f32; 2] = [116.0, 35.0];
+const FLAME_AT: [f32; 2] = [57.0, 37.0];
+const ARROW_AT: [f32; 2] = [79.0, 34.0];
+/// The lit flame and the full arrow, right of the panel in the texture.
+const LIT_FLAME: [f32; 2] = [176.0, 0.0];
+const FULL_ARROW: [f32; 2] = [176.0, 14.0];
+const ARROW_HEIGHT: f32 = 17.0;
+const GUI: &str = "big_nukes:gui/centrifuge";
+
+pub(in crate::game) fn screen(block: &str, screen: &mut Option<NativeScreen>) {
+    if block == rules::CENTRIFUGE {
+        *screen = Some(NativeScreen {
+            width: 176.0,
+            height: 166.0,
+            slots: vec![Some(INPUT_AT), Some(FUEL_AT), Some(OUTPUT_AT)],
+            inventory_y: 84.0,
+            inventory_x: 8.0,
+            own_labels: true,
+            own_background: true,
+        });
+    }
+}
+
+pub(in crate::game) fn screen_draw(game: &Game<'_>, block: &str, data: &[i32], batch: &mut HudBatch, origin: [f32; 2]) {
+    if block != rules::CENTRIFUGE {
+        return;
+    }
+    let [x, y] = origin;
+    game.native_sprite(batch, GUI, [0.0, 0.0, 176.0, 166.0], [x, y, 176.0, 166.0]);
+    let get = |i: usize| data.get(i).copied().unwrap_or(0);
+    // The flame burns down from its top, the arrow fills from its left.
+    let flame = rules::flame_height(get(0), get(1)) as f32;
+    if flame > 0.0 {
+        let skip = rules::FLAME_HEIGHT as f32 - flame;
+        game.native_sprite(
+            batch,
+            GUI,
+            [LIT_FLAME[0], LIT_FLAME[1] + skip, rules::FLAME_HEIGHT as f32, flame],
+            [x + FLAME_AT[0], y + FLAME_AT[1] + skip, rules::FLAME_HEIGHT as f32, flame],
+        );
+    }
+    let arrow = rules::arrow_width(get(2), get(3)) as f32;
+    if arrow > 0.0 {
+        game.native_sprite(
+            batch,
+            GUI,
+            [FULL_ARROW[0], FULL_ARROW[1], arrow, ARROW_HEIGHT],
+            [x + ARROW_AT[0], y + ARROW_AT[1], arrow, ARROW_HEIGHT],
+        );
+    }
+    const LABEL: u32 = 0x40_4040;
+    let title = lang::get("big_nukes.screen.centrifuge");
+    let width = game.native_text_width(&title);
+    game.native_text(batch, &title, [x + (176.0 - width) / 2.0, y + 6.0], LABEL, false);
+    game.native_text(batch, &lang::get("container.inventory"), [x + 8.0, y + 72.0], LABEL, false);
 }

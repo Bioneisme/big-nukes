@@ -52,6 +52,104 @@ pub const ITEMS: [(&str, u8, bool); 8] = [
     ("big_nukes:remote", 1, true),
 ];
 
+// ---- the centrifuge -------------------------------------------------------------
+
+pub const RAW_URANIUM: &str = "big_nukes:raw_uranium";
+pub const ENRICHED_URANIUM: &str = "big_nukes:enriched_uranium";
+/// Its slots: raw uranium in, fuel, enriched uranium out. Its menu type is
+/// content/data/big_nukes/horizon/menu/centrifuge.json, named as the block.
+pub const INPUT_SLOT: usize = 0;
+pub const FUEL_SLOT: usize = 1;
+pub const OUTPUT_SLOT: usize = 2;
+pub const CENTRIFUGE_SLOTS: usize = 3;
+/// Ticks of work that turn one raw uranium into one enriched.
+pub const SPIN_TICKS: u32 = 400;
+/// The screen's flame is this tall and its arrow this wide, in GUI pixels.
+pub const FLAME_HEIGHT: i32 = 14;
+pub const ARROW_WIDTH: i32 = 24;
+
+/// A centrifuge's state, kept in its block entity: the ticks left of the fuel
+/// it burns and that fuel's whole burn, and the ticks of work on the current input.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Centrifuge {
+    pub burn: u32,
+    pub burn_max: u32,
+    pub spin: u32,
+}
+
+/// What a tick asks of the slots: one fuel taken, one input made into one output.
+/// Both can happen in one tick, so they are two flags, not one variant.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Step {
+    pub took_fuel: bool,
+    pub made: bool,
+}
+
+impl Step {
+    pub const IDLE: Step = Step { took_fuel: false, made: false };
+}
+
+impl Centrifuge {
+    /// One tick. `input` is the raw uranium in its slot, `fuel` the burn ticks of
+    /// the fuel in its slot (none, or 0, when nothing there burns), `output_room`
+    /// whether the output slot takes one more enriched uranium.
+    ///
+    /// The fire burns only while it spins: an empty input or a full output keeps
+    /// the rest of the burning fuel, and takes no new fuel. Taking the input out
+    /// loses the progress, as a furnace does.
+    pub fn step(&mut self, input: u32, fuel: Option<u32>, output_room: bool) -> Step {
+        if input == 0 {
+            self.spin = 0;
+            return Step::IDLE;
+        }
+        if !output_room {
+            return Step::IDLE;
+        }
+        let mut step = Step::IDLE;
+        if self.burn == 0 {
+            match fuel {
+                Some(ticks) if ticks > 0 => {
+                    self.burn = ticks;
+                    self.burn_max = ticks;
+                    step.took_fuel = true;
+                }
+                _ => return Step::IDLE,
+            }
+        }
+        self.burn -= 1;
+        self.spin += 1;
+        if self.spin >= SPIN_TICKS {
+            self.spin = 0;
+            step.made = true;
+        }
+        step
+    }
+
+    /// The menu's data slots: `[burn, burn_max, spin, SPIN_TICKS]`, kept within
+    /// the 16 bits a data slot has on the wire.
+    pub fn data(&self) -> [i32; 4] {
+        let short = |v: u32| v.min(i16::MAX as u32) as i32;
+        [short(self.burn), short(self.burn_max), short(self.spin), short(SPIN_TICKS)]
+    }
+}
+
+/// The lit part of the screen's flame, from the bottom: at least 1 while anything burns.
+pub fn flame_height(burn: i32, burn_max: i32) -> i32 {
+    if burn <= 0 || burn_max <= 0 {
+        return 0;
+    }
+    (burn.min(burn_max) * FLAME_HEIGHT / burn_max).max(1)
+}
+
+/// The filled part of the screen's arrow, from the left.
+pub fn arrow_width(spin: i32, spin_max: i32) -> i32 {
+    if spin <= 0 || spin_max <= 0 {
+        return 0;
+    }
+    spin.min(spin_max) * ARROW_WIDTH / spin_max
+}
+
 // ---- blast geometry ----------------------------------------------------------
 //
 // A blast leaves zones by how far a column is from the center, measured against
@@ -1515,5 +1613,107 @@ mod tests {
         assert_eq!(p[2]["height"]["max_inclusive"]["absolute"], 16);
         let modifier: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/neoforge/biome_modifier/add_uranium.json")).unwrap();
         assert_eq!((modifier["features"].as_str(), modifier["step"].as_str()), (Some("big_nukes:ore_uranium"), Some("underground_ores")));
+    }
+
+    // ---- the centrifuge (plan 4, Task 3) -------------------------------------
+
+    const COAL: Option<u32> = Some(1600);
+
+    #[test]
+    fn no_fuel_no_spin() {
+        let mut c = Centrifuge::default();
+        for _ in 0..20 {
+            assert_eq!(c.step(5, None, true), Step::IDLE);
+            assert_eq!(c.step(5, Some(0), true), Step::IDLE, "what doesn't burn isn't fuel");
+        }
+        assert_eq!(c, Centrifuge::default());
+        // Fuel but nothing to spin: the fuel stays in its slot.
+        assert_eq!(c.step(0, COAL, true), Step::IDLE);
+        assert_eq!(c, Centrifuge::default());
+    }
+
+    #[test]
+    fn fuel_burns_down_and_refills() {
+        let mut c = Centrifuge::default();
+        assert_eq!(c.step(3, Some(10), true), Step { took_fuel: true, made: false });
+        assert_eq!(c, Centrifuge { burn: 9, burn_max: 10, spin: 1 });
+        for left in (0..9).rev() {
+            assert_eq!(c.step(3, Some(10), true), Step { took_fuel: false, made: false });
+            assert_eq!(c.burn, left);
+        }
+        // Burnt out: the next tick takes one more fuel.
+        assert_eq!(c.step(3, Some(7), true), Step { took_fuel: true, made: false });
+        assert_eq!(c, Centrifuge { burn: 6, burn_max: 7, spin: 11 });
+        // Out of fuel: it stops where it is.
+        c.burn = 0;
+        assert_eq!(c.step(3, None, true), Step::IDLE);
+        assert_eq!(c.spin, 11);
+    }
+
+    #[test]
+    fn at_spin_max_input_becomes_output() {
+        let mut c = Centrifuge::default();
+        let mut made = 0;
+        for tick in 1..=SPIN_TICKS {
+            let step = c.step(1, COAL, true);
+            assert_eq!(step.took_fuel, tick == 1);
+            if step.made {
+                made += 1;
+                assert_eq!(tick, SPIN_TICKS);
+            }
+        }
+        assert_eq!(made, 1);
+        assert_eq!(c.spin, 0);
+        // A coal's burn is four enrichments.
+        for _ in 0..3 * SPIN_TICKS {
+            assert!(!c.step(1, COAL, true).took_fuel);
+        }
+        assert_eq!(c.burn, 0);
+        // The last tick of the fuel and the first of the next one can coincide with an output.
+        let mut c = Centrifuge { burn: 0, burn_max: 1600, spin: SPIN_TICKS - 1 };
+        assert_eq!(c.step(1, COAL, true), Step { took_fuel: true, made: true });
+        // Taking the input out loses the progress, as a furnace does.
+        let mut c = Centrifuge { burn: 50, burn_max: 100, spin: 200 };
+        assert_eq!(c.step(0, COAL, true), Step::IDLE);
+        assert_eq!(c, Centrifuge { burn: 50, burn_max: 100, spin: 0 });
+    }
+
+    #[test]
+    fn a_full_output_waits() {
+        let mut c = Centrifuge { burn: 30, burn_max: 100, spin: 250 };
+        for _ in 0..50 {
+            assert_eq!(c.step(4, COAL, false), Step::IDLE);
+        }
+        // Neither the progress nor the burning fuel is lost while it waits.
+        assert_eq!(c, Centrifuge { burn: 30, burn_max: 100, spin: 250 });
+        let mut c = Centrifuge::default();
+        assert_eq!(c.step(4, COAL, false), Step::IDLE, "no fuel is taken for nothing");
+        assert_eq!(c, Centrifuge::default());
+    }
+
+    #[test]
+    fn state_round_trips() {
+        let c = Centrifuge { burn: 1234, burn_max: 1600, spin: 321 };
+        let back: Centrifuge = serde_json::from_slice(&serde_json::to_vec(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
+        // What an older or empty entity holds reads as a cold centrifuge.
+        assert_eq!(serde_json::from_str::<Centrifuge>("{}").unwrap(), Centrifuge::default());
+    }
+
+    #[test]
+    fn the_screen_shows_the_fire_and_the_spin() {
+        let c = Centrifuge { burn: 800, burn_max: 1600, spin: 100 };
+        assert_eq!(c.data(), [800, 1600, 100, SPIN_TICKS as i32]);
+        // Data slots are 16 bits on the wire.
+        let hot = Centrifuge { burn: 40_000, burn_max: 40_000, spin: 0 };
+        assert_eq!(hot.data()[..2], [i32::from(i16::MAX); 2]);
+        assert_eq!(flame_height(0, 0), 0);
+        assert_eq!(flame_height(1600, 1600), FLAME_HEIGHT);
+        assert_eq!(flame_height(1, 1600), 1, "a spark still shows");
+        assert_eq!(flame_height(800, 1600), FLAME_HEIGHT / 2);
+        assert_eq!(arrow_width(0, SPIN_TICKS as i32), 0);
+        assert_eq!(arrow_width(200, SPIN_TICKS as i32), ARROW_WIDTH / 2);
+        assert_eq!(arrow_width(400, SPIN_TICKS as i32), ARROW_WIDTH);
+        assert_eq!(arrow_width(5, 0), 0, "before the server's first values");
     }
 }

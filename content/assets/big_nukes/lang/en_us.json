@@ -4,6 +4,7 @@
   "big_nukes.blast.started": "A blast of radius %s: its wave is on the way.",
   "big_nukes.blast.usage": "Usage: /bignukes blast <radius %s to %s> [x y z]",
   "big_nukes.blast.dimension": "Big Nukes can't blast in this dimension.",
+  "big_nukes.screen.centrifuge": "Centrifuge",
   "subtitles.big_nukes.blast": "Blast rumbles",
   "subtitles.big_nukes.wave": "Shockwave roars",
   "block.big_nukes.centrifuge": "Centrifuge",

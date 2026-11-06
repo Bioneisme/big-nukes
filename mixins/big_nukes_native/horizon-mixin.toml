@@ -50,6 +50,112 @@ bindings = [
   { name = "items", ty = "&mut Vec<horizon_mods::content::Item>", value = "&mut *items" },
 ]
 
+# The centrifuge: its block entity, slots, menu, work and screen (API 15-20, 309).
+[[injection]]
+id = "block-entity"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_block_entity"
+helper = "block_entity.rs"
+bindings = [
+  { name = "block", ty = "&str", value = "block" },
+  { name = "entity", ty = "&mut Option<(String, horizon_world::nbt::Compound)>", value = "&mut *entity" },
+]
+
+[[injection]]
+id = "block-entity-ticks"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_block_entity_ticks"
+helper = "block_entity_ticks.rs"
+bindings = [
+  { name = "block", ty = "&str", value = "block" },
+  { name = "ticks", ty = "&mut bool", value = "&mut *ticks" },
+]
+
+[[injection]]
+id = "container"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_block_entity_container"
+helper = "container.rs"
+bindings = [
+  { name = "block", ty = "&str", value = "block" },
+  { name = "container", ty = "&mut Option<horizon_client::containers::ModContainer>", value = "&mut *container" },
+]
+
+# What hoppers may put in.
+[[injection]]
+id = "container-accepts"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_container_accepts"
+helper = "container_accepts.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "entity", ty = "&horizon_client::containers::ModBlockEntity", value = "entity" },
+  { name = "slot", ty = "usize", value = "slot" },
+  { name = "stack", ty = "&horizon_client::items::ItemStack", value = "stack" },
+  { name = "cancel", ty = "&mut bool", value = "&mut *cancel" },
+]
+
+[[injection]]
+id = "block-entity-tick"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_block_entity_tick"
+helper = "block_entity_tick.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "entity", ty = "&mut horizon_client::containers::ModBlockEntity", value = "&mut *entity" },
+]
+
+# What each slot of the screen takes, for a player's clicks: on the library's side
+# of the game, so it can't reach the glue.
+[[injection]]
+id = "slot-rules"
+kind = "HEAD"
+target = "horizon_client_lib::menu::native_menu_slot_rules"
+helper = "slot_rules.rs"
+bindings = [
+  { name = "menu", ty = "&str", value = "menu" },
+  { name = "slot", ty = "usize", value = "slot" },
+  { name = "stack", ty = "&horizon_client::items::ItemStack", value = "stack" },
+  { name = "may_place", ty = "&mut bool", value = "&mut *may_place" },
+]
+
+[[injection]]
+id = "quick-move"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_menu_quick_move"
+helper = "quick_move.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "entity", ty = "&mut horizon_client::containers::ModBlockEntity", value = "&mut *entity" },
+  { name = "container_slots", ty = "usize", value = "container_slots" },
+  { name = "slot", ty = "usize", value = "slot" },
+  { name = "stack", ty = "&mut horizon_client::items::ItemStack", value = "&mut *stack" },
+  { name = "handled", ty = "&mut bool", value = "&mut *handled" },
+]
+
+[[injection]]
+id = "screen"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_screen"
+helper = "screen.rs"
+bindings = [
+  { name = "block", ty = "&str", value = "block" },
+  { name = "screen", ty = "&mut Option<horizon_client::mod_api::NativeScreen>", value = "&mut *screen" },
+]
+
+[[injection]]
+id = "screen-draw"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_screen_draw"
+helper = "screen_draw.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "block", ty = "&str", value = "block" },
+  { name = "data", ty = "&[i32]", value = "data" },
+  { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
+  { name = "origin", ty = "[f32; 2]", value = "origin" },
+]
+
 # A player joining: the warning when the assets half is missing (API 1).
 [[injection]]
 id = "logged-in"
