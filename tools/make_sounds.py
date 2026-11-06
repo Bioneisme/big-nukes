@@ -66,28 +66,35 @@ def normalize(x, peak=0.89):
     return x / np.max(np.abs(x)) * peak
 
 
+def loud(x, drive, peak=0.89):
+    """A soft clip (tanh): the peaks round off and the body comes up, so a blast is as loud as
+    vanilla's explosion on small speakers too, not only in the bass."""
+    return normalize(np.tanh(drive * normalize(x, 1.0)), peak)
+
+
 def near():
     n = seconds(7.0)
     noise = rng.standard_normal(n)
-    crack = lowpass(noise, 6000) * envelope(n, 0.002, 0.08)
-    boom = sweep_lowpass(noise, 900, 60) * envelope(n, 0.01, 1.6) * 3.0
-    sub = np.sin(2 * np.pi * np.cumsum(np.geomspace(55, 28, n)) / RATE) * envelope(n, 0.02, 1.2) * 0.8
-    tail = lowpass(rng.standard_normal(n), 220) * envelope(n, 0.6, 2.8) * rumble(n) * 4.0
-    return normalize(crack * 0.6 + boom + sub + tail)
+    crack = lowpass(noise, 7000) * envelope(n, 0.002, 0.18)
+    boom = sweep_lowpass(noise, 2600, 80) * envelope(n, 0.01, 1.5) * 3.0
+    sub = np.sin(2 * np.pi * np.cumsum(np.geomspace(55, 28, n)) / RATE) * envelope(n, 0.02, 1.2) * 0.5
+    tail = lowpass(rng.standard_normal(n), 600) * envelope(n, 0.5, 2.6) * rumble(n) * 3.0
+    return loud(crack * 1.4 + boom + sub + tail, 4.0)
 
 
 def far():
     n = seconds(9.0)
-    body = lowpass(rng.standard_normal(n), 140) * envelope(n, 0.25, 2.6) * rumble(n, 0.7, 1.8)
-    sub = np.sin(2 * np.pi * np.cumsum(np.geomspace(40, 24, n)) / RATE) * envelope(n, 0.3, 2.0) * 0.15
-    return normalize(body + sub, 0.8)
+    thud = sweep_lowpass(rng.standard_normal(n), 1800, 200) * envelope(n, 0.01, 0.5)
+    body = sweep_lowpass(rng.standard_normal(n), 900, 120) * envelope(n, 0.25, 2.6) * rumble(n, 0.7, 1.8) * 2.0
+    sub = np.sin(2 * np.pi * np.cumsum(np.geomspace(40, 24, n)) / RATE) * envelope(n, 0.3, 2.0) * 0.1
+    return loud(thud + body + sub, 3.5, 0.85)
 
 
 def wave_roar():
     n = seconds(4.5)
-    wind = sweep_lowpass(rng.standard_normal(n), 2500, 300) * envelope(n, 0.15, 1.3) * rumble(n, 0.4, 7.0)
+    wind = sweep_lowpass(rng.standard_normal(n), 4000, 500) * envelope(n, 0.15, 1.3) * rumble(n, 0.4, 7.0)
     grit = lowpass(rng.standard_normal(n) * (rng.random(n) < 0.004), 3000) * envelope(n, 0.05, 1.0) * 40
-    return normalize(wind + grit, 0.85)
+    return loud(wind + grit, 3.0, 0.85)
 
 
 def geiger_click():

@@ -1,0 +1,28 @@
+{
+  "title": "itemGroup.big_nukes.big_nukes",
+  "icon": "big_nukes:atomic_bomb",
+  "items": [
+    "big_nukes:atomic_bomb",
+    "big_nukes:tactical_warhead",
+    "big_nukes:demolition_charge",
+    "big_nukes:fuse_detonator",
+    "big_nukes:keypad_detonator",
+    "big_nukes:receiver_detonator",
+    "big_nukes:remote",
+    "big_nukes:uranium_ore",
+    "big_nukes:deepslate_uranium_ore",
+    "big_nukes:raw_uranium",
+    "big_nukes:centrifuge",
+    "big_nukes:enriched_uranium",
+    "big_nukes:assembly_table",
+    "big_nukes:nuclear_charge",
+    "big_nukes:bomb_casing",
+    "big_nukes:geiger_counter",
+    "big_nukes:hazmat_helmet",
+    "big_nukes:hazmat_chestplate",
+    "big_nukes:hazmat_leggings",
+    "big_nukes:hazmat_boots",
+    "big_nukes:anti_rad",
+    "big_nukes:ash"
+  ]
+}

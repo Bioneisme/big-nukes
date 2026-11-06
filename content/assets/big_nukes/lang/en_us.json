@@ -50,6 +50,7 @@
   "block.big_nukes.ash": "Ash",
   "death.attack.big_nukes.radiation": "%1$s died of radiation sickness",
   "death.attack.big_nukes.radiation.player": "%1$s died of radiation sickness while fighting %2$s",
+  "itemGroup.big_nukes.big_nukes": "Big Nukes",
   "item.big_nukes.raw_uranium": "Raw Uranium",
   "item.big_nukes.enriched_uranium": "Enriched Uranium",
   "item.big_nukes.nuclear_charge": "Nuclear Charge",

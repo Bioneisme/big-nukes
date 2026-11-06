@@ -1935,6 +1935,7 @@ mod tests {
                     || key.starts_with("effect.big_nukes.")
                     || key.starts_with("death.attack.big_nukes.")
                     || key.starts_with("subtitles.big_nukes.")
+                    || key.starts_with("itemGroup.big_nukes.")
                     || key == "big_nukes.mod.description"
                     || used.contains(key),
                 "{key} is used nowhere"
@@ -2635,6 +2636,20 @@ mod tests {
         assert_eq!(&b[1..4], b"PNG", "{path}");
         let int = |at: usize| u32::from_be_bytes(b[at..at + 4].try_into().unwrap());
         (int(16), int(20))
+    }
+
+    #[test]
+    fn every_block_and_item_is_in_the_creative_tab() {
+        let tab: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/horizon/creative_tab/big_nukes.json")).unwrap();
+        let listed: Vec<&str> = tab["items"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(FILE_BLOCKS).collect();
+        all.extend(ITEMS.iter().map(|i| i.0));
+        let (listed_set, all_set): (BTreeSet<&str>, BTreeSet<&str>) = (listed.iter().copied().collect(), all.iter().copied().collect());
+        assert_eq!(listed.len(), listed_set.len(), "an id is listed twice");
+        assert_eq!(listed_set, all_set);
+        assert!(all_set.contains(tab["icon"].as_str().unwrap()));
+        let title = tab["title"].as_str().unwrap();
+        assert!(language("en_us").contains_key(title) && language("ru_ru").contains_key(title), "{title}");
     }
 
     #[test]
