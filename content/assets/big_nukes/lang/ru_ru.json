@@ -46,6 +46,8 @@
   "block.big_nukes.uranium_ore": "Урановая руда",
   "block.big_nukes.deepslate_uranium_ore": "Глубинная урановая руда",
   "block.big_nukes.ash": "Пепел",
+  "death.attack.big_nukes.radiation": "%1$s умер от лучевой болезни",
+  "death.attack.big_nukes.radiation.player": "%1$s умер от лучевой болезни, сражаясь с %2$s",
   "item.big_nukes.raw_uranium": "Рудный уран",
   "item.big_nukes.enriched_uranium": "Обогащённый уран",
   "item.big_nukes.nuclear_charge": "Ядерный заряд",

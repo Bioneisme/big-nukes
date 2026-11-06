@@ -13,6 +13,8 @@ pub const VERSION: &str = "0.1.0";
 /// The mod's folder in a world's folder.
 pub const DIR: &str = "horizon-big-nukes";
 /// A loot table only the assets half brings: the sign that it's installed.
+/// The damage radiation does, `data/big_nukes/damage_type/radiation.json` in the assets half.
+pub const RADIATION: &str = "big_nukes:radiation";
 pub const ASSETS_MARKER: &str = "big_nukes:blocks/atomic_bomb";
 
 // ---- what the mod adds ----------------------------------------------------------

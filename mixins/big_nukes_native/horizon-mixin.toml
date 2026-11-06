@@ -419,3 +419,13 @@ bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
   { name = "elapsed", ty = "std::time::Duration", value = "elapsed" },
 ]
+
+# A probe for plan 5, taken out before the dose comes: whether the game ticks the player (API 31).
+[[injection]]
+id = "player-tick-probe"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_player_tick"
+helper = "player_tick_probe.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]

@@ -465,13 +465,45 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
         save(st);
     }
     let wake = std::mem::take(&mut st.wake);
+    let second = st.saved.tick % 20 == 0;
     drop(guard);
+    if second {
+        known_damage_type(game);
+    }
     // A level nobody has entered since the world opened isn't open, and its
     // forced chunks don't tick: a command run in it opens it, so a blast there
     // works at once in the chunks an operator keeps loaded. The rest of its
     // wave waits for its chunks to load, as anywhere else.
     for dimension in wake {
         game.native_run_command(&format!("execute in {dimension} run forceload query"));
+    }
+}
+
+/// `/damage` checks a type against the command registry the server exported,
+/// which holds only vanilla's damage types (Horizon 66f3981 adds a content mod's
+/// items, blocks and effects there, not its damage types), so the radiation's
+/// type is added once the world's registries are built. Only with the assets
+/// half, which brings the type itself. This is the game's own table, not an API:
+/// when it changes, the build breaks, not the game.
+fn known_damage_type(game: &mut Game<'_>) {
+    if !world_items!(game).has_loot_table(rules::ASSETS_MARKER) {
+        return;
+    }
+    if let Some(r) = game.ui.registries.by_registry.get_mut("minecraft:damage_type")
+        && !r.ids.iter().any(|id| id == rules::RADIATION)
+    {
+        r.ids.push(rules::RADIATION.to_owned());
+        r.ids.sort();
+        log::info!("[big_nukes] {} is known to /damage", rules::RADIATION);
+    }
+}
+
+/// A probe for plan 5: whether the game ticks the player in single player.
+pub(in crate::game) fn player_tick_probe(game: &mut Game<'_>) {
+    static SEEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    if SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3 {
+        let who = game.native_acting_player().map(|p| (p.name, p.entity_id));
+        log::info!("[big_nukes] player tick: {who:?}");
     }
 }
 
