@@ -372,6 +372,15 @@ impl Waves {
     pub fn finished(&self) -> bool {
         self.waves.is_empty()
     }
+
+    /// Nothing more to do in `dimension` until a chunk loads: every front there
+    /// is out and every ready chunk changed.
+    pub fn idle(&mut self, dimension: &str) -> bool {
+        self.waves
+            .iter_mut()
+            .filter(|w| w.blast.dimension == dimension)
+            .all(|w| w.ready.is_empty() && w.reached == w.order().len())
+    }
 }
 
 // ---- the command and what a world keeps -----------------------------------------
@@ -803,5 +812,18 @@ mod tests {
         back.waves.advance("minecraft:the_nether", 1000, &|_| true);
         let (b, _) = back.waves.next_job("minecraft:the_nether").unwrap();
         assert_eq!((b.id, b.world), (2, World::NETHER));
+    }
+
+    #[test]
+    fn a_dimension_is_idle_once_its_fronts_are_out_and_its_loaded_work_done() {
+        let mut w = waves_with(&[blast([0, 64, 0], 60, 1, World::OVERWORLD)]);
+        let far = [3, 0];
+        assert!(!w.idle(OW));
+        w.advance(OW, 1000, &|c| c != far);
+        assert!(!w.idle(OW), "jobs are ready");
+        drain(&mut w, OW);
+        assert!(w.idle(OW), "only a deferred chunk is left");
+        assert!(!w.finished());
+        assert!(w.idle("minecraft:the_nether"));
     }
 }

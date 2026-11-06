@@ -20,7 +20,7 @@ use std::{
 };
 
 /// The time a level's tick may spend on waves.
-const BUDGET: Duration = Duration::from_millis(10);
+const BUDGET: Duration = Duration::from_millis(6);
 /// Ticks between saves while a wave runs.
 const SAVE_EVERY: u64 = 200;
 
@@ -161,6 +161,7 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
         return;
     }
     let loaded = lock(&LOADED).as_ref().and_then(|m| m.get(dimension)).cloned().unwrap_or_default();
+    let was_idle = st.saved.waves.idle(dimension);
     st.saved.waves.advance(dimension, st.saved.tick, &|c| loaded.contains(&c));
     let started = Instant::now();
     let warned = &mut st.warned;
@@ -180,6 +181,9 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
         }
         true
     });
+    if !was_idle && st.saved.waves.idle(dimension) {
+        log::info!("[big_nukes] {dimension}: the loaded part of every wave is done at tick {}", st.saved.tick);
+    }
     if st.saved.waves.finished() {
         log::info!("[big_nukes] every wave is over");
         save(st);
