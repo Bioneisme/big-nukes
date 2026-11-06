@@ -46,6 +46,17 @@ The native half knows the assets half is installed when the loot table `big_nuke
   cloud, at 16 steps, the frame is 1.8 ms (GPU 1.7 ms). Some benches after a teleport showed 33 ms frames with the CPU at
   1.9 ms and the GPU at 5.7 ms: waiting, not drawing, seen as chunks load; worth a look in a real window.
 
+## Crafting on the assembly table
+
+Read in the source of 66f3981, not yet seen in the game:
+- `native_prepare_item_craft` (API 290) is called only from `game/lan_crafting.rs`, for LAN guests: the host's own
+  grid (`menu.rs`) never calls it, so the host crafts the bombs anywhere.
+- The menu a block opens is chosen by its name, not its template: `Game::open_menu` sets up a 3×3 grid only for
+  `minecraft:crafting_table`, and `lan_table_valid` closes a guest's table at any other block. A block on the
+  `minecraft:crafting_table` template, `big_nukes:assembly_table`, may open no grid at all.
+- The mod finds the guest's level with `native_server_players` (its `dimension`) and `native_level`, and the block with
+  `native_level_block`.
+
 ## Wave measurements
 
 `tools/wave_bench.py`, 2026-11-06, `performance` build, offscreen, seed 12345 at spawn, render and simulation

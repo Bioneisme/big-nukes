@@ -198,6 +198,28 @@ fn usage() -> Text {
     Text::translate("big_nukes.blast.usage", &[n(rules::MIN_RADIUS), n(rules::MAX_RADIUS)])
 }
 
+// ---- crafting ----------------------------------------------------------------------
+
+/// A crafting grid's result for a server player, before it is shown. The bombs and
+/// their parts come out only of a grid at `pos` whose block, in the player's level,
+/// is the assembly table; the inventory grid (`pos` None) and other tables give
+/// nothing for them.
+pub(in crate::game) fn prepare_item_craft(game: &mut Game<'_>, player: u128, pos: Option<[i32; 3]>, result: &mut Option<ItemStack>) {
+    if !result.as_ref().is_some_and(|s| rules::needs_assembly_table(&s.item)) || !game.native_on(rules::ID) {
+        return;
+    }
+    let on_table = pos.is_some_and(|pos| {
+        let dimension = game.native_server_players().into_iter().find(|p| p.uuid == player).map(|p| p.dimension);
+        dimension
+            .and_then(|d| game.native_level(&d))
+            .and_then(|level| game.native_level_block(level, pos))
+            .is_some_and(|block| block == rules::ASSEMBLY_TABLE)
+    });
+    if !on_table {
+        *result = None;
+    }
+}
+
 // ---- the blast's effects, on the server ---------------------------------------------
 
 fn send(game: &mut Game<'_>, player: u128, news: &rules::News) {

@@ -190,6 +190,19 @@ bindings = [
   { name = "ran", ty = "&mut bool", value = "&mut *ran" },
 ]
 
+# A crafting grid's result: the bombs and their parts only on the assembly table (API 290).
+[[injection]]
+id = "prepare-item-craft"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_prepare_item_craft"
+helper = "prepare_item_craft.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "player", ty = "u128", value = "player" },
+  { name = "pos", ty = "Option<[i32; 3]>", value = "pos" },
+  { name = "result", ty = "&mut Option<horizon_client::items::ItemStack>", value = "&mut *result" },
+]
+
 # The server's ticks, counted (API 4).
 [[injection]]
 id = "server-tick"

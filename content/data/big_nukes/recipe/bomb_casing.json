@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "BRB",
+    "R R",
+    "BRB"
+  ],
+  "key": {
+    "B": "minecraft:iron_block",
+    "R": "minecraft:redstone"
+  },
+  "result": {
+    "id": "big_nukes:bomb_casing",
+    "count": 1
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    " E ",
+    "IBI",
+    "IRI"
+  ],
+  "key": {
+    "E": "minecraft:ender_pearl",
+    "I": "minecraft:iron_ingot",
+    "B": "minecraft:stone_button",
+    "R": "minecraft:redstone"
+  },
+  "result": {
+    "id": "big_nukes:remote",
+    "count": 1
+  }
+}

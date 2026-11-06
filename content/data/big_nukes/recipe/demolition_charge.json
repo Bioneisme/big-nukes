@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "ITI",
+    "TRT",
+    "ITI"
+  ],
+  "key": {
+    "I": "minecraft:iron_ingot",
+    "T": "minecraft:tnt",
+    "R": "minecraft:redstone"
+  },
+  "result": {
+    "id": "big_nukes:demolition_charge",
+    "count": 1
+  }
+}

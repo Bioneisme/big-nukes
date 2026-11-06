@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    " T ",
+    "IRI",
+    "III"
+  ],
+  "key": {
+    "T": "minecraft:redstone_torch",
+    "I": "minecraft:iron_ingot",
+    "R": "minecraft:redstone"
+  },
+  "result": {
+    "id": "big_nukes:receiver_detonator",
+    "count": 1
+  }
+}

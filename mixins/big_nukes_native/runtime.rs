@@ -150,6 +150,12 @@ pub fn arrow_width(spin: i32, spin_max: i32) -> i32 {
     spin.min(spin_max) * ARROW_WIDTH / spin_max
 }
 
+/// Whether the item `result` is only crafted on the assembly table: the bombs and
+/// their parts. A crafting table or the inventory grid makes nothing of them.
+pub fn needs_assembly_table(result: &str) -> bool {
+    matches!(result, "big_nukes:nuclear_charge" | "big_nukes:bomb_casing") || BombKind::ALL.iter().any(|k| k.id() == result)
+}
+
 // ---- blast geometry ----------------------------------------------------------
 //
 // A blast leaves zones by how far a column is from the center, measured against
@@ -1599,6 +1605,69 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    // ---- recipes (plan 4, Task 4) -----------------------------------------------------
+
+    #[test]
+    fn every_recipe_reads_and_names_known_items() {
+        let known: BTreeSet<&str> = ITEMS
+            .iter()
+            .map(|i| i.0)
+            .chain(BombKind::ALL.map(BombKind::id))
+            .chain([CENTRIFUGE, ASSEMBLY_TABLE])
+            .collect();
+        let known_id = |id: &str| id.starts_with("minecraft:") || known.contains(id);
+        let dir = format!("{}/content/data/big_nukes/recipe", env!("CARGO_MANIFEST_DIR"));
+        let mut made = BTreeSet::new();
+        for e in std::fs::read_dir(dir).unwrap() {
+            let path = e.unwrap().path();
+            let file_name = path.file_stem().unwrap().to_str().unwrap().to_owned();
+            let recipe: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
+                .unwrap_or_else(|e| panic!("{file_name}: {e}"));
+            assert_eq!(recipe["type"], "minecraft:crafting_shaped", "{file_name}");
+            let pattern: Vec<&str> = recipe["pattern"].as_array().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
+            assert!((1..=3).contains(&pattern.len()), "{file_name}: {} rows", pattern.len());
+            assert!(pattern.iter().all(|r| r.len() == pattern[0].len() && r.len() <= 3), "{file_name}: uneven rows");
+            let key = recipe["key"].as_object().unwrap();
+            let used: BTreeSet<char> = pattern.iter().flat_map(|r| r.chars()).filter(|c| *c != ' ').collect();
+            let keyed: BTreeSet<char> = key.keys().map(|k| k.chars().next().unwrap()).collect();
+            assert_eq!(used, keyed, "{file_name}: the pattern and the key differ");
+            for id in key.values() {
+                let id = id.as_str().unwrap_or_else(|| panic!("{file_name}: {id} isn't an item id"));
+                assert!(known_id(id), "{file_name}: {id} is unknown");
+            }
+            let result = recipe["result"]["id"].as_str().unwrap();
+            assert!(known_id(result), "{file_name}: {result} is unknown");
+            assert_eq!(result, format!("big_nukes:{file_name}"), "the recipe is named after its result");
+            assert!(recipe["result"]["count"].as_u64().unwrap() >= 1, "{file_name}");
+            made.insert(result.to_owned());
+        }
+        // Mined, made in the centrifuge, or (the centrifuge) given its recipe with its machine.
+        let not_crafted = ["big_nukes:raw_uranium", "big_nukes:enriched_uranium", CENTRIFUGE];
+        let crafted: BTreeSet<String> = known.iter().filter(|id| !not_crafted.contains(id)).map(|id| id.to_string()).collect();
+        assert_eq!(made, crafted);
+    }
+
+    #[test]
+    fn bombs_and_parts_need_the_assembly_table() {
+        for kind in BombKind::ALL {
+            assert!(needs_assembly_table(kind.id()), "{kind:?}");
+        }
+        assert!(needs_assembly_table("big_nukes:nuclear_charge"));
+        assert!(needs_assembly_table("big_nukes:bomb_casing"));
+        for id in [
+            ASSEMBLY_TABLE,
+            CENTRIFUGE,
+            "big_nukes:fuse_detonator",
+            "big_nukes:keypad_detonator",
+            "big_nukes:receiver_detonator",
+            "big_nukes:remote",
+            "big_nukes:enriched_uranium",
+            "minecraft:tnt",
+        ] {
+            assert!(!needs_assembly_table(id), "{id}");
         }
     }
 
