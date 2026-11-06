@@ -167,7 +167,7 @@ const FILTERS: [&str; 14] = [
     "#minecraft:leaves",
     "#minecraft:logs",
     "#minecraft:impermeable",
-    "#minecraft:dirt",
+    "#minecraft:substrate_overworld",
     "minecraft:water",
     "minecraft:air",
     "#minecraft:flowers",
@@ -182,7 +182,7 @@ const FILTERS: [&str; 14] = [
 const LEAVES: u32 = 0;
 const LOGS: u32 = 1;
 const GLASS: u32 = 2;
-const DIRT: u32 = 3;
+const GROUND: u32 = 3;
 const WATER: u32 = 4;
 const EMPTY: u32 = 5;
 /// Plants, named one by one: `#minecraft:replaceable` would take water and lava too.
@@ -223,7 +223,7 @@ pub fn plan_chunk(blast: &Blast, chunk: [i32; 2]) -> [ChunkEdit; 2] {
                         r.surface = Some(s);
                         surface.runs.push(r);
                     };
-                    on(Surface::MotionBlockingNoLeaves, -1, 1, SCORCHED, DIRT);
+                    on(Surface::MotionBlockingNoLeaves, -1, 1, SCORCHED, GROUND);
                     on(Surface::WorldSurface, -3, 3, AIR, WATER);
                     if chance(blast.seed, x, z, 1) < FIRE {
                         on(Surface::MotionBlockingNoLeaves, 0, 1, FLAME, EMPTY);
