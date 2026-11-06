@@ -109,3 +109,40 @@ helper = "lifecycle.rs"
 bindings = [
   { name = "phase", ty = "horizon_client::mod_api::WorldPhase", value = "phase" },
 ]
+
+# News of a blast, in the window (API 40).
+[[injection]]
+id = "net-from-server"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_net_from_server"
+helper = "net_from_server.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "channel", ty = "&str", value = "channel" },
+  { name = "data", ty = "&[u8]", value = "data" },
+]
+
+# The flash, over everything (API 410).
+[[injection]]
+id = "gui-render-post"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_gui_render_post"
+helper = "gui_render_post.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
+  { name = "gui_hidden", ty = "bool", value = "gui_hidden" },
+  { name = "focused", ty = "bool", value = "focused" },
+]
+
+# The ground shaking as the front passes (API 82).
+[[injection]]
+id = "camera-shake"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_camera_shake"
+helper = "camera_shake.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "partial", ty = "f32", value = "partial" },
+  { name = "shake", ty = "&mut horizon_client::mod_api::NativeShake", value = "&mut *shake" },
+]

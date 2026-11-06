@@ -6,8 +6,9 @@
 // each tick of its own dimension's level, within a time budget, as
 // `native_edit_blocks` only edits the level being ticked.
 
-use crate::game::{Game, NativeBlockEdit, NativeBlockRun, NativeFalling, NativeHeightmap, big_nukes as rules};
+use crate::game::{Game, NativeBlockEdit, NativeBlockRun, NativeFalling, NativeHeightmap, NativeShake, big_nukes as rules};
 use horizon_client::{
+    hud::HudBatch,
     mod_api::{NativeCommand, NativeServerPlayer, ServerTickPhase, WorldPhase},
     text::{self, ClickEvent, Style, Text},
 };
@@ -226,6 +227,82 @@ fn effects(game: &mut Game<'_>, st: &mut State, dimension: &str) {
     }
 }
 
+// ---- the blast's effects, in the window ---------------------------------------------
+//
+// The window hears of a blast once and works out the rest from its own clock:
+// the sounds are queued at once with their delays, the flash and the shake are
+// drawn from the time since the blast and the camera's distance to it.
+
+/// A blast the window heard of, with the game time it went off.
+struct Heard {
+    news: rules::News,
+    at: f64,
+}
+
+static HEARD: Mutex<Vec<Heard>> = Mutex::new(Vec::new());
+
+fn dist(a: [f64; 3], c: [i32; 3]) -> f64 {
+    let d = [a[0] - c[0] as f64 - 0.5, a[1] - c[1] as f64, a[2] - c[2] as f64 - 0.5];
+    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+}
+
+pub(in crate::game) fn heard(game: &mut Game<'_>, channel: &str, data: &[u8]) {
+    if channel != rules::NEWS_CHANNEL || !game.native_on(rules::ID) {
+        return;
+    }
+    let (Ok(news), Some(player), Some(clock)) =
+        (serde_json::from_slice::<rules::News>(data), game.native_player(), game.native_clock())
+    else {
+        return;
+    };
+    let me = [player.x, player.y, player.z];
+    let far = dist(me, news.center);
+    log::info!("[big_nukes] blast {} heard at {far:.0} blocks", news.id);
+    // From a little toward the blast, so it is heard from where it is.
+    let toward = news.center.map(|v| v as f64 + 0.5);
+    let step = if far > 6.0 { 6.0 / far } else { 1.0 };
+    let at = [0, 1, 2].map(|i| me[i] + (toward[i] - me[i]) * step);
+    for s in rules::sounds_for(far, news.radius, news.age) {
+        game.native_play_local_sound(s.event, at, s.volume, 1.0, s.delay);
+    }
+    let mut heard = lock(&HEARD);
+    heard.retain(|h| h.news.id != news.id);
+    heard.push(Heard { at: clock.game_time as f64 - news.age as f64, news });
+}
+
+/// Each heard blast with the ticks since it went off and the camera's distance to it.
+fn heard_now(game: &Game<'_>) -> Vec<(f64, f64, rules::News)> {
+    let (Some(clock), Some(camera)) = (game.native_clock(), game.native_camera()) else {
+        return vec![];
+    };
+    let now = clock.game_time as f64 + camera.partial_tick as f64;
+    let mut heard = lock(&HEARD);
+    heard.retain(|h| {
+        let d = dist(camera.position, h.news.center);
+        now - h.at < d / rules::FRONT_SPEED + 200.0
+    });
+    heard.iter().map(|h| (now - h.at, dist(camera.position, h.news.center), h.news.clone())).collect()
+}
+
+pub(in crate::game) fn flash(game: &Game<'_>, batch: &mut HudBatch) {
+    let alpha: u32 = heard_now(game).iter().map(|(t, d, n)| rules::flash_alpha(*t, *d, n.radius) as u32).sum::<u32>().min(255);
+    if alpha > 0 {
+        game.native_fill(batch, [0.0, 0.0, batch.width, batch.height], alpha << 24 | 0x00FF_FFFF);
+    }
+}
+
+pub(in crate::game) fn shake(game: &Game<'_>, _partial: f32, shake: &mut NativeShake) {
+    for (t, d, n) in heard_now(game) {
+        let [pitch, yaw, roll, x, y, z] = rules::shake(t, d, n.radius, n.seed);
+        shake.pitch += pitch;
+        shake.yaw += yaw;
+        shake.roll += roll;
+        shake.offset[0] += x;
+        shake.offset[1] += y;
+        shake.offset[2] += z;
+    }
+}
+
 // ---- ticks, chunks and the world's phases ----------------------------------------
 
 pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) {
@@ -332,4 +409,5 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
     }
     *state = None;
     *lock(&LOADED) = None;
+    lock(&HEARD).clear();
 }
