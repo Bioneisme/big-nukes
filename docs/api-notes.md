@@ -48,6 +48,21 @@ The native half knows the assets half is installed when the loot table `big_nuke
   cloud, at 16 steps, the frame is 1.8 ms (GPU 1.7 ms). Some benches after a teleport showed 33 ms frames with the CPU at
   1.9 ms and the GPU at 5.7 ms: waiting, not drawing, seen as chunks load; worth a look in a real window.
 
+## Crafting on the assembly table
+
+Read in the source of 66f3981, not yet seen in the game:
+- `native_prepare_item_craft` (API 290) is called only from `game/lan_crafting.rs`, for LAN guests: the host's own
+  grid (`menu.rs`) never calls it, so the host crafts the bombs anywhere.
+- The menu a block opens is chosen by its name, not its template: `Game::open_menu` sets up a 3×3 grid only for
+  `minecraft:crafting_table`, and `lan_table_valid` closes a guest's table at any other block. A block on the
+  `minecraft:crafting_table` template, `big_nukes:assembly_table`, may open no grid at all.
+- So the bombs and their parts have no crafting table recipe: the assembly table is a machine of the mod's own, with
+  a block entity, a 10-slot menu (`horizon/menu/assembly_table.json`) and an Assemble button. It keeps the
+  `minecraft:crafting_table` template: that class's use opens a menu (`PlayerEffect::OpenMenu`), and `open_menu`, not
+  matching the name, falls through to `open_mod_menu`. A block entity works on any template since API 129.
+- A mod screen's button: the window's `native_screen_click` (API 20) sets a menu button id for a press over no slot,
+  and the server hears it in `native_menu_button`, with the block entity out of the world during the call.
+
 ## Wave measurements
 
 `tools/wave_bench.py`, 2026-11-06, `performance` build, offscreen, seed 12345 at spawn, render and simulation

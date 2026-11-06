@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "BBB",
+    "IRI",
+    "III"
+  ],
+  "key": {
+    "B": "minecraft:stone_button",
+    "I": "minecraft:iron_ingot",
+    "R": "minecraft:redstone"
+  },
+  "result": {
+    "id": "big_nukes:keypad_detonator",
+    "count": 1
+  }
+}

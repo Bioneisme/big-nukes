@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    " S ",
+    "GIG",
+    " S "
+  ],
+  "key": {
+    "S": "minecraft:string",
+    "G": "minecraft:gunpowder",
+    "I": "minecraft:iron_ingot"
+  },
+  "result": {
+    "id": "big_nukes:fuse_detonator",
+    "count": 1
+  }
+}
