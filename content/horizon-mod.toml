@@ -1,0 +1,9 @@
+id = "big_nukes"
+name = "Big Nukes (assets)"
+version = "0.1.0"
+description = "Textures, models, text and recipes for the Big Nukes native mod. Install both."
+authors = ["bioneisme"]
+api = "0.2"
+side = "both"
+capabilities = ["registries"]
+namespaces = []

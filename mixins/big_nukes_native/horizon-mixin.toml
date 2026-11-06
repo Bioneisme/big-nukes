@@ -1,0 +1,35 @@
+[mod]
+id = "big_nukes_native"
+version = "0.1.0"
+priority = 100
+
+# The Horizon source this bundle is planned and built on: Nightly 2026-11-05
+# (`nightly-source/2026-11-05-66f3981`). It needs API 126 (`native_edit_blocks`).
+[compatibility]
+horizon_revision = "66f3981f522b24c250b21523a70080965b940424"
+
+# The rules: no game type, also the mod's Cargo library (its tests).
+[[module]]
+id = "rules"
+file = "crates/horizon-client/src/game.rs"
+name = "big_nukes"
+source = "runtime.rs"
+
+# Everything that names the game's types.
+[[module]]
+id = "glue"
+file = "crates/horizon-client/src/game.rs"
+name = "big_nukes_glue"
+source = "glue.rs"
+
+# A player joining: the warning when the assets half is missing (API 1).
+[[injection]]
+id = "logged-in"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_player_logged_in"
+helper = "logged_in.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "player", ty = "u128", value = "player" },
+  { name = "name", ty = "&str", value = "name" },
+]
