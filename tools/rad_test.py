@@ -94,8 +94,14 @@ ctl("wait", 300)
 zones = saved().get("zones", [])
 print(" zones:", json.dumps(zones)[:300])
 check("a blast of 250 leaves one zone", len(zones) == 1 and abs(zones[0].get("radius", 0) - 300) < 1, str(zones)[:200])
-chat(f"fill {bx - 3} {by - 1} {bz - 3} {bx + 3} {by - 1} {bz + 3} minecraft:glass")
+# Wait for the center's chunk before laying the glass under the player: a fill there fails until it loads.
+stand(bx, by + 2, bz)
+for _ in range(20):
+    ctl("wait", 20)
+    if "not loaded" not in chat(f"fill {bx - 3} {by - 1} {bz - 3} {bx + 3} {by - 1} {bz + 3} minecraft:glass"):
+        break
 stand(bx, by, bz)
+ctl("wait", 5)
 chat("gamemode survival")
 chat("effect clear @s")
 ctl("wait", 200)
@@ -142,6 +148,21 @@ ctl("wait", 60)
 cow1, zom1 = entity_health("@e[type=cow,tag=bn,limit=1]"), entity_health("@e[type=zombie,tag=bn,limit=1]")
 check("a cow in the zone is hurt", cow0 is not None and (cow1 is None or cow1 < cow0), f"{cow0} -> {cow1}")
 check("a zombie in the zone is hurt", zom0 is not None and (zom1 is None or zom1 < zom0), f"{zom0} -> {zom1}")
+
+# The Geiger counter's line and the zone's fog, for the eye: target/shots.
+shots = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "shots")
+os.makedirs(shots, exist_ok=True)
+chat("clear @s")
+chat("give @s big_nukes:geiger_counter")
+ctl("select", 1)
+chat(f"tp @s {bx + 0.5} {by} {bz + 0.5} 0 0")
+ctl("wait", 60)
+ctl("screenshot", os.path.join(shots, "geiger-center.png"))
+chat(f"tp @s {bx + 0.5} {by + 40} {bz + 900.5} 180 10")
+ctl("wait", 80)
+ctl("screenshot", os.path.join(shots, "geiger-outside.png"))
+chat(f"tp @s {bx + 0.5} {by} {bz + 0.5} 0 0")
+ctl("wait", 20)
 
 # The dose across a reload.
 chat("gamemode survival")
