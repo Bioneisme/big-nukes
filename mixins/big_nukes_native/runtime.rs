@@ -444,6 +444,163 @@ impl Saved {
     }
 }
 
+// ---- the blast's effects ------------------------------------------------------
+//
+// What a player sees, hears and feels, worked out from how far they are and how
+// long ago the blast was: the server sends `News` once, and the window does the rest.
+
+/// A blast as a window hears of it: `age` is how many ticks ago it went off.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct News {
+    pub id: u64,
+    pub center: [i32; 3],
+    pub radius: u32,
+    pub seed: u64,
+    pub age: u64,
+}
+
+/// The mod message that carries `News`.
+pub const NEWS_CHANNEL: &str = "big_nukes:blast";
+/// After this long a blast is past telling: its sound has come and gone.
+const NEWS_FOR: u64 = 2400;
+
+pub fn news_of(blast: &Blast, now_tick: u64, start: u64) -> News {
+    News { id: blast.id, center: blast.center, radius: blast.radius, seed: blast.seed, age: now_tick.saturating_sub(start) }
+}
+
+impl Waves {
+    /// The blasts of `dimension` still worth telling a player about.
+    pub fn news(&self, dimension: &str, now_tick: u64) -> Vec<News> {
+        self.waves
+            .iter()
+            .filter(|w| w.blast.dimension == dimension && now_tick.saturating_sub(w.start) < NEWS_FOR)
+            .map(|w| news_of(&w.blast, now_tick, w.start))
+            .collect()
+    }
+}
+
+/// The white of the flash, 0 to 255: full within two radii, gone at twelve,
+/// and fading in about half a second.
+pub fn flash_alpha(t_ticks: f64, dist: f64, radius: u32) -> u8 {
+    if !(0.0..60.0).contains(&t_ticks) {
+        return 0;
+    }
+    let r = radius as f64;
+    let peak = ((12.0 * r - dist) / (10.0 * r)).clamp(0.0, 1.0);
+    (255.0 * peak * (-t_ticks / 12.0).exp()).round() as u8
+}
+
+/// A sound to play, `delay` ticks from now.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sound {
+    pub event: &'static str,
+    pub delay: i32,
+    pub volume: f32,
+}
+
+/// What a player `dist` blocks from the center hears, `age` ticks after the
+/// blast: the boom, near or far, and the roar of the wave if it reaches them,
+/// all arriving with the front. What is already past is left out.
+pub fn sounds_for(dist: f64, radius: u32, age: u64) -> Vec<Sound> {
+    let r = radius as f64;
+    if dist > 3000.0 {
+        return vec![];
+    }
+    let delay = (dist / FRONT_SPEED).min(1200.0).round() as i64 - age as i64;
+    if delay < 0 {
+        return vec![];
+    }
+    let volume = (1.5 - dist / (10.0 * r)).clamp(0.2, 1.0) as f32;
+    let boom = if dist < 1.5 * r { "big_nukes:blast.near" } else { "big_nukes:blast.far" };
+    let mut out = vec![Sound { event: boom, delay: delay as i32, volume }];
+    if dist <= r * (1.0 + BORDER) {
+        out.push(Sound { event: "big_nukes:wave.roar", delay: delay as i32, volume });
+    }
+    out
+}
+
+/// The camera's shake: pitch, yaw and roll in degrees, then an offset in blocks.
+/// It starts when the front reaches the player and dies out in a few seconds.
+pub fn shake(t_ticks: f64, dist: f64, radius: u32, seed: u64) -> [f32; 6] {
+    let since = t_ticks - dist / FRONT_SPEED;
+    let strength = (1.3 - dist / (4.0 * radius as f64)).clamp(0.0, 1.0);
+    if !(0.0..=100.0).contains(&since) || strength == 0.0 {
+        return [0.0; 6];
+    }
+    let e = strength * (-since / 20.0).exp();
+    let wobble = |k: u64, rate: f64| {
+        let phase = (mix(seed ^ k) >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
+        (t_ticks * rate + phase).sin()
+    };
+    [
+        (6.0 * e * wobble(1, 1.9)) as f32,
+        (6.0 * e * wobble(2, 2.3)) as f32,
+        (3.0 * e * wobble(3, 1.3)) as f32,
+        (0.3 * e * wobble(4, 2.9)) as f32,
+        (0.3 * e * wobble(5, 3.1)) as f32,
+        (0.3 * e * wobble(6, 2.7)) as f32,
+    ]
+}
+
+/// Sixteen points on the front, two blocks over the center's height, while it runs.
+pub fn front_ring(blast: &Blast, t: u64) -> Vec<[f64; 3]> {
+    let r = t as f64 * FRONT_SPEED;
+    if r < 1.0 || r > blast.radius as f64 * (1.0 + BORDER) {
+        return vec![];
+    }
+    let turn = (mix(blast.seed ^ 7) >> 11) as f64 / (1u64 << 53) as f64;
+    let [cx, cy, cz] = blast.center.map(|v| v as f64);
+    (0..16)
+        .map(|k| {
+            let a = (k as f64 + turn) / 16.0 * std::f64::consts::TAU;
+            [cx + r * a.cos(), cy + 2.0, cz + r * a.sin()]
+        })
+        .collect()
+}
+
+/// The damage of the ground the front crossed, from `from` to `to` blocks out:
+/// `(from, to, amount)` bands, cut where the zones change. Death in the core,
+/// a little at the edge, nothing past the reach.
+pub fn damage_band(radius: u32, from: f64, to: f64) -> Vec<(f64, f64, f32)> {
+    let r = radius as f64;
+    let to = to.min(r * (1.0 + BORDER));
+    let cuts = [CORE * r, MIDDLE * r];
+    let mut edges = vec![from];
+    edges.extend(cuts.iter().copied().filter(|c| *c > from && *c < to));
+    edges.push(to);
+    edges
+        .windows(2)
+        .filter(|e| e[1] > e[0])
+        .map(|e| {
+            let d = (e[0] + e[1]) / 2.0 / r;
+            let amount = if d < CORE {
+                1000.0
+            } else if d < MIDDLE {
+                20.0 - (d - CORE) / (MIDDLE - CORE) * 14.0
+            } else {
+                4.0 - (d - MIDDLE) / (1.0 + BORDER - MIDDLE) * 3.0
+            };
+            (e[0], e[1], amount as f32)
+        })
+        .collect()
+}
+
+/// Blocks thrown out of the crater at the start: where, how fast and what.
+pub fn debris(blast: &Blast) -> Vec<([f64; 3], [f64; 3], &'static str)> {
+    const BLOCKS: [&str; 3] = ["minecraft:stone", "minecraft:cobblestone", "minecraft:dirt"];
+    let n = (blast.radius / 2).min(48) as u64;
+    let [cx, cy, cz] = blast.center.map(|v| v as f64 + 0.5);
+    (0..n)
+        .map(|k| {
+            let roll = |salt: u64| (mix(blast.seed ^ (k << 8) ^ salt) >> 11) as f64 / (1u64 << 53) as f64;
+            let a = roll(1) * std::f64::consts::TAU;
+            let out = 0.8 + 0.8 * roll(2);
+            let up = 0.9 + 0.7 * roll(3);
+            ([cx, cy - 0.5 + 3.0, cz], [out * a.cos(), up, out * a.sin()], BLOCKS[(k % 3) as usize])
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -869,5 +1026,113 @@ mod tests {
         w.advance(OW, 1000, &|_| true);
         w.work(OW, Duration::from_secs(1), &|| Duration::ZERO, &mut |_, _| true);
         assert!(w.finished());
+    }
+
+    // ---- the blast's effects (plan 2, Task 1) -------------------------------------
+
+    #[test]
+    fn the_flash_is_white_near_fades_with_distance_and_time() {
+        assert_eq!(flash_alpha(0.0, 10.0, 100), 255);
+        assert_eq!(flash_alpha(0.0, 1200.0, 100), 0);
+        assert_eq!(flash_alpha(60.0, 10.0, 100), 0);
+        assert_eq!(flash_alpha(-1.0, 10.0, 100), 0);
+        let by_time: Vec<u8> = (0..60).map(|t| flash_alpha(t as f64, 10.0, 100)).collect();
+        assert!(by_time.windows(2).all(|p| p[0] >= p[1]));
+        let by_dist: Vec<u8> = (0..130).map(|d| flash_alpha(2.0, d as f64 * 10.0, 100)).collect();
+        assert!(by_dist.windows(2).all(|p| p[0] >= p[1]));
+        assert!(flash_alpha(0.0, 600.0, 100) > 0 && flash_alpha(0.0, 600.0, 100) < 255);
+    }
+
+    #[test]
+    fn sounds_come_with_the_front_and_skip_what_is_past() {
+        let far = sounds_for(250.0, 100, 0);
+        assert_eq!(far.iter().map(|s| (s.event, s.delay)).collect::<Vec<_>>(), vec![("big_nukes:blast.far", 100)]);
+        let near = sounds_for(50.0, 100, 0);
+        let events: Vec<_> = near.iter().map(|s| (s.event, s.delay)).collect();
+        assert_eq!(events, vec![("big_nukes:blast.near", 20), ("big_nukes:wave.roar", 20)]);
+        assert!(sounds_for(50.0, 100, 30).is_empty());
+        assert_eq!(sounds_for(50.0, 100, 5)[0].delay, 15);
+        assert!(sounds_for(4000.0, 100, 0).is_empty());
+        assert_eq!(sounds_for(2900.0, 1000, 0)[0].delay, 1160);
+        for d in [0.0, 50.0, 500.0, 2999.0] {
+            for s in sounds_for(d, 100, 0) {
+                assert!((0.2..=1.0).contains(&s.volume), "{d} {}", s.volume);
+                assert!((0..=1200).contains(&s.delay));
+            }
+        }
+    }
+
+    #[test]
+    fn the_shake_starts_with_the_front_and_dies_out() {
+        let arrive = 100.0 / FRONT_SPEED;
+        assert_eq!(shake(arrive - 1.0, 100.0, 200, 3), [0.0; 6]);
+        assert_eq!(shake(arrive + 101.0, 100.0, 200, 3), [0.0; 6]);
+        assert!(shake(arrive + 1.0, 100.0, 200, 3).iter().any(|v| *v != 0.0));
+        assert_eq!(shake(10_000.0, 1100.0, 200, 3), [0.0; 6]);
+        assert_eq!(shake(1100.0 / FRONT_SPEED + 1.0, 1100.0, 200, 3), [0.0; 6], "beyond 5.2R nothing shakes");
+        for t in 0..400 {
+            let v = shake(t as f64, 10.0, 200, 9);
+            assert!(v[..3].iter().all(|a| a.abs() <= 6.0) && v[3..].iter().all(|o| o.abs() <= 0.3), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn the_ring_follows_the_front() {
+        let b = blast([10, 64, -20], 100, 5, World::OVERWORLD);
+        let ring = front_ring(&b, 20);
+        assert_eq!(ring.len(), 16);
+        for p in &ring {
+            let d = (p[0] - 10.0).hypot(p[2] + 20.0);
+            assert!((d - 20.0 * FRONT_SPEED).abs() < 0.01, "{d}");
+            assert_eq!(p[1], 66.0);
+        }
+        assert!(front_ring(&b, 44).len() == 16 && front_ring(&b, 45).is_empty(), "the reach is 112 blocks");
+        assert!(front_ring(&b, 0).is_empty());
+    }
+
+    #[test]
+    fn damage_bands_split_at_the_zones_and_stop_at_the_reach() {
+        let bands = damage_band(100, 30.0, 40.0);
+        assert_eq!(bands.len(), 2);
+        assert_eq!((bands[0].0, bands[0].1, bands[0].2), (30.0, 35.0, 1000.0));
+        assert_eq!((bands[1].0, bands[1].1), (35.0, 40.0));
+        assert!(bands[1].2 <= 20.0 && bands[1].2 >= 6.0);
+        assert!(damage_band(100, 113.0, 120.0).is_empty());
+        let edge = damage_band(100, 105.0, 120.0);
+        assert_eq!(edge.len(), 1);
+        assert!((edge[0].1 - 112.0).abs() < 1e-9);
+        assert!(edge[0].2 <= 4.0 && edge[0].2 >= 1.0);
+        assert!(damage_band(100, 40.0, 40.0).is_empty());
+    }
+
+    #[test]
+    fn news_round_trips_and_lists_only_running_blasts_of_the_dimension() {
+        let mut w = Waves::default();
+        w.start(blast([0, 64, 0], 100, 1, World::OVERWORLD), 10);
+        let mut other = blast([0, 64, 0], 100, 2, World::NETHER);
+        other.id = 2;
+        other.dimension = "minecraft:the_nether".into();
+        w.start(other, 10);
+        let news = w.news(OW, 40);
+        assert_eq!(news.len(), 1);
+        assert_eq!((news[0].id, news[0].age, news[0].radius), (1, 30, 100));
+        let back: News = serde_json::from_slice(&serde_json::to_vec(&news[0]).unwrap()).unwrap();
+        assert_eq!(back, news[0]);
+        assert!(w.news(OW, 10 + 2400).is_empty(), "long past");
+    }
+
+    #[test]
+    fn debris_flies_out_and_up_and_is_capped() {
+        let small = debris(&blast([0, 64, 0], 30, 1, World::OVERWORLD));
+        assert_eq!(small.len(), 15);
+        let big = debris(&blast([0, 64, 0], 1000, 1, World::OVERWORLD));
+        assert_eq!(big.len(), 48);
+        for (pos, v, block) in &big {
+            assert_eq!(pos[1], 67.0);
+            assert!(v[1] >= 0.9 && v[1] <= 1.6);
+            let out = v[0].hypot(v[2]);
+            assert!((0.8..=1.6).contains(&out), "{out}");
+            assert!(block.starts_with("minecraft:"));
+        }
     }
 }
