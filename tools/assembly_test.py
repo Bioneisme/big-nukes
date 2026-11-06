@@ -125,13 +125,47 @@ chat(f"setblock {tx} {y - 1} {tz} minecraft:hopper")
 ctl("wait", 20)
 check("a hopper below pulls the result", count(tx, y - 1, tz, "big_nukes:atomic_bomb") == 1)
 
-# Crafting-table recipes: only the table, the centrifuge, the detonators and the remote.
+# Crafting-table recipes, crafted by hand on a vanilla table: only the table, the centrifuge,
+# the detonators and the remote. (/recipe give doesn't know a mod's recipes.)
+wx, wz = cx - 3, cz
+chat(f"setblock {wx} {y} {wz} minecraft:crafting_table")
+chat(f"tp @s {cx + 0.5} {y} {cz + 0.5} 90 30")
+chat("gamemode survival")
+ctl("wait", 6)
+
+
+def craft(pattern, key):
+    rows = "".join(pattern)
+    chat("clear @s")
+    for symbol, item in key.items():
+        ctl("give", item, rows.count(symbol))
+    ctl("wait", 3)
+    ctl("interact", wx, y, wz)
+    ctl("wait", 4)
+    for symbol, item in key.items():
+        at = next(x["slot"] for x in ctl("screen")["slots"] if x.get("item") == item and x["slot"] < 36)
+        ctl("click-slot", at)
+        for cell, c in enumerate(rows):
+            if c == symbol:
+                ctl("click-slot", 100 + cell, "right")
+    ctl("wait", 3)
+    ctl("click-slot", 200)
+    ctl("wait", 3)
+    carried = (ctl("inventory").get("carried") or {}).get("item")
+    ctl("close")
+    ctl("wait", 3)
+    return carried
+
+
+RECIPES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "content", "data", "big_nukes", "recipe")
 for name in ("assembly_table", "centrifuge", "fuse_detonator", "keypad_detonator", "receiver_detonator", "remote"):
-    said = chat(f"recipe give @s big_nukes:{name}")
-    check(f"a recipe for {name}", "nlocked" in said or "Открыт" in said or "рецепт" in said.lower(), said[:200])
-for name in ("atomic_bomb", "tactical_warhead", "demolition_charge", "nuclear_charge", "bomb_casing"):
-    said = chat(f"recipe give @s big_nukes:{name}")
-    check(f"no crafting-table recipe for {name}", "nlocked" not in said, said[:200])
+    with open(os.path.join(RECIPES, f"{name}.json"), encoding="utf-8") as f:
+        recipe = json.load(f)
+    got = craft(recipe["pattern"], recipe["key"])
+    check(f"the crafting table makes {name}", got == f"big_nukes:{name}", str(got))
+got = craft([" T ", "TUT", " T "], {"T": "minecraft:tnt", "U": "big_nukes:enriched_uranium"})
+check("the crafting table makes no nuclear charge", got != "big_nukes:nuclear_charge", str(got))
+chat("gamemode creative")
 ctl("quit")
 time.sleep(6)
 print(f"== failed: {failed}" if failed else "== all passed", flush=True)
