@@ -231,18 +231,7 @@ fn effects(game: &mut Game<'_>, st: &mut State, dimension: &str) {
 // the sounds are queued at once with their delays, the flash and the shake are
 // drawn from the time since the blast and the camera's distance to it.
 
-/// A blast the window heard of, with the game time it went off.
-struct Heard {
-    news: rules::News,
-    at: f64,
-}
-
-static HEARD: Mutex<Vec<Heard>> = Mutex::new(Vec::new());
-
-fn dist(a: [f64; 3], c: [i32; 3]) -> f64 {
-    let d = [a[0] - c[0] as f64 - 0.5, a[1] - c[1] as f64, a[2] - c[2] as f64 - 0.5];
-    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
-}
+static HEARD: Mutex<Vec<rules::Heard>> = Mutex::new(Vec::new());
 
 pub(in crate::game) fn heard(game: &mut Game<'_>, channel: &str, data: &[u8]) {
     if channel != rules::NEWS_CHANNEL || !game.native_on(rules::ID) {
@@ -254,10 +243,10 @@ pub(in crate::game) fn heard(game: &mut Game<'_>, channel: &str, data: &[u8]) {
         return;
     };
     let me = [player.x, player.y, player.z];
-    let far = dist(me, news.center);
+    let toward = news.center.map(|v| v as f64 + 0.5);
+    let far = (0..3).map(|i| (toward[i] - me[i]).powi(2)).sum::<f64>().sqrt();
     log::info!("[big_nukes] blast {} heard at {far:.0} blocks", news.id);
     // From a little toward the blast, so it is heard from where it is.
-    let toward = news.center.map(|v| v as f64 + 0.5);
     let step = if far > 6.0 { 6.0 / far } else { 1.0 };
     let at = [0, 1, 2].map(|i| me[i] + (toward[i] - me[i]) * step);
     for s in rules::sounds_for(far, news.radius, news.age) {
@@ -265,41 +254,33 @@ pub(in crate::game) fn heard(game: &mut Game<'_>, channel: &str, data: &[u8]) {
     }
     let mut heard = lock(&HEARD);
     heard.retain(|h| h.news.id != news.id);
-    heard.push(Heard { at: clock.game_time as f64 - news.age as f64, news });
+    heard.push(rules::Heard { at: clock.game_time as f64 - news.age as f64, dimension: player.dimension.to_owned(), news });
 }
 
-/// Each heard blast with the ticks since it went off and the camera's distance to it.
-/// The camera's place and the part of the tick gone; while the GUI draws there is
-/// no camera to read, so then the player's eyes at the tick.
-fn eyes(game: &Game<'_>) -> Option<([f64; 3], f64)> {
-    game.native_camera()
-        .map(|c| (c.position, c.partial_tick as f64))
-        .or_else(|| game.native_player().map(|p| ([p.x, p.y + 1.62, p.z], 0.0)))
-}
-
-fn heard_now(game: &Game<'_>) -> Vec<(f64, f64, rules::News)> {
-    let (Some(clock), Some((position, partial))) = (game.native_clock(), eyes(game)) else {
+/// Each heard blast still felt, with the ticks since it went off and the
+/// player's distance to it. `partial` is the part of the tick gone, where the
+/// hook knows it. The player's eyes stand for the camera, which mods can't read
+/// while the GUI draws.
+fn felt(game: &Game<'_>, partial: f64) -> Vec<(f64, f64, rules::News)> {
+    let (Some(clock), Some(player)) = (game.native_clock(), game.native_player()) else {
         return vec![];
     };
+    let eyes = [player.x, player.y + 1.62, player.z];
     let now = clock.game_time as f64 + partial;
     let mut heard = lock(&HEARD);
-    heard.retain(|h| {
-        let d = dist(position, h.news.center);
-        now - h.at < d / rules::FRONT_SPEED + 200.0
-    });
-    heard.iter().map(|h| (now - h.at, dist(position, h.news.center), h.news.clone())).collect()
+    heard.retain(|h| h.felt(player.dimension, eyes, now).is_some() || h.dimension != player.dimension);
+    heard.iter().filter_map(|h| h.felt(player.dimension, eyes, now).map(|(t, d)| (t, d, h.news.clone()))).collect()
 }
 
 pub(in crate::game) fn flash(game: &Game<'_>, batch: &mut HudBatch) {
-    let now = heard_now(game);
-    let alpha: u32 = now.iter().map(|(t, d, n)| rules::flash_alpha(*t, *d, n.radius) as u32).sum::<u32>().min(255);
+    let alpha: u32 = felt(game, 0.0).iter().map(|(t, d, n)| rules::flash_alpha(*t, *d, n.radius) as u32).sum::<u32>().min(255);
     if alpha > 0 {
         game.native_fill(batch, [0.0, 0.0, batch.width, batch.height], alpha << 24 | 0x00FF_FFFF);
     }
 }
 
-pub(in crate::game) fn shake(game: &Game<'_>, _partial: f32, shake: &mut NativeShake) {
-    for (t, d, n) in heard_now(game) {
+pub(in crate::game) fn shake(game: &Game<'_>, partial: f32, shake: &mut NativeShake) {
+    for (t, d, n) in felt(game, partial as f64) {
         let [pitch, yaw, roll, x, y, z] = rules::shake(t, d, n.radius, n.seed);
         shake.pitch += pitch;
         shake.yaw += yaw;

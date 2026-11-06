@@ -266,6 +266,9 @@ struct Wave {
     reached: usize,
     ready: VecDeque<[i32; 2]>,
     deferred: BTreeSet<[i32; 2]>,
+    /// The front is past the reach: its smoke and damage are over too.
+    #[serde(default)]
+    front_out: bool,
     /// The chunks the border can reach, nearest first, with how near they are:
     /// worked out again from the blast after loading.
     #[serde(skip)]
@@ -281,7 +284,7 @@ impl Wave {
     }
 
     fn done(&mut self) -> bool {
-        self.ready.is_empty() && self.deferred.is_empty() && self.reached == self.order().len()
+        self.front_out && self.ready.is_empty() && self.deferred.is_empty() && self.reached == self.order().len()
     }
 }
 
@@ -313,7 +316,7 @@ pub struct Waves {
 
 impl Waves {
     pub fn start(&mut self, blast: Blast, now_tick: u64) {
-        self.waves.push(Wave { blast, start: now_tick, reached: 0, ready: VecDeque::new(), deferred: BTreeSet::new(), order: vec![] });
+        self.waves.push(Wave { blast, start: now_tick, reached: 0, ready: VecDeque::new(), deferred: BTreeSet::new(), front_out: false, order: vec![] });
     }
 
     /// Moves the front of each wave in `dimension` on to `now_tick`.
@@ -333,6 +336,10 @@ impl Waves {
                     w.deferred.insert(chunk);
                 }
                 w.reached += 1;
+                moved = true;
+            }
+            if !w.front_out && front > w.blast.radius as f64 * (1.0 + BORDER) {
+                w.front_out = true;
                 moved = true;
             }
         }
@@ -390,7 +397,7 @@ impl Waves {
         self.waves
             .iter_mut()
             .filter(|w| w.blast.dimension == dimension)
-            .all(|w| w.ready.is_empty() && w.reached == w.order().len())
+            .all(|w| w.front_out && w.ready.is_empty() && w.reached == w.order().len())
     }
 }
 
@@ -490,6 +497,29 @@ impl Waves {
             .filter(|w| w.blast.dimension == dimension && now_tick.saturating_sub(w.start) < NEWS_FOR)
             .map(|w| news_of(&w.blast, now_tick, w.start))
             .collect()
+    }
+}
+
+/// A blast as the window keeps it: its news, the dimension the player heard it
+/// in, and the game time it went off.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Heard {
+    pub news: News,
+    pub dimension: String,
+    pub at: f64,
+}
+
+impl Heard {
+    /// The ticks since the blast and the distance to it, for a player in
+    /// `dimension` with eyes at `eyes`, at game time `now` (with the part of the
+    /// tick gone). None once it is past, in another dimension, or from another
+    /// world whose clock is behind.
+    pub fn felt(&self, dimension: &str, eyes: [f64; 3], now: f64) -> Option<(f64, f64)> {
+        let c = self.news.center;
+        let d = [eyes[0] - c[0] as f64 - 0.5, eyes[1] - c[1] as f64, eyes[2] - c[2] as f64 - 0.5];
+        let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let t = now - self.at;
+        (dimension == self.dimension && t > -20.0 && t < dist / FRONT_SPEED + 200.0).then_some((t, dist))
     }
 }
 
@@ -1187,5 +1217,45 @@ mod tests {
         assert_eq!(w.fronts(OW, 10)[0].1, 0.0, "the first tick starts at the center");
         assert!(w.fronts("minecraft:the_nether", 14).is_empty());
         assert!(w.fronts(OW, 10 + 46).is_empty(), "past the reach of 112 blocks");
+    }
+
+    // ---- plan 2 review fixes ---------------------------------------------------------
+
+    fn heard_news(radius: u32) -> News {
+        News { id: 1, center: [0, 64, 0], radius, seed: 3, age: 0 }
+    }
+
+    #[test]
+    fn a_heard_blast_is_felt_only_in_its_own_dimension() {
+        let h = Heard { news: heard_news(500), dimension: OW.into(), at: 100.0 };
+        assert!(h.felt(OW, [125.0, 64.0, 0.0], 150.0).is_some());
+        assert!(h.felt("minecraft:the_nether", [125.0, 64.0, 0.0], 150.0).is_none());
+    }
+
+    #[test]
+    fn a_heard_blast_uses_the_fraction_of_the_tick() {
+        let h = Heard { news: heard_news(100), dimension: OW.into(), at: 100.0 };
+        let (t, _) = h.felt(OW, [0.0, 64.0, 0.0], 120.4).unwrap();
+        assert!((t - 20.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_heard_blast_is_let_go_when_past_or_from_another_world() {
+        let h = Heard { news: heard_news(100), dimension: OW.into(), at: 1000.0 };
+        assert!(h.felt(OW, [50.0, 64.0, 0.0], 1000.0 + 50.0 / FRONT_SPEED + 199.0).is_some());
+        assert!(h.felt(OW, [50.0, 64.0, 0.0], 1000.0 + 50.0 / FRONT_SPEED + 201.0).is_none());
+        assert!(h.felt(OW, [50.0, 64.0, 0.0], 500.0).is_none(), "a clock far behind: another world");
+    }
+
+    #[test]
+    fn a_small_wave_lives_until_its_front_is_past_the_reach() {
+        let mut w = waves_with(&[blast([0, 64, 0], 8, 1, World::OVERWORLD)]);
+        w.advance(OW, 2, &|_| true);
+        w.work(OW, Duration::from_secs(1), &|| Duration::ZERO, &mut |_, _| true);
+        assert!(!w.finished(), "the front is at 5 blocks of 8.96");
+        assert!(!w.idle(OW));
+        assert_eq!(w.fronts(OW, 3).len(), 1);
+        w.advance(OW, 5, &|_| true);
+        assert!(w.finished(), "the front is out at 12.5");
     }
 }

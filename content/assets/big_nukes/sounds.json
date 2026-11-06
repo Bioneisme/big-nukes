@@ -14,7 +14,7 @@
     "sounds": [
       {
         "name": "big_nukes:blast_far",
-        "attenuation_distance": 64,
+        "attenuation_distance": 512,
         "stream": false
       }
     ]
