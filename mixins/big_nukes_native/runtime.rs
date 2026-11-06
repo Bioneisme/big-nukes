@@ -3,6 +3,10 @@
 // (`game::big_nukes_glue`, glue.rs) connects it to the game.
 
 use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    time::Duration,
+};
 
 pub const ID: &str = "big_nukes_native";
 /// A loot table only the assets half brings: the sign that it's installed.
@@ -240,6 +244,135 @@ pub fn plan_chunk(blast: &Blast, chunk: [i32; 2]) -> [ChunkEdit; 2] {
     [plants, surface]
 }
 
+// ---- the wave ------------------------------------------------------------------
+//
+// The front runs out from the center at a steady speed. A chunk joins its
+// wave when the front reaches the chunk's nearest block: loaded, it waits in
+// `ready` for its turn; not loaded, in `deferred` until it is. The work is
+// done a little each tick, within a time budget, nearest first.
+
+/// Blocks the front runs in a tick: 50 blocks in a second, 1000 in twenty.
+pub const FRONT_SPEED: f64 = 2.5;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Wave {
+    blast: Blast,
+    start: u64,
+    /// How many of the wave's chunks, in `order`, the front has reached.
+    reached: usize,
+    ready: VecDeque<[i32; 2]>,
+    deferred: BTreeSet<[i32; 2]>,
+    /// The chunks the border can reach, nearest first, with how near they are:
+    /// worked out again from the blast after loading.
+    #[serde(skip)]
+    order: Vec<(f64, [i32; 2])>,
+}
+
+impl Wave {
+    fn order(&mut self) -> &[(f64, [i32; 2])] {
+        if self.order.is_empty() {
+            self.order = order(&self.blast);
+        }
+        &self.order
+    }
+
+    fn done(&mut self) -> bool {
+        self.ready.is_empty() && self.deferred.is_empty() && self.reached == self.order().len()
+    }
+}
+
+/// How far a chunk's nearest block is from the center.
+fn nearest(center: [i32; 3], chunk: [i32; 2]) -> f64 {
+    let x = center[0].clamp(chunk[0] * 16, chunk[0] * 16 + 15) - center[0];
+    let z = center[2].clamp(chunk[1] * 16, chunk[1] * 16 + 15) - center[2];
+    (x as f64).hypot(z as f64)
+}
+
+fn order(blast: &Blast) -> Vec<(f64, [i32; 2])> {
+    let reach = blast.radius as f64 * (1.0 + BORDER);
+    let c = chunk_of(blast.center[0], blast.center[2]);
+    let r = (reach / 16.0).ceil() as i32 + 1;
+    let mut out: Vec<(f64, [i32; 2])> = (c[0] - r..=c[0] + r)
+        .flat_map(|x| (c[1] - r..=c[1] + r).map(move |z| [x, z]))
+        .map(|chunk| (nearest(blast.center, chunk), chunk))
+        .filter(|(d, _)| *d <= reach)
+        .collect();
+    out.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    out
+}
+
+/// Every blast whose wave isn't over, in every dimension: what a world keeps.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Waves {
+    waves: Vec<Wave>,
+}
+
+impl Waves {
+    pub fn start(&mut self, blast: Blast, now_tick: u64) {
+        self.waves.push(Wave { blast, start: now_tick, reached: 0, ready: VecDeque::new(), deferred: BTreeSet::new(), order: vec![] });
+    }
+
+    /// Moves the front of each wave in `dimension` on to `now_tick`.
+    pub fn advance(&mut self, dimension: &str, now_tick: u64, loaded: &dyn Fn([i32; 2]) -> bool) {
+        for w in self.waves.iter_mut().filter(|w| w.blast.dimension == dimension) {
+            let front = now_tick.saturating_sub(w.start) as f64 * FRONT_SPEED;
+            w.order();
+            while let Some(&(d, chunk)) = w.order.get(w.reached) {
+                if d > front {
+                    break;
+                }
+                if loaded(chunk) {
+                    w.ready.push_back(chunk);
+                } else {
+                    w.deferred.insert(chunk);
+                }
+                w.reached += 1;
+            }
+        }
+        self.waves.retain_mut(|w| !w.done());
+    }
+
+    /// A chunk came in: its waiting work is next.
+    pub fn chunk_loaded(&mut self, dimension: &str, chunk: [i32; 2]) {
+        for w in self.waves.iter_mut().filter(|w| w.blast.dimension == dimension) {
+            if w.deferred.remove(&chunk) {
+                w.ready.push_front(chunk);
+            }
+        }
+    }
+
+    /// The next chunk to change, taken off its wave's list.
+    pub fn next_job(&mut self, dimension: &str) -> Option<(Blast, [i32; 2])> {
+        let w = self.waves.iter_mut().find(|w| w.blast.dimension == dimension && !w.ready.is_empty())?;
+        Some((w.blast.clone(), w.ready.pop_front()?))
+    }
+
+    /// Changes chunks until the budget is spent. `apply` answers false for a
+    /// chunk that is no longer loaded, which then waits for its load.
+    pub fn work(
+        &mut self,
+        dimension: &str,
+        budget: Duration,
+        elapsed: &dyn Fn() -> Duration,
+        apply: &mut dyn FnMut(&Blast, [i32; 2]) -> bool,
+    ) -> usize {
+        let mut done = 0;
+        while elapsed() < budget {
+            let Some((blast, chunk)) = self.next_job(dimension) else { break };
+            if apply(&blast, chunk) {
+                done += 1;
+            } else if let Some(w) = self.waves.iter_mut().find(|w| w.blast.id == blast.id) {
+                w.deferred.insert(chunk);
+            }
+        }
+        done
+    }
+
+    pub fn finished(&self) -> bool {
+        self.waves.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -449,5 +582,148 @@ mod tests {
                 assert_eq!((r.y, r.height, r.surface), (-3, 3, Some(Surface::WorldSurface)));
             }
         }
+    }
+
+    // ---- the wave (Task 3) -------------------------------------------------
+
+    use std::time::Duration;
+
+    fn waves_with(blasts: &[Blast]) -> Waves {
+        let mut w = Waves::default();
+        for b in blasts {
+            w.start(b.clone(), 0);
+        }
+        w
+    }
+
+    fn drain(w: &mut Waves, dim: &str) -> Vec<(u64, [i32; 2])> {
+        std::iter::from_fn(|| w.next_job(dim)).map(|(b, c)| (b.id, c)).collect()
+    }
+
+    const OW: &str = "minecraft:overworld";
+
+    #[test]
+    fn the_front_reaches_250_blocks_in_100_ticks() {
+        let mut w = waves_with(&[blast([7, 64, 0], 300, 1, World::OVERWORLD)]);
+        let target = [16, 0]; // its nearest block, x = 256, is 249 blocks out
+        w.advance(OW, 99, &|_| true);
+        assert!(!drain(&mut w, OW).iter().any(|(_, c)| *c == target));
+        w.advance(OW, 100, &|_| true);
+        assert!(drain(&mut w, OW).iter().any(|(_, c)| *c == target));
+    }
+
+    #[test]
+    fn chunks_come_out_nearest_first() {
+        let mut w = waves_with(&[blast([0, 64, 0], 100, 1, World::OVERWORLD)]);
+        w.advance(OW, 1000, &|_| true);
+        let near = |c: [i32; 2]| {
+            let x = 0f64.clamp(c[0] as f64 * 16.0, c[0] as f64 * 16.0 + 15.0);
+            let z = 0f64.clamp(c[1] as f64 * 16.0, c[1] as f64 * 16.0 + 15.0);
+            x.hypot(z)
+        };
+        let out: Vec<f64> = drain(&mut w, OW).into_iter().map(|(_, c)| near(c)).collect();
+        assert!(out.len() > 100);
+        assert!(out.windows(2).all(|p| p[0] <= p[1]), "{out:?}");
+    }
+
+    #[test]
+    fn an_unloaded_chunk_waits_and_comes_back_once_when_loaded() {
+        let mut w = waves_with(&[blast([0, 64, 0], 60, 1, World::OVERWORLD)]);
+        let far = [3, 0];
+        w.advance(OW, 1000, &|c| c != far);
+        assert!(!drain(&mut w, OW).iter().any(|(_, c)| *c == far));
+        assert!(!w.finished());
+        w.chunk_loaded(OW, far);
+        w.chunk_loaded(OW, far);
+        assert_eq!(drain(&mut w, OW), vec![(1, far)]);
+        w.advance(OW, 1001, &|_| true);
+        assert!(w.finished());
+    }
+
+    #[test]
+    fn two_overlapping_blasts_each_process_a_shared_chunk_once() {
+        let a = blast([0, 64, 0], 60, 1, World::OVERWORLD);
+        let mut b = blast([40, 64, 0], 60, 2, World::OVERWORLD);
+        b.id = 2;
+        let mut w = waves_with(&[a, b]);
+        w.advance(OW, 1000, &|_| true);
+        let jobs = drain(&mut w, OW);
+        let shared = [1, 0];
+        assert_eq!(jobs.iter().filter(|j| **j == (1, shared)).count(), 1);
+        assert_eq!(jobs.iter().filter(|j| **j == (2, shared)).count(), 1);
+        let unique: BTreeSet<_> = jobs.iter().collect();
+        assert_eq!(unique.len(), jobs.len());
+    }
+
+    #[test]
+    fn work_stops_when_the_budget_is_spent() {
+        let mut w = waves_with(&[blast([0, 64, 0], 200, 1, World::OVERWORLD)]);
+        w.advance(OW, 1000, &|_| true);
+        let done = std::cell::Cell::new(0u32);
+        let clock = || Duration::from_millis(3 * done.get() as u64);
+        let n = w.work(OW, Duration::from_millis(10), &clock, &mut |_, _| {
+            done.set(done.get() + 1);
+            true
+        });
+        assert_eq!(n, 4);
+    }
+
+    #[test]
+    fn a_chunk_that_unloads_before_its_turn_waits_for_its_load() {
+        let mut w = waves_with(&[blast([0, 64, 0], 40, 1, World::OVERWORLD)]);
+        w.advance(OW, 1000, &|_| true);
+        let first = std::cell::Cell::new(None);
+        w.work(OW, Duration::from_secs(1), &|| Duration::ZERO, &mut |_, c| {
+            if first.get().is_none() {
+                first.set(Some(c));
+                return false;
+            }
+            true
+        });
+        let c = first.get().unwrap();
+        assert!(!w.finished());
+        w.chunk_loaded(OW, c);
+        assert_eq!(drain(&mut w, OW), vec![(1, c)]);
+    }
+
+    #[test]
+    fn a_wave_is_finished_only_when_nothing_is_left() {
+        let mut w = waves_with(&[blast([0, 64, 0], 40, 1, World::OVERWORLD)]);
+        assert!(!w.finished());
+        w.advance(OW, 5, &|_| true);
+        assert!(!w.finished(), "the front isn't out yet");
+        w.advance(OW, 1000, &|_| true);
+        assert!(!w.finished(), "jobs are waiting");
+        drain(&mut w, OW);
+        w.advance(OW, 1001, &|_| true);
+        assert!(w.finished());
+    }
+
+    #[test]
+    fn other_dimensions_are_left_alone() {
+        let mut w = waves_with(&[blast([0, 64, 0], 40, 1, World::OVERWORLD)]);
+        w.advance("minecraft:the_nether", 1000, &|_| true);
+        assert!(drain(&mut w, "minecraft:the_nether").is_empty());
+        w.advance(OW, 1000, &|_| true);
+        assert!(drain(&mut w, "minecraft:the_nether").is_empty());
+        assert!(!drain(&mut w, OW).is_empty());
+    }
+
+    #[test]
+    fn waves_survive_a_round_trip_through_json() {
+        let mut w = waves_with(&[blast([0, 64, 0], 200, 1, World::OVERWORLD)]);
+        w.advance(OW, 40, &|c| c != [2, 2]);
+        let done: Vec<_> = (0..5).filter_map(|_| w.next_job(OW)).map(|(_, c)| c).collect();
+        let json = serde_json::to_string(&w).unwrap();
+        let mut back: Waves = serde_json::from_str(&json).unwrap();
+        let rest = drain(&mut w, OW);
+        let rest_back = drain(&mut back, OW);
+        assert_eq!(rest, rest_back);
+        assert!(!rest_back.iter().any(|(_, c)| done.contains(c)));
+        back.advance(OW, 1000, &|_| true);
+        w.advance(OW, 1000, &|_| true);
+        assert_eq!(drain(&mut w, OW), drain(&mut back, OW));
+        back.chunk_loaded(OW, [2, 2]);
+        assert_eq!(drain(&mut back, OW), vec![(1, [2, 2])]);
     }
 }
