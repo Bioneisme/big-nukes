@@ -111,7 +111,7 @@ for _ in range(60):
         break
     ctl("wait", 10)
 cx, cy, cz = [int(v // 1) for v in pos]
-y = cy + 40
+y = 230  # above any terrain, so the bombs stand in the open and the keypad's screen isn't hidden
 chat(f"fill {cx - 70} {y - 1} {cz - 4} {cx + 70} {y - 1} {cz + 4} minecraft:stone")
 
 # The demolition charge: a fuse goes in once, a keypad never.
@@ -161,6 +161,21 @@ ctl("wait", 80)
 check("4 s after the right code the bomb stands", not gone(kx, y, kz))
 ctl("wait", 40)
 check("the right code sets it off after 5 s", gone(kx, y, kz) and blasts() == before + 1, f"{blasts() - before}")
+
+# In survival, lighting a fuse wears the flint and steel by one use.
+sx, sz = cx - 30, cz
+chat(f"setblock {sx} {y} {sz} big_nukes:demolition_charge")
+hold("big_nukes:fuse_detonator")
+click(sx, y, sz)
+chat("gamemode survival")
+hold("minecraft:flint_and_steel")
+click(sx, y, sz)
+ctl("wait", 5)
+inv = json.dumps(ctl("inventory"), ensure_ascii=False)
+check("in survival the flint and steel loses a use", '"damage": 1' in inv, inv[:300])
+chat("gamemode creative")
+chat(f"tp @s {cx} {y + 20} {cz} 0 0")
+ctl("wait", 120)
 
 # A broken bomb drops its detonator.
 bx, bz = cx, cz + 3
