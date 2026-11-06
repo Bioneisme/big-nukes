@@ -188,7 +188,11 @@ fn to_srgb(c: vec3<f32>) -> vec3<f32> {
         if t1 <= t0 {
             continue;
         }
-        let steps = 32.0;
+        // From inside the cloud every pixel marches it, and there is little to see but haze.
+        var steps = 32.0;
+        if hit.x < 0.0 {
+            steps = 16.0;
+        }
         let dt = (t1 - t0) / steps;
         let fire = bl.b.y;
         for (var s = 0.0; s < steps; s = s + 1.0) {
@@ -198,12 +202,13 @@ fn to_srgb(c: vec3<f32>) -> vec3<f32> {
             if d <= 0.001 {
                 continue;
             }
-            let ext = d * 3.0 / ball_r;
+            let ext = d * 5.0 / ball_r;
             let a = 1.0 - exp(-ext * dt);
             let height = clamp(q.y / max(ball_h + ball_r, 1.0), 0.0, 1.0);
-            let smoke = vec3(0.42, 0.4, 0.39) * (0.55 + 0.45 * height);
+            // Darker under the cap and at the foot, lit by the sky on top.
+            let smoke = vec3(0.30, 0.27, 0.25) * (0.45 + 0.75 * height);
             let core = exp(-length(q - vec3(0.0, ball_h, 0.0)) / ball_r * 1.5);
-            let glow = fire * (vec3(5.0, 2.0, 0.5) * core + vec3(1.2, 0.5, 0.15) * exp(-max(q.y - ball_h, 0.0) / ball_r));
+            let glow = fire * (vec3(2.4, 0.9, 0.25) * core + vec3(0.7, 0.28, 0.08) * exp(-max(q.y - ball_h, 0.0) / ball_r));
             let lit = smoke + glow;
             color = color + trans * a * lit;
             trans = trans * (1.0 - a);
@@ -218,7 +223,9 @@ fn to_srgb(c: vec3<f32>) -> vec3<f32> {
     }
     // Far away the cloud takes on the sky's haze.
     let haze = 1.0 - exp(-min(scene, 6000.0) / 9000.0);
-    let shown = mix(color / alpha, vec3(0.75, 0.82, 0.92), haze * 0.5);
+    // A soft tone curve, so the fire glows without burning out to white.
+    let mapped = vec3(1.0) - exp(-color / alpha * 1.6);
+    let shown = mix(mapped, vec3(0.72, 0.8, 0.9), haze * 0.25);
     return vec4(to_srgb(shown) * alpha, alpha);
 }
 "#;

@@ -31,6 +31,21 @@ The native half knows the assets half is installed when the loot table `big_nuke
 - Sounds are the mod's own (`tools/make_sounds.py`). A local sound reaches `max(volume, 1) × attenuation_distance`
   blocks, so each is played 6 blocks from the player towards the blast, with the delay of the front.
 
+## The sky
+
+- The renderer's hooks (`native_world_drawn`, `native_render_needs`, API 58) are free functions in
+  `horizon-client-render`, which can't see `crate::game`. The mod's `[[module]]` `big_nukes_sky` goes into
+  `crates/horizon-client-render/src/gfx/native_render.rs` with `visibility = "pub"`, and the window's glue fills its `SKY`
+  from `camera_shake`, once a frame with the part of the tick.
+- The pass runs after the world's post pass and before the HUD, over the swapchain colour (`LoadOp::Load`), with
+  premultiplied alpha. The depth is Depth32Float, reversed (sky = 0), sampled with `textureLoad`; `depth_size` can differ
+  from `size`.
+- The WGSL is a string in `sky.rs` (a spliced module can't `include_str!` a sibling), validated by naga 30.0.1 in the
+  tests. A failed pipeline is logged and the clouds left out.
+- Cost, offscreen, R=250 at 400 blocks: the cloud ahead adds about 0.9 ms to the median frame (32 steps); from inside the
+  cloud, at 16 steps, the frame is 1.8 ms (GPU 1.7 ms). Some benches after a teleport showed 33 ms frames with the CPU at
+  1.9 ms and the GPU at 5.7 ms: waiting, not drawing, seen as chunks load; worth a look in a real window.
+
 ## Wave measurements
 
 `tools/wave_bench.py`, 2026-11-06, `performance` build, offscreen, seed 12345 at spawn, render and simulation
