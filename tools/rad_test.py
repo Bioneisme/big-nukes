@@ -83,6 +83,17 @@ def stand(x, y, z):
     chat(f"tp @s {x + 0.5} {y} {z + 0.5}")
 
 
+def pad(x, y, z):
+    """Glass under (x, y, z) once its chunk loads, so a survival player there doesn't fall."""
+    stand(x, y + 2, z)
+    for _ in range(20):
+        ctl("wait", 20)
+        if "not loaded" not in chat(f"fill {x - 2} {y - 1} {z - 2} {x + 2} {y - 1} {z + 2} minecraft:glass"):
+            break
+    stand(x, y, z)
+    ctl("wait", 5)
+
+
 shutil.rmtree(os.path.join(GAME, "saves", WORLD), ignore_errors=True)
 cx, cy, cz = open_world()
 # The blast far off, so the wave's damage doesn't reach the player; the zone is what matters.
@@ -131,7 +142,7 @@ check("the suit wears", '"damage": 0' not in inv[inv.find("armor"):inv.find("arm
 chat("clear @s")
 ctl("wait", 300)
 # Out of the zone, so the dose only heals slowly while the file catches up (the mod writes it every 10 s).
-chat(f"tp @s {bx + 0.5} {by + 40} {bz + 900.5}")
+pad(bx, by + 40, bz + 900)
 ctl("wait", 220)
 before = dose()
 chat("give @s big_nukes:anti_rad")
@@ -140,7 +151,8 @@ ctl("use-item", "--hold", 2)
 ctl("wait", 220)
 after = dose()
 inv = json.dumps(ctl("inventory"), ensure_ascii=False)
-check("drinking leaves a glass bottle", "glass_bottle" in inv, inv[:200])
+held = sorted(set(__import__("re").findall(r'"item": "([a-z_:]+)"', inv)))
+check("drinking leaves a glass bottle", "minecraft:glass_bottle" in held, str(held))
 stand(bx, by, bz)
 check("the anti-rad takes about 300 off", before > 200 and after < before - 200, f"{before:.0f} -> {after:.0f}")
 
@@ -171,8 +183,13 @@ chat(f"tp @s {bx + 0.5} {by} {bz + 0.5} 0 0")
 ctl("wait", 20)
 
 # The dose across a reload.
+# A few seconds of dose at the center, then creative so it stands still (and the player doesn't die of
+# what is left from before), then wait for the mod's file, which it writes every 10 s.
+stand(bx, by, bz)
 chat("gamemode survival")
-ctl("wait", 220)  # the mod writes the dose every 10 s
+ctl("wait", 100)
+chat("gamemode creative")
+ctl("wait", 220)
 kept = dose()
 ctl("quit")
 time.sleep(8)
