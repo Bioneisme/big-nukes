@@ -284,11 +284,14 @@ pub(in crate::game) fn shake(game: &Game<'_>, partial: f32, shake: &mut NativeSh
     // Once a frame with the part of the tick: the renderer's list of blasts too.
     *horizon_client::gfx::native_render::big_nukes_sky::SKY.lock().unwrap_or_else(|e| e.into_inner()) = felt
         .iter()
-        .map(|(t, _, n)| horizon_client::gfx::native_render::big_nukes_sky::SkyBlast {
-            center: n.center.map(|v| v as f64 + 0.5),
-            radius: n.radius as f32,
-            seed: n.seed as u32,
-            age: *t as f32,
+        .map(|(t, _, n)| {
+            let c = rules::cloud(*t, n.radius);
+            horizon_client::gfx::native_render::big_nukes_sky::SkyBlast {
+                center: [n.center[0] as f64 + 0.5, n.center[1] as f64, n.center[2] as f64 + 0.5],
+                seed: n.seed as u32,
+                age: *t as f32,
+                cloud: [c.ball_h, c.ball_r, c.stem_r, c.cap_major, c.cap_minor, c.fire, c.fade, c.ring, c.ring_fade],
+            }
         })
         .collect();
     for (t, d, n) in felt {

@@ -519,9 +519,14 @@ impl Heard {
         let d = [eyes[0] - c[0] as f64 - 0.5, eyes[1] - c[1] as f64, eyes[2] - c[2] as f64 - 0.5];
         let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
         let t = now - self.at;
-        (dimension == self.dimension && t > -20.0 && t < dist / FRONT_SPEED + 200.0).then_some((t, dist))
+        // Kept while its front, its sound or its cloud (five minutes) is still to see.
+        let lasts = (dist / FRONT_SPEED + 200.0).max(CLOUD_TICKS);
+        (dimension == self.dimension && t > -20.0 && t < lasts).then_some((t, dist))
     }
 }
+
+/// How long a cloud stands: it is gone at five minutes.
+pub const CLOUD_TICKS: f64 = 6000.0;
 
 /// The white of the flash, 0 to 255: full within two radii, gone at twelve,
 /// and fading over a second or so.
@@ -682,7 +687,7 @@ pub fn cloud(age_ticks: f64, radius: u32) -> Cloud {
         cap_major: (0.5 * ball_r * (1.0 + t / 20.0)).min(1.4 * ball_r) as f32,
         cap_minor: (0.8 * ball_r) as f32,
         fire: (-t / 20.0).exp() as f32,
-        fade: (1.0 - (t - 180.0) / 120.0).clamp(0.0, 1.0) as f32,
+        fade: (1.0 - (t - 180.0) / (CLOUD_TICKS / 20.0 - 180.0)).clamp(0.0, 1.0) as f32,
         ring: (age_ticks * FRONT_SPEED).min(reach) as f32,
         ring_fade: (1.0 - (age_ticks - out_at).max(0.0) / 200.0).clamp(0.0, 1.0) as f32,
     }
@@ -1285,8 +1290,11 @@ mod tests {
     #[test]
     fn a_heard_blast_is_let_go_when_past_or_from_another_world() {
         let h = Heard { news: heard_news(100), dimension: OW.into(), at: 1000.0 };
-        assert!(h.felt(OW, [50.0, 64.0, 0.0], 1000.0 + 50.0 / FRONT_SPEED + 199.0).is_some());
-        assert!(h.felt(OW, [50.0, 64.0, 0.0], 1000.0 + 50.0 / FRONT_SPEED + 201.0).is_none());
+        assert!(h.felt(OW, [50.0, 64.0, 0.0], 1000.0 + 50.0 / FRONT_SPEED + 201.0).is_some(), "the cloud still stands");
+        assert!(h.felt(OW, [50.0, 64.0, 0.0], 1000.0 + 5999.0).is_some());
+        assert!(h.felt(OW, [50.0, 64.0, 0.0], 1000.0 + 6001.0).is_none(), "the cloud is gone at five minutes");
+        let far = Heard { news: heard_news(100), dimension: OW.into(), at: 0.0 };
+        assert!(far.felt(OW, [16000.0, 64.0, 0.0], 6300.0).is_some(), "the sound is still on its way");
         assert!(h.felt(OW, [50.0, 64.0, 0.0], 500.0).is_none(), "a clock far behind: another world");
     }
 
@@ -1355,5 +1363,21 @@ mod tests {
             assert!(v.is_finite() && v >= 0.0);
         }
         assert!(cloud(-5.0, 100).fade == 0.0, "not yet");
+    }
+
+    // ---- the shader (plan 3, Task 3) ------------------------------------------------
+
+    #[test]
+    fn the_sky_shader_validates() {
+        let source = file("mixins/big_nukes_native/sky.rs");
+        let start = source.find("const SHADER: &str = r#\"").expect("sky.rs holds the shader") + "const SHADER: &str = r#\"".len();
+        let end = start + source[start..].find("\"#;").expect("the shader ends");
+        let module = naga::front::wgsl::parse_str(&source[start..end]).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source[start..end])));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        for entry in ["vs", "fs"] {
+            assert!(module.entry_points.iter().any(|e| e.name == entry), "{entry}");
+        }
     }
 }

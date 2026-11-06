@@ -16,3 +16,7 @@ path = "mixins/big_nukes_native/runtime.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Checks the renderer's WGSL in the tests, with the naga of Horizon's wgpu 30.
+[dev-dependencies]
+naga = { version = "30.0.1", features = ["wgsl-in"] }
