@@ -15,7 +15,7 @@ use horizon_client::{
     hud::HudBatch,
     items::ItemStack,
     lang,
-    mod_api::{EquipmentSlot, LivingRef, NativeCommand, NativeScreen, NativeServerPlayer, ServerTickPhase, WorldPhase},
+    mod_api::{EquipmentSlot, NativeCommand, NativeScreen, NativeServerPlayer, ServerTickPhase, WorldPhase},
     particles::{ParticleOptions, ParticleType},
     text::{self, ClickEvent, Style, Text},
 };
@@ -1207,33 +1207,85 @@ fn install(game: &mut Game<'_>, pos: [i32; 3], bomb: &rules::Bomb, detonator: ru
     true
 }
 
-/// The acting player as a living entity, whose hands can be written.
-fn living_of(game: &Game<'_>, who: &NativeServerPlayer) -> Option<LivingRef> {
-    u32::try_from(who.entity_id)
-        .ok()
-        .filter(|id| *id > 0)
-        .and_then(|id| game.native_entity(id))
-        .and_then(|e| game.native_living(e))
+// ---- the held stack --------------------------------------------------------------
+//
+// A player's hook can't change the stack in hand: the host has no entity handle
+// there (`native_acting_entity` is 0 for it). So a change is queued, and the next
+// server tick of that player's selected slot (`native_inventory_tick`, where
+// `native_carried_stack` changes a stack in place) makes it.
+
+/// A change to the stack in a player's main hand.
+#[derive(Clone, Debug)]
+enum Held {
+    /// The flint and steel loses a use, or breaks on its last.
+    Wear,
+    /// The remote is linked to the bomb of `kind` at `pos` in `dimension`.
+    Link { dimension: String, pos: [i32; 3], kind: rules::BombKind },
 }
 
-/// One use off the flint and steel in the acting player's main hand; its last
-/// use breaks it.
+/// Queued changes: the player, the change and the tick it was asked at.
+static HELD: Mutex<Vec<(u128, Held, u64)>> = Mutex::new(Vec::new());
+/// A change the player's hand didn't take this long (the slot changed) is dropped.
+const HELD_TICKS: u64 = 20;
+
+fn queue_held(game: &Game<'_>, who: &NativeServerPlayer, change: Held) {
+    let now = clock(game).map_or(0, |(now, _)| now);
+    lock(&HELD).push((who.uuid, change, now));
+}
+
+/// One use off the flint and steel in the acting player's main hand.
 fn wear_flint(game: &mut Game<'_>, who: &NativeServerPlayer) {
-    let Some(mut flint) = game.native_equipment(EquipmentSlot::MainHand) else {
+    queue_held(game, who, Held::Wear);
+}
+
+/// A server tick of a stack a player carries: the held one takes the player's
+/// queued changes.
+pub(in crate::game) fn inventory_tick(game: &mut Game<'_>, slot: i32, selected: bool) {
+    if !selected || lock(&HELD).is_empty() {
         return;
-    };
-    let Some(living) = living_of(game, who) else {
-        return;
-    };
-    let worn = rules::worn(flint.damage);
-    if worn.is_none() {
-        game.native_level_play_sound("minecraft:entity.item.break", who.position, PLAYERS, 0.8, 1.0);
     }
-    let left = worn.map(|damage| {
-        flint.damage = damage;
-        flint
-    });
-    game.native_living_set_equipment(living, EquipmentSlot::MainHand, left);
+    let (Some(who), Some((now, _))) = (game.native_acting_player(), clock(game)) else {
+        return;
+    };
+    let mine: Vec<Held> = {
+        let mut held = lock(&HELD);
+        held.retain(|(_, _, at)| now.saturating_sub(*at) <= HELD_TICKS);
+        let (mine, rest): (Vec<_>, Vec<_>) = held.drain(..).partition(|(uuid, _, _)| *uuid == who.uuid);
+        *held = rest;
+        mine.into_iter().map(|(_, change, _)| change).collect()
+    };
+    for change in mine {
+        let Some(mut stack) = game.native_carried_stack(slot).cloned() else {
+            continue;
+        };
+        match change {
+            Held::Wear if &*stack.item == rules::FLINT_AND_STEEL => {
+                match rules::worn(stack.damage) {
+                    Some(damage) => stack.damage = damage,
+                    None => {
+                        stack.count = 0;
+                        game.native_level_play_sound("minecraft:entity.item.break", who.position, PLAYERS, 0.8, 1.0);
+                    }
+                }
+            }
+            Held::Link { dimension, pos, kind } if &*stack.item == rules::REMOTE => {
+                let value = Tag::compound([
+                    ("dimension", Tag::String(JavaString::from(dimension.as_str()))),
+                    ("pos", Tag::IntArray(pos.to_vec())),
+                ]);
+                if let Err(e) = game.native_set_component(&mut stack, rules::LINK, value) {
+                    log::warn!("[big_nukes] linking a remote: {e}");
+                    continue;
+                }
+                sound(game, pos, "minecraft:block.note_block.pling", 0.8, 2.0);
+                game.native_tell(who.uuid, Text::translate("big_nukes.remote.linked", &[block_name(kind.id()), place(pos)]));
+            }
+            _ => continue,
+        }
+        if let Some(carried) = game.native_carried_stack(slot) {
+            *carried = stack;
+        }
+    }
 }
 
 /// A bomb's tick: the hiss and smoke of a lit fuse, the beeps of a countdown,
@@ -1377,23 +1429,8 @@ fn link(game: &mut Game<'_>, who: &NativeServerPlayer, pos: [i32; 3], kind: rule
         game.native_tell(who.uuid, Text::translate("big_nukes.remote.spent", &[]));
         return;
     }
-    let (Some(mut remote), Some(living)) = (
-        game.native_equipment(EquipmentSlot::MainHand).filter(|s| &*s.item == rules::REMOTE),
-        living_of(game, who),
-    ) else {
-        return;
-    };
-    let value = Tag::compound([
-        ("dimension", Tag::String(JavaString::from(who.dimension.as_str()))),
-        ("pos", Tag::IntArray(pos.to_vec())),
-    ]);
-    if let Err(e) = game.native_set_component(&mut remote, rules::LINK, value) {
-        log::warn!("[big_nukes] linking a remote: {e}");
-        return;
-    }
-    if game.native_living_set_equipment(living, EquipmentSlot::MainHand, Some(remote)) {
-        sound(game, pos, "minecraft:block.note_block.pling", 0.8, 2.0);
-        game.native_tell(who.uuid, Text::translate("big_nukes.remote.linked", &[block_name(kind.id()), place(pos)]));
+    if game.native_equipment(EquipmentSlot::MainHand).is_some_and(|s| &*s.item == rules::REMOTE) {
+        queue_held(game, who, Held::Link { dimension: who.dimension.clone(), pos, kind });
     }
 }
 

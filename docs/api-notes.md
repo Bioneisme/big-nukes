@@ -122,3 +122,11 @@ than at 250.
 With the effects on (plan 2), radius 250: done in 7.8 s, the median frame 0.52 → 0.86 ms, the worst frame 45 ms, the
 server tick 16.2 ms on average and 32.0 ms at P99. The smoke and the flash cost about a third of a millisecond a frame,
 which shows as a large share only at offscreen frame rates.
+
+## The held stack
+
+- In a player's hook the host has no entity handle: `native_acting_player().entity_id` is 0 for it
+  (`native_acting_entity` counts only LAN guests), so `native_living_set_equipment` can't reach the host's hand.
+  Found in game: a remote never linked. The mod queues the change and makes it in `native_inventory_tick`
+  (API 39) for the player's selected slot, where `native_carried_stack` changes the stack in place and the
+  client gets it. The flint and steel's wear goes the same way.

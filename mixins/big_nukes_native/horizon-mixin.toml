@@ -183,6 +183,18 @@ bindings = [
   { name = "types", ty = "&mut Vec<String>", value = "&mut *types" },
 ]
 
+# The held stack: a link written to a remote, a use worn off flint and steel (API 39).
+[[injection]]
+id = "inventory-tick"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_inventory_tick"
+helper = "inventory_tick.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "slot", ty = "i32", value = "slot" },
+  { name = "selected", ty = "bool", value = "selected" },
+]
+
 [[injection]]
 id = "use-item-on"
 kind = "HEAD"
