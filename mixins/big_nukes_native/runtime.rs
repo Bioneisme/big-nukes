@@ -494,14 +494,14 @@ impl Waves {
 }
 
 /// The white of the flash, 0 to 255: full within two radii, gone at twelve,
-/// and fading in about half a second.
+/// and fading over a second or so.
 pub fn flash_alpha(t_ticks: f64, dist: f64, radius: u32) -> u8 {
-    if !(0.0..60.0).contains(&t_ticks) {
+    if !(0.0..80.0).contains(&t_ticks) {
         return 0;
     }
     let r = radius as f64;
     let peak = ((12.0 * r - dist) / (10.0 * r)).clamp(0.0, 1.0);
-    (255.0 * peak * (-t_ticks / 12.0).exp()).round() as u8
+    (255.0 * peak * (-t_ticks / 20.0).exp()).round() as u8
 }
 
 /// A sound to play, `delay` ticks from now.
@@ -1053,9 +1053,10 @@ mod tests {
     fn the_flash_is_white_near_fades_with_distance_and_time() {
         assert_eq!(flash_alpha(0.0, 10.0, 100), 255);
         assert_eq!(flash_alpha(0.0, 1200.0, 100), 0);
-        assert_eq!(flash_alpha(60.0, 10.0, 100), 0);
+        assert_eq!(flash_alpha(80.0, 10.0, 100), 0);
+        assert!(flash_alpha(20.0, 10.0, 100) >= 90, "a second on, the flash still glares");
         assert_eq!(flash_alpha(-1.0, 10.0, 100), 0);
-        let by_time: Vec<u8> = (0..60).map(|t| flash_alpha(t as f64, 10.0, 100)).collect();
+        let by_time: Vec<u8> = (0..80).map(|t| flash_alpha(t as f64, 10.0, 100)).collect();
         assert!(by_time.windows(2).all(|p| p[0] >= p[1]));
         let by_dist: Vec<u8> = (0..130).map(|d| flash_alpha(2.0, d as f64 * 10.0, 100)).collect();
         assert!(by_dist.windows(2).all(|p| p[0] >= p[1]));
@@ -1175,14 +1176,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_blast_damage_type_reads() {
-        let t: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/damage_type/blast.json")).unwrap();
-        assert_eq!(t["message_id"], "big_nukes.blast");
-        assert_eq!(t["scaling"], "never");
-        let en = language("en_us");
-        assert!(en.contains_key("death.attack.big_nukes.blast") && en.contains_key("death.attack.big_nukes.blast.player"));
-    }
 
     #[test]
     fn fronts_report_the_band_passed_this_tick() {

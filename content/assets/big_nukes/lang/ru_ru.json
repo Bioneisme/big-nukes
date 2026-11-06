@@ -4,8 +4,6 @@
   "big_nukes.blast.started": "Взрыв радиусом %s: волна пошла.",
   "big_nukes.blast.usage": "Использование: /bignukes blast <радиус от %s до %s> [x y z]",
   "big_nukes.blast.dimension": "Big Nukes не умеет взрывать в этом измерении.",
-  "death.attack.big_nukes.blast": "%s попал под взрыв",
-  "death.attack.big_nukes.blast.player": "%s попал под взрыв, устроенный %s",
   "subtitles.big_nukes.blast": "Грохот взрыва",
   "subtitles.big_nukes.wave": "Рёв ударной волны"
 }

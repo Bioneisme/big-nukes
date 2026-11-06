@@ -19,6 +19,18 @@ The native half knows the assets half is installed when the loot table `big_nuke
 - `#minecraft:replaceable` holds water and lava, so plants are named one by one.
 - The game builds with `-D warnings`: an unused constant or a never-built enum variant in the rules fails the build.
 
+## The blast's effects
+
+- `native_gui_render_post` (API 410) has no camera: `native_camera()` answers None there, so the flash reads the player's
+  eyes (`native_player`). It does draw under F1.
+- `native_run_command` answers false when a command affects nothing (a damage band with no one in it, smoke no player is
+  near enough to see), so false is not logged as an error.
+- A mod's `data/<ns>/damage_type/*.json` in the `.hmod` was not found by `/damage` on Nightly 66f3981 ("Can't find
+  element 'big_nukes:blast' of type 'minecraft:damage_type'"), so the blast does `minecraft:explosion` damage. Plan 5's
+  radiation damage has to find a way around this.
+- Sounds are the mod's own (`tools/make_sounds.py`). A local sound reaches `max(volume, 1) × attenuation_distance`
+  blocks, so each is played 6 blocks from the player towards the blast, with the delay of the front.
+
 ## Wave measurements
 
 `tools/wave_bench.py`, 2026-11-06, `performance` build, offscreen, seed 12345 at spawn, render and simulation
@@ -36,3 +48,7 @@ plan's 20%), so the budget went down to 6 ms. The mean FPS and the slowest 1% of
 these offscreen frame rates (about 2000 FPS) and are left out. Every run had one frame of about 50 ms around the
 blast. At radius 1000 the loaded area is all crater, whose runs are unfiltered and cheap, so its ticks are lighter
 than at 250.
+
+With the effects on (plan 2), radius 250: done in 7.8 s, the median frame 0.52 → 0.86 ms, the worst frame 45 ms, the
+server tick 16.2 ms on average and 32.0 ms at P99. The smoke and the flash cost about a third of a millisecond a frame,
+which shows as a large share only at offscreen frame rates.

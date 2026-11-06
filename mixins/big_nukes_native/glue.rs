@@ -173,11 +173,10 @@ fn tell_dimension(game: &mut Game<'_>, dimension: &str, news: &[rules::News]) {
     }
 }
 
-/// A command in the blast's dimension; false is logged once a blast.
-fn run_in(game: &mut Game<'_>, warned: &mut BTreeSet<u64>, blast: &rules::Blast, command: &str) {
-    if !game.native_run_command(&format!("execute in {} run {command}", blast.dimension)) && warned.insert(blast.id) {
-        log::warn!("[big_nukes] blast {}: a command failed: {command}", blast.id);
-    }
+/// A command in the blast's dimension. Its answer isn't an error: false is also
+/// a damage that found no one or smoke that no player is near enough to see.
+fn run_in(game: &mut Game<'_>, blast: &rules::Blast, command: &str) {
+    game.native_run_command(&format!("execute in {} run {command}", blast.dimension));
 }
 
 fn particle(id: &str, at: [f64; 3], spread: [f64; 3], speed: f64, count: u32) -> String {
@@ -193,7 +192,7 @@ fn effects(game: &mut Game<'_>, st: &mut State, dimension: &str) {
     for (blast, from, to, age) in st.saved.waves.fronts(dimension, st.saved.tick) {
         let [cx, cy, cz] = blast.center.map(|v| v as f64 + 0.5);
         if age < 20 && st.opened.insert(blast.id) {
-            run_in(game, &mut st.warned, &blast, &particle("minecraft:explosion_emitter", [cx, cy + 2.0, cz], [2.0, 2.0, 2.0], 0.0, 6));
+            run_in(game, &blast, &particle("minecraft:explosion_emitter", [cx, cy + 2.0, cz], [2.0, 2.0, 2.0], 0.0, 6));
             let registry = &game.pack.assets.registry;
             let thrown: Vec<_> = rules::debris(&blast)
                 .into_iter()
@@ -205,22 +204,21 @@ fn effects(game: &mut Game<'_>, st: &mut State, dimension: &str) {
         }
         if age % 4 == 0 {
             for at in rules::front_ring(&blast, age) {
-                run_in(game, &mut st.warned, &blast, &particle("minecraft:campfire_signal_smoke", at, [2.0, 1.0, 2.0], 0.02, 4));
-                run_in(game, &mut st.warned, &blast, &particle("minecraft:large_smoke", at, [3.0, 0.5, 3.0], 0.05, 6));
+                run_in(game, &blast, &particle("minecraft:campfire_signal_smoke", at, [2.0, 1.0, 2.0], 0.02, 4));
+                run_in(game, &blast, &particle("minecraft:large_smoke", at, [3.0, 0.5, 3.0], 0.05, 6));
             }
             if to < 512.0 {
                 for h in [10.0, 20.0, 30.0, 40.0] {
-                    run_in(game, &mut st.warned, &blast, &particle("minecraft:campfire_signal_smoke", [cx, cy + h, cz], [3.0, 2.0, 3.0], 0.05, 8));
+                    run_in(game, &blast, &particle("minecraft:campfire_signal_smoke", [cx, cy + h, cz], [3.0, 2.0, 3.0], 0.05, 8));
                 }
             }
         }
         for (a, b, amount) in rules::damage_band(blast.radius, from, to) {
             run_in(
                 game,
-                &mut st.warned,
                 &blast,
                 &format!(
-                    "execute as @e[x={cx:.1},y={cy:.1},z={cz:.1},distance={a:.1}..{b:.1}] run damage @s {amount:.1} big_nukes:blast at {cx:.1} {cy:.1} {cz:.1}"
+                    "execute as @e[x={cx:.1},y={cy:.1},z={cz:.1},distance={a:.1}..{b:.1}] run damage @s {amount:.1} minecraft:explosion at {cx:.1} {cy:.1} {cz:.1}"
                 ),
             );
         }
@@ -271,21 +269,30 @@ pub(in crate::game) fn heard(game: &mut Game<'_>, channel: &str, data: &[u8]) {
 }
 
 /// Each heard blast with the ticks since it went off and the camera's distance to it.
+/// The camera's place and the part of the tick gone; while the GUI draws there is
+/// no camera to read, so then the player's eyes at the tick.
+fn eyes(game: &Game<'_>) -> Option<([f64; 3], f64)> {
+    game.native_camera()
+        .map(|c| (c.position, c.partial_tick as f64))
+        .or_else(|| game.native_player().map(|p| ([p.x, p.y + 1.62, p.z], 0.0)))
+}
+
 fn heard_now(game: &Game<'_>) -> Vec<(f64, f64, rules::News)> {
-    let (Some(clock), Some(camera)) = (game.native_clock(), game.native_camera()) else {
+    let (Some(clock), Some((position, partial))) = (game.native_clock(), eyes(game)) else {
         return vec![];
     };
-    let now = clock.game_time as f64 + camera.partial_tick as f64;
+    let now = clock.game_time as f64 + partial;
     let mut heard = lock(&HEARD);
     heard.retain(|h| {
-        let d = dist(camera.position, h.news.center);
+        let d = dist(position, h.news.center);
         now - h.at < d / rules::FRONT_SPEED + 200.0
     });
-    heard.iter().map(|h| (now - h.at, dist(camera.position, h.news.center), h.news.clone())).collect()
+    heard.iter().map(|h| (now - h.at, dist(position, h.news.center), h.news.clone())).collect()
 }
 
 pub(in crate::game) fn flash(game: &Game<'_>, batch: &mut HudBatch) {
-    let alpha: u32 = heard_now(game).iter().map(|(t, d, n)| rules::flash_alpha(*t, *d, n.radius) as u32).sum::<u32>().min(255);
+    let now = heard_now(game);
+    let alpha: u32 = now.iter().map(|(t, d, n)| rules::flash_alpha(*t, *d, n.radius) as u32).sum::<u32>().min(255);
     if alpha > 0 {
         game.native_fill(batch, [0.0, 0.0, batch.width, batch.height], alpha << 24 | 0x00FF_FFFF);
     }
