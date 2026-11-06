@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     time::Duration,
 };
 
@@ -150,10 +150,114 @@ pub fn arrow_width(spin: i32, spin_max: i32) -> i32 {
     spin.min(spin_max) * ARROW_WIDTH / spin_max
 }
 
-/// Whether the item `result` is only crafted on the assembly table: the bombs and
-/// their parts. A crafting table or the inventory grid makes nothing of them.
-pub fn needs_assembly_table(result: &str) -> bool {
-    matches!(result, "big_nukes:nuclear_charge" | "big_nukes:bomb_casing") || BombKind::ALL.iter().any(|k| k.id() == result)
+// ---- the assembly table -----------------------------------------------------------
+//
+// The bombs and their parts are made here, not on a crafting table: their parts
+// go anywhere in a 3×3 grid, and the Assemble button makes one of the recipe
+// whose items the grid holds. Its menu type is
+// content/data/big_nukes/horizon/menu/assembly_table.json, named as the block.
+
+pub const GRID_SLOTS: usize = 9;
+pub const ASSEMBLY_OUTPUT_SLOT: usize = 9;
+pub const ASSEMBLY_SLOTS: usize = 10;
+/// The menu button id of Assemble.
+pub const ASSEMBLE_BUTTON: i32 = 0;
+
+/// A recipe of the assembly table: its result, and how many of each item it takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Assembly {
+    pub result: &'static str,
+    pub parts: &'static [(&'static str, u32)],
+}
+
+pub const ASSEMBLIES: [Assembly; 5] = [
+    Assembly { result: "big_nukes:nuclear_charge", parts: &[(ENRICHED_URANIUM, 1), ("minecraft:tnt", 4)] },
+    Assembly { result: "big_nukes:bomb_casing", parts: &[("minecraft:iron_block", 4), ("minecraft:redstone", 4)] },
+    Assembly {
+        result: "big_nukes:demolition_charge",
+        parts: &[("minecraft:tnt", 4), ("minecraft:iron_ingot", 4), ("minecraft:redstone", 1)],
+    },
+    Assembly {
+        result: "big_nukes:tactical_warhead",
+        parts: &[
+            ("big_nukes:nuclear_charge", 1),
+            ("big_nukes:bomb_casing", 1),
+            ("minecraft:iron_ingot", 6),
+            ("minecraft:redstone", 1),
+        ],
+    },
+    Assembly {
+        result: "big_nukes:atomic_bomb",
+        parts: &[("big_nukes:nuclear_charge", 4), ("big_nukes:bomb_casing", 4), ("minecraft:redstone_block", 1)],
+    },
+];
+
+/// What Assemble does: the result to add to the output, and how many to take
+/// from which grid slots.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Assembled {
+    pub result: &'static str,
+    pub take: Vec<(usize, u32)>,
+}
+
+/// The recipe whose items the grid holds, enough of each and nothing else: its
+/// index in `ASSEMBLIES`. The grid is read as a total per item, wherever it lies.
+pub fn assembly_in(grid: &[Option<(&str, u32)>]) -> Option<usize> {
+    let mut totals: BTreeMap<&str, u32> = BTreeMap::new();
+    for &(item, count) in grid.iter().flatten().filter(|s| s.1 > 0) {
+        *totals.entry(item).or_default() += count;
+    }
+    ASSEMBLIES.iter().position(|a| {
+        a.parts.len() == totals.len() && a.parts.iter().all(|(id, need)| totals.get(id).is_some_and(|have| have >= need))
+    })
+}
+
+/// Assemble pressed: what to take and make, or None when the grid holds no
+/// recipe or the output has no room for one more of its result.
+pub fn assemble(grid: &[Option<(&str, u32)>], output: Option<(&str, u32)>, max_stack: &dyn Fn(&str) -> u32) -> Option<Assembled> {
+    let recipe = &ASSEMBLIES[assembly_in(grid)?];
+    let room = match output {
+        None => true,
+        Some((item, count)) => item == recipe.result && count < max_stack(recipe.result),
+    };
+    if !room {
+        return None;
+    }
+    let mut take = Vec::new();
+    for &(id, need) in recipe.parts {
+        let mut left = need;
+        for (slot, stack) in grid.iter().enumerate() {
+            if left == 0 {
+                break;
+            }
+            if let Some((item, count)) = *stack
+                && item == id
+                && count > 0
+            {
+                let n = count.min(left);
+                take.push((slot, n));
+                left -= n;
+            }
+        }
+    }
+    Some(Assembled { result: recipe.result, take })
+}
+
+/// The screen's data slot: 0 for no recipe, else the recipe's index plus one.
+pub fn assembly_data(grid: &[Option<(&str, u32)>]) -> i32 {
+    assembly_in(grid).map_or(0, |i| i as i32 + 1)
+}
+
+/// The recipe a data slot names, as `assembly_data` wrote it.
+pub fn assembly_of_data(data: i32) -> Option<&'static Assembly> {
+    usize::try_from(data).ok()?.checked_sub(1).and_then(|i| ASSEMBLIES.get(i))
+}
+
+/// The language key of a block's or an item's name: the bombs are blocks.
+pub fn name_key(id: &str) -> String {
+    let (namespace, name) = id.split_once(':').unwrap_or(("minecraft", id));
+    let kind = if BombKind::ALL.iter().any(|k| k.id() == id) { "block" } else { "item" };
+    format!("{kind}.{namespace}.{name}")
 }
 
 // ---- blast geometry ----------------------------------------------------------
@@ -1644,31 +1748,100 @@ mod tests {
             assert!(recipe["result"]["count"].as_u64().unwrap() >= 1, "{file_name}");
             made.insert(result.to_owned());
         }
-        // Mined, made in the centrifuge, or (the centrifuge) given its recipe with its machine.
-        let not_crafted = ["big_nukes:raw_uranium", "big_nukes:enriched_uranium", CENTRIFUGE];
+        // The bombs and their parts come only from the assembly table.
+        for a in &ASSEMBLIES {
+            assert!(!made.contains(a.result), "{} has a crafting table recipe too", a.result);
+            made.insert(a.result.to_owned());
+        }
+        // Mined, or made in the centrifuge.
+        let not_crafted = ["big_nukes:raw_uranium", "big_nukes:enriched_uranium"];
         let crafted: BTreeSet<String> = known.iter().filter(|id| !not_crafted.contains(id)).map(|id| id.to_string()).collect();
         assert_eq!(made, crafted);
     }
 
+    // ---- the assembly table -------------------------------------------------------------
+
+    /// A grid of 9 slots from (slot, item, count).
+    fn grid<'a>(stacks: &[(usize, &'a str, u32)]) -> Vec<Option<(&'a str, u32)>> {
+        let mut g = vec![None; GRID_SLOTS];
+        for &(slot, item, count) in stacks {
+            g[slot] = Some((item, count));
+        }
+        g
+    }
+
+    fn most(_: &str) -> u32 {
+        16
+    }
+
+    const TNT: &str = "minecraft:tnt";
+    const URANIUM: &str = "big_nukes:enriched_uranium";
+    const CHARGE: &str = "big_nukes:nuclear_charge";
+
     #[test]
-    fn bombs_and_parts_need_the_assembly_table() {
-        for kind in BombKind::ALL {
-            assert!(needs_assembly_table(kind.id()), "{kind:?}");
+    fn assembly_recipes_name_known_items() {
+        let known: BTreeSet<&str> = ITEMS.iter().map(|i| i.0).chain(BombKind::ALL.map(BombKind::id)).collect();
+        let results: BTreeSet<&str> = ASSEMBLIES.iter().map(|a| a.result).collect();
+        let wanted: BTreeSet<&str> = [CHARGE, "big_nukes:bomb_casing"].into_iter().chain(BombKind::ALL.map(BombKind::id)).collect();
+        assert_eq!(results, wanted);
+        assert_eq!(results.len(), ASSEMBLIES.len(), "a result is made twice");
+        let en = language("en_us");
+        let mut sets = BTreeSet::new();
+        for a in &ASSEMBLIES {
+            assert!(en.contains_key(&name_key(a.result)), "{} has no name", a.result);
+            let ids: BTreeSet<&str> = a.parts.iter().map(|p| p.0).collect();
+            assert_eq!(ids.len(), a.parts.len(), "{}: a part is named twice", a.result);
+            for &(id, count) in a.parts {
+                assert!(id.starts_with("minecraft:") || known.contains(id), "{}: {id} is unknown", a.result);
+                assert!(count > 0, "{}: {id}", a.result);
+            }
+            // Recipes match by their set of items, so no two may share one.
+            assert!(sets.insert(ids), "{}: another recipe has the same items", a.result);
         }
-        assert!(needs_assembly_table("big_nukes:nuclear_charge"));
-        assert!(needs_assembly_table("big_nukes:bomb_casing"));
-        for id in [
-            ASSEMBLY_TABLE,
-            CENTRIFUGE,
-            "big_nukes:fuse_detonator",
-            "big_nukes:keypad_detonator",
-            "big_nukes:receiver_detonator",
-            "big_nukes:remote",
-            "big_nukes:enriched_uranium",
-            "minecraft:tnt",
-        ] {
-            assert!(!needs_assembly_table(id), "{id}");
-        }
+    }
+
+    #[test]
+    fn a_grid_with_the_right_items_assembles() {
+        let exact = grid(&[(0, URANIUM, 1), (1, TNT, 2), (5, TNT, 2)]);
+        assert_eq!(assembly_in(&exact).map(|i| ASSEMBLIES[i].result), Some(CHARGE));
+        let done = assemble(&exact, None, &most).unwrap();
+        assert_eq!(done.result, CHARGE);
+        let more = grid(&[(0, URANIUM, 3), (8, TNT, 64)]);
+        assert_eq!(assemble(&more, Some((CHARGE, 3)), &most).map(|d| d.result), Some(CHARGE));
+        let atomic = grid(&[(0, CHARGE, 4), (1, "big_nukes:bomb_casing", 4), (4, "minecraft:redstone_block", 1)]);
+        assert_eq!(assemble(&atomic, None, &most).map(|d| d.result), Some("big_nukes:atomic_bomb"));
+        assert_eq!(assembly_data(&atomic), 1 + ASSEMBLIES.iter().position(|a| a.result == "big_nukes:atomic_bomb").unwrap() as i32);
+        assert_eq!(assembly_of_data(assembly_data(&atomic)).map(|a| a.result), Some("big_nukes:atomic_bomb"));
+    }
+
+    #[test]
+    fn foreign_items_assemble_nothing() {
+        let stick = grid(&[(0, URANIUM, 1), (1, TNT, 4), (2, "minecraft:stick", 1)]);
+        assert_eq!(assembly_in(&stick), None);
+        assert!(assemble(&stick, None, &most).is_none());
+        let short = grid(&[(0, URANIUM, 1), (1, TNT, 3)]);
+        assert!(assemble(&short, None, &most).is_none());
+        assert!(assemble(&grid(&[]), None, &most).is_none());
+        assert_eq!(assembly_data(&grid(&[])), 0);
+        assert!(assembly_of_data(0).is_none());
+        assert!(assembly_of_data(99).is_none());
+    }
+
+    #[test]
+    fn assembling_takes_only_what_the_recipe_needs() {
+        let g = grid(&[(2, TNT, 3), (4, URANIUM, 2), (7, TNT, 3)]);
+        let done = assemble(&g, None, &most).unwrap();
+        let mut take = done.take.clone();
+        take.sort();
+        assert_eq!(take, vec![(2, 3), (4, 1), (7, 1)]);
+    }
+
+    #[test]
+    fn a_full_output_refuses() {
+        let g = grid(&[(0, URANIUM, 1), (1, TNT, 4)]);
+        assert!(assemble(&g, Some((CHARGE, 16)), &most).is_none());
+        assert!(assemble(&g, Some(("minecraft:stick", 1)), &most).is_none());
+        assert!(assemble(&g, Some((CHARGE, 15)), &most).is_some());
     }
 
     #[test]

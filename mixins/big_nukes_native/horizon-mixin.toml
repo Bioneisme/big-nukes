@@ -50,7 +50,8 @@ bindings = [
   { name = "items", ty = "&mut Vec<horizon_mods::content::Item>", value = "&mut *items" },
 ]
 
-# The centrifuge: its block entity, slots, menu, work and screen (API 15-20, 309).
+# The machines (the centrifuge, the assembly table): their block entities, slots,
+# menus, work and screens (API 15-20, 309).
 [[injection]]
 id = "block-entity"
 kind = "HEAD"
@@ -156,6 +157,31 @@ bindings = [
   { name = "origin", ty = "[f32; 2]", value = "origin" },
 ]
 
+# The assembly table's button: the press on the screen, in the window, becomes a
+# menu button on the server (API 20).
+[[injection]]
+id = "screen-click"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_screen_click"
+helper = "screen_click.rs"
+bindings = [
+  { name = "block", ty = "&str", value = "block" },
+  { name = "at", ty = "[f32; 2]", value = "at" },
+  { name = "right", ty = "bool", value = "right" },
+  { name = "button", ty = "&mut Option<i32>", value = "&mut *button" },
+]
+
+[[injection]]
+id = "menu-button"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_menu_button"
+helper = "menu_button.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "entity", ty = "&mut horizon_client::containers::ModBlockEntity", value = "&mut *entity" },
+  { name = "id", ty = "i32", value = "id" },
+]
+
 # A player joining: the warning when the assets half is missing (API 1).
 [[injection]]
 id = "logged-in"
@@ -188,19 +214,6 @@ bindings = [
   { name = "player", ty = "&horizon_client::mod_api::NativeServerPlayer", value = "player" },
   { name = "command", ty = "&str", value = "command" },
   { name = "ran", ty = "&mut bool", value = "&mut *ran" },
-]
-
-# A crafting grid's result: the bombs and their parts only on the assembly table (API 290).
-[[injection]]
-id = "prepare-item-craft"
-kind = "HEAD"
-target = "horizon_client::game::native_hooks::Game<'_>::native_prepare_item_craft"
-helper = "prepare_item_craft.rs"
-bindings = [
-  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
-  { name = "player", ty = "u128", value = "player" },
-  { name = "pos", ty = "Option<[i32; 3]>", value = "pos" },
-  { name = "result", ty = "&mut Option<horizon_client::items::ItemStack>", value = "&mut *result" },
 ]
 
 # The server's ticks, counted (API 4).

@@ -54,8 +54,12 @@ Read in the source of 66f3981, not yet seen in the game:
 - The menu a block opens is chosen by its name, not its template: `Game::open_menu` sets up a 3×3 grid only for
   `minecraft:crafting_table`, and `lan_table_valid` closes a guest's table at any other block. A block on the
   `minecraft:crafting_table` template, `big_nukes:assembly_table`, may open no grid at all.
-- The mod finds the guest's level with `native_server_players` (its `dimension`) and `native_level`, and the block with
-  `native_level_block`.
+- So the bombs and their parts have no crafting table recipe: the assembly table is a machine of the mod's own, with
+  a block entity, a 10-slot menu (`horizon/menu/assembly_table.json`) and an Assemble button. It keeps the
+  `minecraft:crafting_table` template: that class's use opens a menu (`PlayerEffect::OpenMenu`), and `open_menu`, not
+  matching the name, falls through to `open_mod_menu`. A block entity works on any template since API 129.
+- A mod screen's button: the window's `native_screen_click` (API 20) sets a menu button id for a press over no slot,
+  and the server hears it in `native_menu_button`, with the block entity out of the world during the call.
 
 ## Wave measurements
 

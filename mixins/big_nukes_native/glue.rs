@@ -84,8 +84,9 @@ fn save(st: &mut State) {
 // ---- declarations -------------------------------------------------------------------
 
 /// The machines and the bombs. The centrifuge and the bombs are furnaces as a
-/// template: they open a menu and face the player who placed them. The table is
-/// a crafting table.
+/// template: they open a menu and face the player who placed them. The assembly
+/// table keeps the crafting table's look and use; its block entity and menu are
+/// the mod's own, as any template may have them.
 pub(in crate::game) fn blocks(blocks: &mut Vec<Block>) {
     let block = |id: &str, template: &str, hardness: f32| Block {
         id: id.into(),
@@ -196,28 +197,6 @@ pub(in crate::game) fn perform(game: &mut Game<'_>, player: &NativeServerPlayer,
 fn usage() -> Text {
     let n = |v: u32| Text::literal(v.to_string());
     Text::translate("big_nukes.blast.usage", &[n(rules::MIN_RADIUS), n(rules::MAX_RADIUS)])
-}
-
-// ---- crafting ----------------------------------------------------------------------
-
-/// A crafting grid's result for a server player, before it is shown. The bombs and
-/// their parts come out only of a grid at `pos` whose block, in the player's level,
-/// is the assembly table; the inventory grid (`pos` None) and other tables give
-/// nothing for them.
-pub(in crate::game) fn prepare_item_craft(game: &mut Game<'_>, player: u128, pos: Option<[i32; 3]>, result: &mut Option<ItemStack>) {
-    if !result.as_ref().is_some_and(|s| rules::needs_assembly_table(&s.item)) || !game.native_on(rules::ID) {
-        return;
-    }
-    let on_table = pos.is_some_and(|pos| {
-        let dimension = game.native_server_players().into_iter().find(|p| p.uuid == player).map(|p| p.dimension);
-        dimension
-            .and_then(|d| game.native_level(&d))
-            .and_then(|level| game.native_level_block(level, pos))
-            .is_some_and(|block| block == rules::ASSEMBLY_TABLE)
-    });
-    if !on_table {
-        *result = None;
-    }
 }
 
 // ---- the blast's effects, on the server ---------------------------------------------
@@ -486,38 +465,95 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
     lock(&HEARD).clear();
 }
 
+// ---- the machines ---------------------------------------------------------------
+//
+// The hooks the machines share hand each block to its own functions, by its id.
+
+pub(in crate::game) fn block_entity(block: &str, entity: &mut Option<(String, Compound)>) {
+    if matches!(block, rules::CENTRIFUGE | rules::ASSEMBLY_TABLE) && entity.is_none() {
+        *entity = Some((block.to_owned(), Compound::default()));
+    }
+}
+
+pub(in crate::game) fn block_entity_ticks(block: &str, ticks: &mut bool) {
+    if matches!(block, rules::CENTRIFUGE | rules::ASSEMBLY_TABLE) {
+        *ticks = true;
+    }
+}
+
+pub(in crate::game) fn container(block: &str, container: &mut Option<ModContainer>) {
+    match block {
+        rules::CENTRIFUGE => *container = Some(centrifuge_container()),
+        rules::ASSEMBLY_TABLE => *container = Some(assembly_container()),
+        _ => {}
+    }
+}
+
+pub(in crate::game) fn tick(game: &mut Game<'_>, entity: &mut ModBlockEntity) {
+    if !game.native_on(rules::ID) {
+        return;
+    }
+    match entity.id.as_str() {
+        rules::CENTRIFUGE => centrifuge_tick(game, entity),
+        rules::ASSEMBLY_TABLE => assembly_tick(entity),
+        _ => {}
+    }
+}
+
+pub(in crate::game) fn menu_button(game: &Game<'_>, entity: &mut ModBlockEntity, id: i32) {
+    if !game.native_on(rules::ID) {
+        return;
+    }
+    match entity.id.as_str() {
+        rules::ASSEMBLY_TABLE => assembly_button(game, entity, id),
+        _ => {}
+    }
+}
+
+pub(in crate::game) fn screen(block: &str, screen: &mut Option<NativeScreen>) {
+    match block {
+        rules::CENTRIFUGE => *screen = Some(centrifuge_screen()),
+        rules::ASSEMBLY_TABLE => *screen = Some(assembly_screen()),
+        _ => {}
+    }
+}
+
+pub(in crate::game) fn screen_draw(game: &Game<'_>, block: &str, data: &[i32], batch: &mut HudBatch, origin: [f32; 2]) {
+    match block {
+        rules::CENTRIFUGE => centrifuge_screen_draw(game, data, batch, origin),
+        rules::ASSEMBLY_TABLE => assembly_screen_draw(game, data, batch, origin),
+        _ => {}
+    }
+}
+
+pub(in crate::game) fn screen_click(block: &str, at: [f32; 2], right: bool, button: &mut Option<i32>) {
+    match block {
+        rules::ASSEMBLY_TABLE => assembly_screen_click(at, right, button),
+        _ => {}
+    }
+}
+
+/// The screens' labels.
+const LABEL: u32 = 0x40_4040;
+
 // ---- the centrifuge --------------------------------------------------------------
 //
 // Its state lives in its block entity, so it moves with the chunk's save: `nbt`
 // holds the rules' `Centrifuge` as JSON, `items` the three slots, `data` what its
 // screen shows.
 
-pub(in crate::game) fn block_entity(block: &str, entity: &mut Option<(String, Compound)>) {
-    if block == rules::CENTRIFUGE && entity.is_none() {
-        *entity = Some((rules::CENTRIFUGE.to_owned(), Compound::default()));
-    }
-}
-
-pub(in crate::game) fn block_entity_ticks(block: &str, ticks: &mut bool) {
-    if block == rules::CENTRIFUGE {
-        *ticks = true;
-    }
-}
-
 /// A furnace's sides: hoppers put raw uranium in from above and fuel from the
 /// sides, and take enriched uranium from below.
-pub(in crate::game) fn container(block: &str, container: &mut Option<ModContainer>) {
-    if block == rules::CENTRIFUGE {
-        let mut faces: [Vec<usize>; 6] = std::array::from_fn(|_| vec![rules::FUEL_SLOT]);
-        faces[Direction::Down as usize] = vec![rules::OUTPUT_SLOT];
-        faces[Direction::Up as usize] = vec![rules::INPUT_SLOT];
-        *container = Some(ModContainer {
-            slots: rules::CENTRIFUGE_SLOTS,
-            faces,
-            inputs: vec![rules::INPUT_SLOT, rules::FUEL_SLOT],
-            outputs: vec![rules::OUTPUT_SLOT],
-            menu: Some(rules::CENTRIFUGE.to_owned()),
-        });
+fn centrifuge_container() -> ModContainer {
+    let mut faces: [Vec<usize>; 6] = std::array::from_fn(|_| vec![rules::FUEL_SLOT]);
+    faces[Direction::Down as usize] = vec![rules::OUTPUT_SLOT];
+    faces[Direction::Up as usize] = vec![rules::INPUT_SLOT];
+    ModContainer {
+        slots: rules::CENTRIFUGE_SLOTS,
+        faces,
+        inputs: vec![rules::INPUT_SLOT, rules::FUEL_SLOT],
+        outputs: vec![rules::OUTPUT_SLOT],
+        menu: Some(rules::CENTRIFUGE.to_owned()),
     }
 }
 
@@ -590,10 +626,7 @@ fn make(entity: &mut ModBlockEntity) {
     }
 }
 
-pub(in crate::game) fn tick(game: &mut Game<'_>, entity: &mut ModBlockEntity) {
-    if entity.id != rules::CENTRIFUGE || !game.native_on(rules::ID) {
-        return;
-    }
+fn centrifuge_tick(game: &Game<'_>, entity: &mut ModBlockEntity) {
     if entity.items.len() < rules::CENTRIFUGE_SLOTS {
         entity.items.resize(rules::CENTRIFUGE_SLOTS, None);
     }
@@ -674,24 +707,19 @@ const FULL_ARROW: [f32; 2] = [176.0, 14.0];
 const ARROW_HEIGHT: f32 = 17.0;
 const GUI: &str = "big_nukes:gui/centrifuge";
 
-pub(in crate::game) fn screen(block: &str, screen: &mut Option<NativeScreen>) {
-    if block == rules::CENTRIFUGE {
-        *screen = Some(NativeScreen {
-            width: 176.0,
-            height: 166.0,
-            slots: vec![Some(INPUT_AT), Some(FUEL_AT), Some(OUTPUT_AT)],
-            inventory_y: 84.0,
-            inventory_x: 8.0,
-            own_labels: true,
-            own_background: true,
-        });
+fn centrifuge_screen() -> NativeScreen {
+    NativeScreen {
+        width: 176.0,
+        height: 166.0,
+        slots: vec![Some(INPUT_AT), Some(FUEL_AT), Some(OUTPUT_AT)],
+        inventory_y: 84.0,
+        inventory_x: 8.0,
+        own_labels: true,
+        own_background: true,
     }
 }
 
-pub(in crate::game) fn screen_draw(game: &Game<'_>, block: &str, data: &[i32], batch: &mut HudBatch, origin: [f32; 2]) {
-    if block != rules::CENTRIFUGE {
-        return;
-    }
+fn centrifuge_screen_draw(game: &Game<'_>, data: &[i32], batch: &mut HudBatch, origin: [f32; 2]) {
     let [x, y] = origin;
     game.native_sprite(batch, GUI, [0.0, 0.0, 176.0, 166.0], [x, y, 176.0, 166.0]);
     let get = |i: usize| data.get(i).copied().unwrap_or(0);
@@ -715,9 +743,129 @@ pub(in crate::game) fn screen_draw(game: &Game<'_>, block: &str, data: &[i32], b
             [x + ARROW_AT[0], y + ARROW_AT[1], arrow, ARROW_HEIGHT],
         );
     }
-    const LABEL: u32 = 0x40_4040;
     let title = lang::get("big_nukes.screen.centrifuge");
     let width = game.native_text_width(&title);
     game.native_text(batch, &title, [x + (176.0 - width) / 2.0, y + 6.0], LABEL, false);
     game.native_text(batch, &lang::get("container.inventory"), [x + 8.0, y + 72.0], LABEL, false);
+}
+
+// ---- the assembly table ----------------------------------------------------------
+//
+// Nothing of its own but its slots: the grid's recipe is read again each tick, for
+// the screen's data slot, and the button makes one of it.
+
+/// Hoppers take the made items from below and put nothing in.
+fn assembly_container() -> ModContainer {
+    let mut faces: [Vec<usize>; 6] = std::array::from_fn(|_| Vec::new());
+    faces[Direction::Down as usize] = vec![rules::ASSEMBLY_OUTPUT_SLOT];
+    ModContainer {
+        slots: rules::ASSEMBLY_SLOTS,
+        faces,
+        inputs: Vec::new(),
+        outputs: vec![rules::ASSEMBLY_OUTPUT_SLOT],
+        menu: Some(rules::ASSEMBLY_TABLE.to_owned()),
+    }
+}
+
+/// The grid's items and counts, for the rules.
+fn assembly_grid(entity: &ModBlockEntity) -> Vec<Option<(&str, u32)>> {
+    (0..rules::GRID_SLOTS).map(|i| entity.items.get(i).and_then(Option::as_ref).map(|s| (&*s.item, s.count))).collect()
+}
+
+fn assembly_tick(entity: &mut ModBlockEntity) {
+    let data = vec![rules::assembly_data(&assembly_grid(entity))];
+    if entity.data != data {
+        entity.data = data;
+    }
+}
+
+/// Assemble: the recipe's parts out of the grid, one of its result into the output.
+/// Nothing happens without a recipe in the grid or room in the output.
+fn assembly_button(game: &Game<'_>, entity: &mut ModBlockEntity, id: i32) {
+    if id != rules::ASSEMBLE_BUTTON {
+        return;
+    }
+    let output = entity.items.get(rules::ASSEMBLY_OUTPUT_SLOT).and_then(Option::as_ref).map(|s| (&*s.item, s.count));
+    let most = |item: &str| game.native_max_stack_size(item).unwrap_or(64);
+    let Some(done) = rules::assemble(&assembly_grid(entity), output, &most) else {
+        return;
+    };
+    if entity.items.len() < rules::ASSEMBLY_SLOTS {
+        entity.items.resize(rules::ASSEMBLY_SLOTS, None);
+    }
+    for (slot, n) in done.take {
+        if let Some(stack) = entity.items[slot].as_mut() {
+            stack.count -= n;
+            if stack.count == 0 {
+                entity.items[slot] = None;
+            }
+        }
+    }
+    match entity.items[rules::ASSEMBLY_OUTPUT_SLOT].as_mut() {
+        Some(out) => out.count += 1,
+        None => entity.items[rules::ASSEMBLY_OUTPUT_SLOT] = Some(stack_of(done.result)),
+    }
+    assembly_tick(entity);
+}
+
+// ---- the assembly table's screen -------------------------------------------------
+//
+// The game draws the panel and the slots' frames; the mod draws the labels, the
+// line of what the grid makes and the button.
+
+const ASSEMBLY_WIDTH: f32 = 176.0;
+const ASSEMBLY_HEIGHT: f32 = 180.0;
+/// The grid's top left slot; the others are 18 pixels apart.
+const GRID_AT: [f32; 2] = [30.0, 17.0];
+const ASSEMBLY_OUTPUT_AT: [f32; 2] = [124.0, 21.0];
+/// The button: x, y, width, height.
+const ASSEMBLE_AT: [f32; 4] = [96.0, 47.0, 72.0, 18.0];
+const ASSEMBLY_LINE_Y: f32 = 76.0;
+const ASSEMBLY_INVENTORY_Y: f32 = 98.0;
+
+fn assembly_screen() -> NativeScreen {
+    let mut slots: Vec<Option<[f32; 2]>> = (0..rules::GRID_SLOTS)
+        .map(|i| Some([GRID_AT[0] + 18.0 * (i % 3) as f32, GRID_AT[1] + 18.0 * (i / 3) as f32]))
+        .collect();
+    slots.push(Some(ASSEMBLY_OUTPUT_AT));
+    NativeScreen {
+        width: ASSEMBLY_WIDTH,
+        height: ASSEMBLY_HEIGHT,
+        slots,
+        inventory_y: ASSEMBLY_INVENTORY_Y,
+        inventory_x: 8.0,
+        own_labels: true,
+        own_background: false,
+    }
+}
+
+fn assembly_screen_draw(game: &Game<'_>, data: &[i32], batch: &mut HudBatch, origin: [f32; 2]) {
+    let [x, y] = origin;
+    let title = lang::get("big_nukes.screen.assembly_table");
+    let width = game.native_text_width(&title);
+    game.native_text(batch, &title, [x + (ASSEMBLY_WIDTH - width) / 2.0, y + 6.0], LABEL, false);
+    game.native_text(batch, &lang::get("container.inventory"), [x + 8.0, y + ASSEMBLY_INVENTORY_Y - 11.0], LABEL, false);
+    let recipe = rules::assembly_of_data(data.first().copied().unwrap_or(0));
+    let line = match recipe {
+        Some(r) => lang::tr("big_nukes.screen.assembly_makes", &[&lang::get(&rules::name_key(r.result))]),
+        None => lang::get("big_nukes.screen.assembly_hint"),
+    };
+    let width = game.native_text_width(&line);
+    game.native_text(batch, &line, [x + (ASSEMBLY_WIDTH - width) / 2.0, y + ASSEMBLY_LINE_Y], LABEL, false);
+    // A plain button, lit while the grid holds a recipe.
+    let [bx, by, bw, bh] = ASSEMBLE_AT;
+    let (body, text) = if recipe.is_some() { (0xFF8B_8B8B, 0xFF_FFFF) } else { (0xFF5A_5A5A, 0xA0_A0A0) };
+    game.native_fill(batch, [x + bx, y + by, bw, bh], 0xFF00_0000);
+    game.native_fill(batch, [x + bx + 1.0, y + by + 1.0, bw - 2.0, bh - 2.0], 0xFFC6_C6C6);
+    game.native_fill(batch, [x + bx + 2.0, y + by + 2.0, bw - 3.0, bh - 3.0], body);
+    let label = lang::get("big_nukes.screen.assemble");
+    let width = game.native_text_width(&label);
+    game.native_text(batch, &label, [x + bx + (bw - width) / 2.0, y + by + (bh - 8.0) / 2.0], text, true);
+}
+
+fn assembly_screen_click(at: [f32; 2], right: bool, button: &mut Option<i32>) {
+    let [bx, by, bw, bh] = ASSEMBLE_AT;
+    if !right && (bx..bx + bw).contains(&at[0]) && (by..by + bh).contains(&at[1]) {
+        *button = Some(rules::ASSEMBLE_BUTTON);
+    }
 }

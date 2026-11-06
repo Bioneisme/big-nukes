@@ -2,17 +2,18 @@
   "type": "minecraft:crafting_shaped",
   "category": "misc",
   "pattern": [
-    "ITI",
-    "TRT",
-    "ITI"
+    "IGI",
+    "RFR",
+    "III"
   ],
   "key": {
     "I": "minecraft:iron_ingot",
-    "T": "minecraft:tnt",
-    "R": "minecraft:redstone"
+    "G": "minecraft:glass",
+    "R": "minecraft:redstone",
+    "F": "minecraft:furnace"
   },
   "result": {
-    "id": "big_nukes:demolition_charge",
+    "id": "big_nukes:centrifuge",
     "count": 1
   }
 }
