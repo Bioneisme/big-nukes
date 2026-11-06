@@ -6,19 +6,25 @@
 // each tick of its own dimension's level, within a time budget, as
 // `native_edit_blocks` only edits the level being ticked.
 
-use crate::game::{Game, NativeBlockEdit, NativeBlockRun, NativeFalling, NativeHeightmap, NativeShake, big_nukes as rules};
+use crate::game::{
+    Game, GameLevel, LevelDimension, NativeBlockEdit, NativeBlockRun, NativeFalling, NativeHeightmap, NativeShake,
+    big_nukes as rules,
+};
 use horizon_client::{
     containers::{ModBlockEntity, ModContainer},
     hud::HudBatch,
     items::ItemStack,
     lang,
-    mod_api::{EquipmentSlot, NativeCommand, NativeScreen, NativeServerPlayer, ServerTickPhase, WorldPhase},
+    mod_api::{EquipmentSlot, LivingRef, NativeCommand, NativeScreen, NativeServerPlayer, ServerTickPhase, WorldPhase},
     particles::{ParticleOptions, ParticleType},
     text::{self, ClickEvent, Style, Text},
 };
-use horizon_core::geometry::Direction;
+use horizon_core::{geometry::Direction, position::BlockPos};
 use horizon_mods::content::{Block, BlockProperties, Item, Rarity};
-use horizon_world::nbt::{Compound, JavaString, Tag};
+use horizon_world::{
+    nbt::{Compound, JavaString, Tag},
+    registry::BlockStateId,
+};
 use std::{
     collections::{BTreeSet, HashMap},
     fs,
@@ -45,12 +51,18 @@ struct State {
     /// Something changed since the last save. A wave whose far chunks never load
     /// never ends, so saving only on changes keeps it from costing forever.
     dirty: bool,
+    /// Dimensions a remote's blast went off in, to be opened at the end of the
+    /// server's tick, where a command may run.
+    wake: Vec<String>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 /// The loaded chunks of each dimension, heard from the start of the world, before
 /// its waves are read.
 static LOADED: Mutex<Option<HashMap<String, BTreeSet<[i32; 2]>>>> = Mutex::new(None);
+/// Bombs whose block changed into another, heard from the level, which may change
+/// a block while the state is locked: they are forgotten the next time it opens.
+static BROKEN: Mutex<Vec<(String, [i32; 3])>> = Mutex::new(Vec::new());
 
 fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -66,7 +78,24 @@ fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Option<State>>> {
             .and_then(|b| serde_json::from_slice(&b).map_err(|e| log::warn!("[big_nukes] waves.json: {e}")).ok())
             .unwrap_or_default();
         log::info!("[big_nukes] Big Nukes {} in {}", rules::VERSION, dir.display());
-        *guard = Some(State { dir, saved, warned: BTreeSet::new(), opened: BTreeSet::new(), ash: None, dirty: false });
+        *guard = Some(State {
+            dir,
+            saved,
+            warned: BTreeSet::new(),
+            opened: BTreeSet::new(),
+            ash: None,
+            dirty: false,
+            wake: Vec::new(),
+        });
+    }
+    let broken = std::mem::take(&mut *lock(&BROKEN));
+    let st = guard.as_mut().expect("opened");
+    let mut forgot = false;
+    for (dimension, pos) in broken {
+        forgot |= st.saved.forget(&dimension, pos);
+    }
+    if forgot {
+        save(st);
     }
     Some(guard)
 }
@@ -165,6 +194,7 @@ pub(in crate::game) fn logged_in(game: &mut Game<'_>, player: u128, name: &str) 
 pub(in crate::game) fn commands(commands: &mut Vec<NativeCommand>) {
     // One text argument, last: the radius and the optional place are read from it.
     commands.push(NativeCommand::op("bignukes blast <args:text>", 2));
+    commands.push(NativeCommand::op("bignukes maxpower [limit:integer]", 2));
 }
 
 pub(in crate::game) fn perform(game: &mut Game<'_>, player: &NativeServerPlayer, line: &str, ran: &mut bool) {
@@ -181,9 +211,30 @@ pub(in crate::game) fn perform(game: &mut Game<'_>, player: &NativeServerPlayer,
             },
             None => usage(),
         },
+        Some(&"maxpower") => maxpower(game, &words[2..]),
         _ => usage(),
     };
     game.native_feedback(reply);
+}
+
+/// `/bignukes maxpower [limit]`: tells the operator's limit, or sets it to one
+/// of the steps and saves it at once.
+fn maxpower(game: &mut Game<'_>, args: &[&str]) -> Text {
+    let n = |v: u32| Text::literal(v.to_string());
+    let (Some(asked), Some(mut guard)) = (rules::parse_maxpower(args), state(game)) else {
+        let steps: Vec<String> = rules::MAXPOWER_STEPS.iter().map(u32::to_string).collect();
+        return Text::translate("big_nukes.maxpower.usage", &[Text::literal(steps.join("|"))]);
+    };
+    let st = guard.as_mut().expect("opened");
+    match asked {
+        Some(limit) => {
+            st.saved.maxpower = limit;
+            save(st);
+            log::info!("[big_nukes] the operator's limit is now radius {limit}");
+            Text::translate("big_nukes.maxpower.set", &[n(limit)])
+        }
+        None => Text::translate("big_nukes.maxpower.current", &[n(st.saved.maxpower)]),
+    }
 }
 
 /// Starts a blast of `radius` at `center`, within the operator's limit: its
@@ -195,16 +246,28 @@ pub(in crate::game) fn start_blast(
     center: [i32; 3],
     radius: u32,
 ) -> Result<u64, rules::Refused> {
+    start(game, dimension, |saved| saved.fire(dimension, center, radius))
+}
+
+/// A blast in `dimension` that `fire` starts in the world's record: saved at
+/// once, and its news to the players there.
+fn start(
+    game: &mut Game<'_>,
+    dimension: &str,
+    fire: impl FnOnce(&mut rules::Saved) -> Result<u64, rules::Refused>,
+) -> Result<u64, rules::Refused> {
     let Some(mut guard) = state(game) else {
         return Err(rules::Refused::Dimension);
     };
     let st = guard.as_mut().expect("opened");
-    let id = st.saved.fire(dimension, center, radius)?;
+    let id = fire(&mut st.saved)?;
     save(st);
     let news: Vec<rules::News> = st.saved.waves.news(dimension, st.saved.tick).into_iter().filter(|n| n.id == id).collect();
     drop(guard);
     tell_dimension(game, dimension, &news);
-    log::info!("[big_nukes] blast {id}: radius {radius} at {center:?} in {dimension}");
+    if let Some(n) = news.first() {
+        log::info!("[big_nukes] blast {id}: radius {} at {:?} in {dimension}", n.radius, n.center);
+    }
     Ok(id)
 }
 
@@ -214,6 +277,7 @@ fn refused(why: rules::Refused) -> Text {
     match why {
         rules::Refused::Dimension => Text::translate("big_nukes.blast.dimension", &[]),
         rules::Refused::Maxpower { radius, maxpower } => Text::translate("big_nukes.maxpower.over", &[n(radius), n(maxpower)]),
+        rules::Refused::Gone => Text::translate("big_nukes.remote.gone", &[]),
     }
 }
 
@@ -391,6 +455,15 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     if st.dirty && st.saved.tick % SAVE_EVERY == 0 {
         save(st);
     }
+    let wake = std::mem::take(&mut st.wake);
+    drop(guard);
+    // A level nobody has entered since the world opened isn't open, and its
+    // forced chunks don't tick: a command run in it opens it, so a blast there
+    // works at once in the chunks an operator keeps loaded. The rest of its
+    // wave waits for its chunks to load, as anywhere else.
+    for dimension in wake {
+        game.native_run_command(&format!("execute in {dimension} run forceload query"));
+    }
 }
 
 /// The end of a level's tick: its waves move on, and some of their work is done.
@@ -409,10 +482,12 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     let ash = *st.ash.get_or_insert_with(|| has_ash(game, dimension));
     let started = Instant::now();
     let warned = &mut st.warned;
+    let mut worked = Vec::new();
     let done = st.saved.waves.work(dimension, BUDGET, &|| started.elapsed(), &mut |blast, chunk| {
         if !loaded.contains(&chunk) {
             return false;
         }
+        worked.push(chunk);
         for edit in rules::plan_chunk(blast, chunk) {
             if edit.runs.is_empty() {
                 continue;
@@ -427,6 +502,15 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
         true
     });
     st.dirty |= done > 0;
+    // A bulk edit tells no one of the blocks it changes: the bombs with a
+    // receiver that a blast took are forgotten here.
+    for chunk in worked {
+        for pos in st.saved.bombs_in(dimension, chunk) {
+            if rules::BombKind::of_block(&game.native_block(pos)).is_none() {
+                st.dirty |= st.saved.forget(dimension, pos);
+            }
+        }
+    }
     if st.saved.waves.idle(dimension) {
         log::info!("[big_nukes] {dimension}: the loaded part of every wave is done at tick {}", st.saved.tick);
     }
@@ -1015,8 +1099,8 @@ fn keypad_menu_known() -> bool {
     horizon_client::containers::mod_menu_type(rules::KEYPAD_MENU).is_some()
 }
 
-/// A right click on a bomb, with the main hand's item: a detonator goes in,
-/// flint and steel lights the fuse, and anything else opens the keypad, if
+/// A right click on a bomb, with the main hand's item: a remote is linked, a
+/// detonator goes in, flint and steel lights the fuse, and anything else opens the keypad, if
 /// there is one. The furnace the bomb is built on never opens. Sneaking with
 /// something else in hand lets it be used on the bomb (a block placed against it).
 pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
@@ -1042,9 +1126,21 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
     let tell = |game: &mut Game<'_>, line: Text| {
         game.native_tell(who.uuid, line);
     };
+    // A remote is linked to a bomb with a receiver, sneaking or not.
+    if held.as_deref() == Some(rules::REMOTE) {
+        match bomb.detonator {
+            Some(rules::Detonator::Receiver) => link(game, &who, pos, bomb.kind),
+            _ => tell(game, Text::translate("big_nukes.remote.no_receiver", &[])),
+        }
+        return;
+    }
     if let Some(detonator) = held.as_deref().and_then(rules::Detonator::of_item) {
         match bomb.install(detonator) {
-            Ok(()) => install(game, pos, &bomb, detonator, creative, who.uuid),
+            Ok(()) => {
+                if install(game, pos, &bomb, detonator, creative, who.uuid) && detonator == rules::Detonator::Receiver {
+                    remember(game, &who.dimension, pos, bomb.kind);
+                }
+            }
             Err(rules::Refusal::HasOne) => tell(game, Text::translate("big_nukes.bomb.has_detonator", &[])),
             Err(rules::Refusal::FuseOnly) => tell(game, Text::translate("big_nukes.bomb.fuse_only", &[])),
         }
@@ -1088,10 +1184,10 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
 }
 
 /// The detonator goes in: out of the player's hand, unless they're creative,
-/// into the bomb's slot and its state.
-fn install(game: &mut Game<'_>, pos: [i32; 3], bomb: &rules::Bomb, detonator: rules::Detonator, creative: bool, player: u128) {
+/// into the bomb's slot and its state. Whether it went in.
+fn install(game: &mut Game<'_>, pos: [i32; 3], bomb: &rules::Bomb, detonator: rules::Detonator, creative: bool, player: u128) -> bool {
     if !creative && game.native_take_items(detonator.item(), 1) == 0 {
-        return;
+        return false;
     }
     let put = game.native_with_mod_block_entity(pos, |e| {
         if e.items.len() < rules::BOMB_SLOTS {
@@ -1104,10 +1200,20 @@ fn install(game: &mut Game<'_>, pos: [i32; 3], bomb: &rules::Bomb, detonator: ru
         if !creative {
             game.native_give_items(detonator.item(), 1);
         }
-        return;
+        return false;
     }
     sound(game, pos, "minecraft:block.iron_trapdoor.close", 1.0, 1.4);
     game.native_tell(player, Text::translate("big_nukes.bomb.installed", &[item_name(detonator.item())]));
+    true
+}
+
+/// The acting player as a living entity, whose hands can be written.
+fn living_of(game: &Game<'_>, who: &NativeServerPlayer) -> Option<LivingRef> {
+    u32::try_from(who.entity_id)
+        .ok()
+        .filter(|id| *id > 0)
+        .and_then(|id| game.native_entity(id))
+        .and_then(|e| game.native_living(e))
 }
 
 /// One use off the flint and steel in the acting player's main hand; its last
@@ -1116,12 +1222,7 @@ fn wear_flint(game: &mut Game<'_>, who: &NativeServerPlayer) {
     let Some(mut flint) = game.native_equipment(EquipmentSlot::MainHand) else {
         return;
     };
-    let Some(living) = u32::try_from(who.entity_id)
-        .ok()
-        .filter(|id| *id > 0)
-        .and_then(|id| game.native_entity(id))
-        .and_then(|e| game.native_living(e))
-    else {
+    let Some(living) = living_of(game, who) else {
         return;
     };
     let worn = rules::worn(flint.damage);
@@ -1218,6 +1319,191 @@ fn keypad_button(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity
     }
     entity.data = bomb.data(now).to_vec();
     store_bomb(entity, &bomb);
+}
+
+// ---- the remote ------------------------------------------------------------------
+//
+// A right click on a bomb with a receiver links the remote in the main hand: its
+// `big_nukes:link` component (API 65) keeps the bomb's dimension and place. The
+// world keeps each bomb with a receiver in `Saved.bombs`, so a right click with a
+// linked remote sets the bomb off from anywhere, its chunk loaded or not.
+
+/// The player and the tick of the last remote pressed. The game asks once per
+/// hand, so a click sets off one bomb at most.
+static LAST_USE: Mutex<Option<(u128, u64)>> = Mutex::new(None);
+
+/// The remote's component, registered before the content loads.
+pub(in crate::game) fn component_types(types: &mut Vec<String>) {
+    if !types.iter().any(|t| t == rules::LINK) {
+        types.push(rules::LINK.to_owned());
+    }
+}
+
+fn place(pos: [i32; 3]) -> Text {
+    Text::literal(format!("{} {} {}", pos[0], pos[1], pos[2]))
+}
+
+/// A bomb with a receiver goes in the world's record, saved at once. False when
+/// it went off and only stands until its wave reaches it.
+fn remember(game: &Game<'_>, dimension: &str, pos: [i32; 3], kind: rules::BombKind) -> bool {
+    let Some(mut guard) = state(game) else {
+        return false;
+    };
+    let st = guard.as_mut().expect("opened");
+    let recorded = st.saved.record(dimension, pos, kind);
+    if recorded {
+        save(st);
+    }
+    recorded
+}
+
+/// The bomb the remote is linked to, if it is linked.
+fn link_of(game: &Game<'_>, stack: &ItemStack) -> Option<rules::Link> {
+    let tag = game.native_component(stack, rules::LINK).ok()??;
+    let Some(Tag::String(dimension)) = tag.get("dimension") else {
+        return None;
+    };
+    let Some(Tag::IntArray(pos)) = tag.get("pos") else {
+        return None;
+    };
+    rules::Link::of(&dimension.to_string_lossy(), <[i32; 3]>::try_from(pos.as_slice()).ok()?)
+}
+
+/// Links the remote in the acting player's main hand to the bomb at `pos`,
+/// recording the bomb again if its record was lost. A link to another bomb is
+/// replaced.
+fn link(game: &mut Game<'_>, who: &NativeServerPlayer, pos: [i32; 3], kind: rules::BombKind) {
+    if !remember(game, &who.dimension, pos, kind) {
+        game.native_tell(who.uuid, Text::translate("big_nukes.remote.spent", &[]));
+        return;
+    }
+    let (Some(mut remote), Some(living)) = (
+        game.native_equipment(EquipmentSlot::MainHand).filter(|s| &*s.item == rules::REMOTE),
+        living_of(game, who),
+    ) else {
+        return;
+    };
+    let value = Tag::compound([
+        ("dimension", Tag::String(JavaString::from(who.dimension.as_str()))),
+        ("pos", Tag::IntArray(pos.to_vec())),
+    ]);
+    if let Err(e) = game.native_set_component(&mut remote, rules::LINK, value) {
+        log::warn!("[big_nukes] linking a remote: {e}");
+        return;
+    }
+    if game.native_living_set_equipment(living, EquipmentSlot::MainHand, Some(remote)) {
+        sound(game, pos, "minecraft:block.note_block.pling", 0.8, 2.0);
+        game.native_tell(who.uuid, Text::translate("big_nukes.remote.linked", &[block_name(kind.id()), place(pos)]));
+    }
+}
+
+fn block_name(block: &str) -> Text {
+    Text::translate(&format!("block.{}", block.replace(':', ".")), &[])
+}
+
+/// Whether the chunk of `pos` is loaded in `dimension`.
+fn loaded(dimension: &str, pos: [i32; 3]) -> bool {
+    let chunk = rules::chunk_of(pos[0], pos[2]);
+    lock(&LOADED).as_ref().and_then(|m| m.get(dimension)).is_some_and(|set| set.contains(&chunk))
+}
+
+/// A right click with an item, in the air or on a block that let it through:
+/// a linked remote sets its bomb off. A bomb in a loaded chunk of the player's
+/// level is checked and taken away at once; any other goes with its wave's crater.
+pub(in crate::game) fn use_item(game: &mut Game<'_>, stack: &ItemStack, claimed: &mut bool) {
+    if *claimed || &*stack.item != rules::REMOTE || !game.native_on(rules::ID) {
+        return;
+    }
+    let (Some(who), Some((now, _))) = (game.native_acting_player(), clock(game)) else {
+        return;
+    };
+    *claimed = true;
+    {
+        let mut last = lock(&LAST_USE);
+        if *last == Some((who.uuid, now)) {
+            return;
+        }
+        *last = Some((who.uuid, now));
+    }
+    let Some(link) = link_of(game, stack) else {
+        game.native_tell(who.uuid, Text::translate("big_nukes.remote.not_linked", &[]));
+        return;
+    };
+    let (dimension, pos) = (link.dimension.as_str(), link.pos);
+    let here = dimension == who.dimension && loaded(dimension, pos);
+    if here {
+        // Something the world doesn't report (a bulk edit, another mod) may have
+        // taken the bomb or its receiver.
+        let receiver = game
+            .native_with_mod_block_entity(pos, |e| load_bomb(e))
+            .flatten()
+            .is_some_and(|b| b.detonator == Some(rules::Detonator::Receiver));
+        if !receiver
+            && let Some(mut guard) = state(game)
+        {
+            let st = guard.as_mut().expect("opened");
+            if st.saved.forget(dimension, pos) {
+                save(st);
+            }
+        }
+    }
+    let line = match start(game, dimension, |saved| saved.fire_bomb(dimension, pos)) {
+        Ok(_) => {
+            if here {
+                // The bomb goes with its blast, and its detonator with it.
+                game.native_with_mod_block_entity(pos, |e| e.items.iter_mut().for_each(|s| *s = None));
+                if let Some(air) = game.pack.assets.registry.default_state("minecraft:air") {
+                    game.native_set_block(dimension, pos, air, 3);
+                }
+            } else if dimension != who.dimension
+                && let Some(mut guard) = state(game)
+            {
+                let st = guard.as_mut().expect("opened");
+                if !st.wake.iter().any(|d| d == dimension) {
+                    st.wake.push(dimension.to_owned());
+                }
+            }
+            game.native_level_play_sound("minecraft:block.stone_button.click_on", who.position, PLAYERS, 0.6, 1.4);
+            Text::translate("big_nukes.remote.fired", &[place(pos)])
+        }
+        Err(why) => refused(why),
+    };
+    game.native_tell(who.uuid, line);
+}
+
+/// A block changed, by any means: a bomb that is no longer there is forgotten.
+/// Runs for every change in the world, so it asks the block's name first, and
+/// leaves the forgetting to the state's next opening, as the level may change a
+/// block while the state is locked.
+pub(in crate::game) fn block_changed(
+    level: &GameLevel<'_>,
+    dimension: LevelDimension,
+    pos: BlockPos,
+    old: BlockStateId,
+    new: BlockStateId,
+) {
+    let was = &*level.facts.get(old).name;
+    if rules::BombKind::of_block(was).is_none() || &*level.facts.get(new).name == was {
+        return;
+    }
+    let dimension = match dimension {
+        LevelDimension::Overworld => "minecraft:overworld",
+        LevelDimension::Nether => "minecraft:the_nether",
+        LevelDimension::End => "minecraft:the_end",
+    };
+    lock(&BROKEN).push((dimension.to_owned(), [pos.x, pos.y, pos.z]));
+}
+
+/// The remote's tooltip: the bomb it is linked to.
+pub(in crate::game) fn tooltip(game: &Game<'_>, stack: &ItemStack, lines: &mut Vec<(Text, u32)>) {
+    if &*stack.item != rules::REMOTE || !game.native_on(rules::ID) {
+        return;
+    }
+    let line = match link_of(game, stack) {
+        Some(link) => Text::translate("big_nukes.remote.tooltip.linked", &[place(link.pos), Text::literal(link.dimension)]),
+        None => Text::translate("big_nukes.remote.tooltip.unlinked", &[]),
+    };
+    lines.push((line.with_color(text::GRAY), u32::MAX));
 }
 
 // ---- the keypad's screen ---------------------------------------------------------
