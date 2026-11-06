@@ -96,6 +96,11 @@ def keypad(x, y, z, keys):
     hold(None)
     click(x, y, z)
     ctl("wait", 3)
+    # Without the screen the presses would be left clicks on the world, and in creative they break the bomb.
+    screen = ctl("screen").get("screen")
+    check("the keypad's screen opens", screen == "container", str(screen))
+    if screen != "container":
+        return
     press_keys(keys)
     ctl("close")
     ctl("wait", 2)
@@ -145,6 +150,8 @@ kx, kz = cx + 60, cz
 chat(f"setblock {kx} {y} {kz} big_nukes:tactical_warhead")
 hold("big_nukes:keypad_detonator")
 click(kx, y, kz)
+said = json.dumps(ctl("messages", 4).get("chat", []), ensure_ascii=False)
+check("the keypad goes into the tactical warhead", "installed" in said or "установлен" in said, said)
 before = blasts()
 keypad(kx, y, kz, [1, 2, "enter"])
 keypad(kx, y, kz, [1, 1, "enter"])

@@ -901,6 +901,17 @@ impl Waves {
     }
 
     /// Whether a running blast in `dimension` went off at `center`.
+    /// The centers of the blasts in `dimension` that stand in `chunk`: a bomb set
+    /// off there is taken when its wave works that chunk, even where its crater
+    /// doesn't reach (above the Nether's roof).
+    pub fn centers_in(&self, dimension: &str, chunk: [i32; 2]) -> Vec<[i32; 3]> {
+        self.waves
+            .iter()
+            .filter(|w| w.blast.dimension == dimension && chunk_of(w.blast.center[0], w.blast.center[2]) == chunk)
+            .map(|w| w.blast.center)
+            .collect()
+    }
+
     pub fn centered_at(&self, dimension: &str, center: [i32; 3]) -> bool {
         self.waves.iter().any(|w| w.blast.dimension == dimension && w.blast.center == center)
     }
@@ -2605,6 +2616,19 @@ mod tests {
     // ---- the remote and the operator's limit (Task 6) -------------------------
 
     const NETHER: &str = "minecraft:the_nether";
+
+    #[test]
+    fn a_blasts_center_is_found_in_its_own_chunk() {
+        let mut saved = Saved::default();
+        // A bomb on the Nether's roof: its crater stops below the roof, so the
+        // glue takes the bomb when the wave works the chunk of its center.
+        let roof_bomb = [40, 126, -20];
+        assert!(saved.record(NETHER, roof_bomb, BombKind::Atomic));
+        assert_eq!(saved.fire_bomb(NETHER, roof_bomb), Ok(1));
+        assert_eq!(saved.waves.centers_in(NETHER, chunk_of(40, -20)), vec![roof_bomb]);
+        assert!(saved.waves.centers_in(NETHER, chunk_of(56, -20)).is_empty(), "another chunk");
+        assert!(saved.waves.centers_in(OVERWORLD, chunk_of(40, -20)).is_empty(), "another dimension");
+    }
 
     #[test]
     fn a_remote_fires_its_linked_bomb_once() {

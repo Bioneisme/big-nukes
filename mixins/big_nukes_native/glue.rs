@@ -503,8 +503,19 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     });
     st.dirty |= done > 0;
     // A bulk edit tells no one of the blocks it changes: the bombs with a
-    // receiver that a blast took are forgotten here.
+    // receiver that a blast took are forgotten here. A bomb at a blast's center
+    // that its crater missed (above the Nether's roof) goes now, so a bomb set
+    // off from afar can't stay to be linked and set off again.
     for chunk in worked {
+        for center in st.saved.waves.centers_in(dimension, chunk) {
+            if rules::BombKind::of_block(&game.native_block(center)).is_some() {
+                // Its detonator goes with it, as when a bomb goes off in place.
+                game.native_with_mod_block_entity(center, |e| e.items.iter_mut().for_each(|s| *s = None));
+                if let Some(air) = game.pack.assets.registry.default_state("minecraft:air") {
+                    game.native_set_block(dimension, center, air, 3);
+                }
+            }
+        }
         for pos in st.saved.bombs_in(dimension, chunk) {
             if rules::BombKind::of_block(&game.native_block(pos)).is_none() {
                 st.dirty |= st.saved.forget(dimension, pos);

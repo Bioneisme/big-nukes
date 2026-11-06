@@ -164,6 +164,28 @@ said = fire()
 check("a broken bomb fires nothing", blasts() == before, said)
 check("and its remote says it is gone", "gone" in said or "нет" in said.lower(), said)
 
+# A bomb on the Nether's roof, set off from the Overworld: its crater stops below the roof, so the
+# bomb must go when its wave works its chunk, not stay to be linked and fired again.
+nx, ny, nz = 40, 129, 40
+chat(f"execute in minecraft:the_nether run tp @s {nx + 0.5} {ny + 1} {nz + 2.5}")
+ctl("wait", 60)
+chat(f"fill {nx - 3} {ny - 1} {nz - 3} {nx + 3} {ny - 1} {nz + 3} minecraft:stone")
+bomb_with_receiver(nx, ny, nz)
+said = link(nx, ny, nz)
+check("a bomb on the Nether's roof links", "linked" in said.lower() or "связан" in said.lower(), said)
+chat(f"execute in minecraft:overworld run tp @s {cx} {y + 30} {cz}")
+ctl("wait", 60)
+before = blasts()
+said = fire()
+check("it fires from the Overworld", blasts() == before + 1, said)
+chat(f"execute in minecraft:the_nether run tp @s {nx + 0.5} {ny + 1} {nz + 2.5}")
+ctl("wait", 200)
+check("back on the roof the bomb is gone", gone(nx, ny, nz), json.dumps(ctl("block", nx, ny, nz))[:200])
+said = link(nx, ny, nz)
+check("and nothing is left to link", "linked" not in said.lower(), said)
+chat(f"execute in minecraft:overworld run tp @s {cx} {y + 2} {cz}")
+ctl("wait", 40)
+
 # Links and the limit across a reload.
 rx, rz = cx - 300, cz
 chat(f"tp @s {rx} {y + 2} {rz}")

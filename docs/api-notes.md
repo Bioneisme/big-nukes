@@ -39,8 +39,8 @@ The native half knows the assets half is installed when the loot table `big_nuke
   click, and the glue lets go of a second turn of the same player on the same bomb in the same tick. The main hand's
   stack is `native_equipment(EquipmentSlot::MainHand)`; the player is `native_acting_player`.
 - `native_run_command` answers false inside a player's hook, so sounds and particles go through
-  `native_level_play_sound` and `native_level_send_particles`. A worn flint and steel is written back with
-  `native_living_set_equipment` on the acting player's `native_entity(entity_id)`.
+  `native_level_play_sound` and `native_level_send_particles`. A worn flint and steel is written back through the
+  inventory tick (see "The held stack").
 - A mod block's items spill when it is broken only if its block has a `ModContainer`: each bomb has one hidden slot for
   its detonator, with no faces, inputs or outputs, and the keypad's menu type (`big_nukes:keypad`, 1 slot, 4 data
   slots). A block the mod removes during its own tick drops what is left in `items`, so a bomb clears its slot first.
@@ -50,13 +50,15 @@ The native half knows the assets half is installed when the loot table `big_nuke
 
 - The link is an item component: `native_component_types` (API 65, an associated function with no `self`) registers
   `big_nukes:link`, and `native_set_component`/`native_component` write and read it as NBT (a compound of
-  `dimension`, a string, and `pos`, an int array). The stack written goes back to the main hand with
-  `native_living_set_equipment`. The component's types are process-wide, so the window's tooltip reads it too.
+  `dimension`, a string, and `pos`, an int array). The stack written goes back to the main hand through the inventory
+  tick (see "The held stack"). The component's types are process-wide, so the window's tooltip reads it too.
 - `native_use_item` (API 13) runs for a right click in the air and for one on a block whose use let it through; it
   has the hand's stack but not the hand, and the acting player is `native_acting_player`. A click on a bomb with the
-  remote should not reach it, as the bomb's right click is canceled (read in the source, not yet seen in the game).
+  remote doesn't reach it, as the bomb's right click is canceled (seen in the game: remote_test links by that click).
   `native_use_item_on` runs first for a click on a block (`game.rs`, the item phase), and a claim there skips
   `native_use_item`; the mod claims every remote click on a block, so the remote fires only aimed at the sky.
+- A bomb set off from afar is taken when its wave works the chunk of its center, as the crater stops below the
+  Nether's roof and a bomb above it would otherwise stay to be linked again (found in the final review).
 - `native_block_changed` is `GameLevel`'s, not `Game`'s, and runs for every `Level.setBlock`. A bulk edit
   (`native_edit_blocks`) writes as `fill ... strict` does and reports nothing, so a blast's crater is checked for the
   recorded bombs after each chunk. The level may set a block while the mod's state is locked (a command run during a
