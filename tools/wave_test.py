@@ -117,7 +117,7 @@ def s_small():
     check("the center is a crater", "air" in block(cx, cy - 5, cz), block(cx, cy - 5, cz))
     check("bedrock stays under the center", "bedrock" in block(cx, -64, cz), block(cx, -64, cz))
     check("the middle loses its leaves", "air" in block(cx + 25, SKY - 10, cz), block(cx + 25, SKY - 10, cz))
-    check("the middle's grass is scorched", "coarse_dirt" in block(cx + 25, SKY, cz), block(cx + 25, SKY, cz))
+    check("the middle's grass is scorched", "big_nukes:ash" in block(cx + 25, SKY, cz), block(cx + 25, SKY, cz))
     check("the outer ring loses its glass", "air" in block(cx + 43, cy + 10, cz), block(cx + 43, cy + 10, cz))
     check("beyond the border nothing changes", "glass" in block(cx + 70, cy + 10, cz), block(cx + 70, cy + 10, cz))
     check("no edit was refused", not refused(), str(refused())[:300])
@@ -163,7 +163,7 @@ def s_deferred():
         ctl("wait", 100)
         ctl("screenshot", os.path.join(SHOTS, "deferred.png"))
         check("a chunk loaded after the wave loses its leaves", "air" in block(far, SKY - 10, cz), block(far, SKY - 10, cz))
-        check("a chunk loaded after the wave is scorched", "coarse_dirt" in block(far, SKY, cz), block(far, SKY, cz))
+        check("a chunk loaded after the wave is scorched", "big_nukes:ash" in block(far, SKY, cz), block(far, SKY, cz))
         check("no edit was refused", not refused(), str(refused())[:300])
         quit_game()
     finally:
@@ -183,7 +183,7 @@ def s_restart():
     launch("bn-restart")
     ctl("wait", 300)
     check("after a restart the wave goes on", "air" in block(cx + 75, SKY - 10, cz), block(cx + 75, SKY - 10, cz))
-    check("after a restart the middle is scorched", "coarse_dirt" in block(cx + 75, SKY, cz), block(cx + 75, SKY, cz))
+    check("after a restart the middle is scorched", "big_nukes:ash" in block(cx + 75, SKY, cz), block(cx + 75, SKY, cz))
     quit_game()
     check("an ended wave leaves nothing to do", waves_file("bn-restart").get("waves", {}).get("waves") == [], str(waves_file("bn-restart"))[:300])
 

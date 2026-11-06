@@ -199,7 +199,22 @@ pub struct ChunkEdit {
     pub runs: Vec<Run>,
 }
 
-const PALETTE: [&str; 3] = ["minecraft:air", "minecraft:coarse_dirt", "minecraft:fire"];
+/// The ash the wave leaves on scorched ground: a block of the assets half.
+pub const ASH: &str = "big_nukes:ash";
+/// The ground scorched without the assets half, which the ash is a copy of.
+const ASH_STAND_IN: &str = "minecraft:coarse_dirt";
+
+impl ChunkEdit {
+    /// The edit for a game without the ash block: coarse dirt in its place.
+    pub fn without_ash(mut self) -> Self {
+        for p in self.palette.iter_mut().filter(|p| *p == ASH) {
+            *p = ASH_STAND_IN.to_string();
+        }
+        self
+    }
+}
+
+const PALETTE: [&str; 3] = ["minecraft:air", ASH, "minecraft:fire"];
 const AIR: u32 = 0;
 const SCORCHED: u32 = 1;
 const FLAME: u32 = 2;
@@ -931,9 +946,38 @@ mod tests {
     fn the_middle_scorches_the_surface_after_the_plants_are_gone() {
         let b = blast([0, 64, 0], 100, 2, World::OVERWORLD);
         let [plants, surface] = plan_chunk(&b, chunk_of(50, 0));
-        let dirt = surface.palette.iter().position(|p| p == "minecraft:coarse_dirt").unwrap() as u32;
+        let ash = surface.palette.iter().position(|p| p == ASH).unwrap() as u32;
         assert!(plants.runs.iter().any(|r| r.x == 50 && r.z == 0));
-        assert!(surface.runs.iter().any(|r| r.x == 50 && r.z == 0 && r.block == dirt && r.surface.is_some()));
+        assert!(surface.runs.iter().any(|r| r.x == 50 && r.z == 0 && r.block == ash && r.surface.is_some()));
+    }
+
+    #[test]
+    fn the_scorch_uses_ash() {
+        assert_eq!(ASH, "big_nukes:ash");
+        let b = blast([0, 64, 0], 100, 2, World::OVERWORLD);
+        let [_, surface] = plan_chunk(&b, chunk_of(50, 0));
+        assert!(!surface.palette.iter().any(|p| p == "minecraft:coarse_dirt"), "{:?}", surface.palette);
+        let ash = surface.palette.iter().position(|p| p == ASH).expect("ash in the palette") as u32;
+        let ground = surface.filters.iter().position(|f| f == "#minecraft:substrate_overworld").unwrap() as u32;
+        let scorched: Vec<&Run> = surface.runs.iter().filter(|r| r.only == Some(ground)).collect();
+        assert!(!scorched.is_empty());
+        assert!(scorched.iter().all(|r| r.block == ash && r.surface == Some(Surface::MotionBlockingNoLeaves)));
+    }
+
+    #[test]
+    fn without_the_ash_block_the_scorch_is_coarse_dirt() {
+        let b = blast([0, 64, 0], 100, 2, World::OVERWORLD);
+        for chunk in [[0, 0], chunk_of(50, 0)] {
+            for edit in plan_chunk(&b, chunk) {
+                let bare = edit.clone().without_ash();
+                assert_eq!((&bare.filters, &bare.runs), (&edit.filters, &edit.runs));
+                assert_eq!(bare.palette.len(), edit.palette.len());
+                for (was, is) in edit.palette.iter().zip(&bare.palette) {
+                    assert_eq!(is, if was == ASH { "minecraft:coarse_dirt" } else { was.as_str() });
+                }
+                assert!(!bare.palette.iter().any(|p| p == ASH));
+            }
+        }
     }
 
     #[test]
