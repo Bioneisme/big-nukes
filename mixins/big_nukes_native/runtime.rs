@@ -645,6 +645,49 @@ pub fn debris(blast: &Blast) -> Vec<([f64; 3], [f64; 3], &'static str)> {
         .collect()
 }
 
+// ---- the mushroom cloud ---------------------------------------------------------
+//
+// Its shape over time, in blocks: the renderer gets these numbers and only draws.
+
+/// A cloud at one moment: the fireball's height and size, the stem, the cap (a
+/// torus around the fireball), how much fire still glows, how visible it all is,
+/// and the dust ring on the ground with its own fade.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Cloud {
+    pub ball_h: f32,
+    pub ball_r: f32,
+    pub stem_r: f32,
+    pub cap_major: f32,
+    pub cap_minor: f32,
+    pub fire: f32,
+    pub fade: f32,
+    pub ring: f32,
+    pub ring_fade: f32,
+}
+
+pub fn cloud(age_ticks: f64, radius: u32) -> Cloud {
+    if age_ticks < 0.0 {
+        return Cloud::default();
+    }
+    let r = radius as f64;
+    let t = age_ticks / 20.0;
+    let top = 0.9 * r + 60.0;
+    let ball_r = 0.12 * r + 8.0;
+    let reach = r * (1.0 + BORDER);
+    let out_at = reach / FRONT_SPEED;
+    Cloud {
+        ball_h: (top * (1.0 - (-t / 25.0).exp())) as f32,
+        ball_r: ball_r as f32,
+        stem_r: (0.35 * ball_r) as f32,
+        cap_major: (0.5 * ball_r * (1.0 + t / 20.0)).min(1.4 * ball_r) as f32,
+        cap_minor: (0.8 * ball_r) as f32,
+        fire: (-t / 20.0).exp() as f32,
+        fade: (1.0 - (t - 180.0) / 120.0).clamp(0.0, 1.0) as f32,
+        ring: (age_ticks * FRONT_SPEED).min(reach) as f32,
+        ring_fade: (1.0 - (age_ticks - out_at).max(0.0) / 200.0).clamp(0.0, 1.0) as f32,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -1257,5 +1300,60 @@ mod tests {
         assert_eq!(w.fronts(OW, 3).len(), 1);
         w.advance(OW, 5, &|_| true);
         assert!(w.finished(), "the front is out at 12.5");
+    }
+
+    // ---- the mushroom cloud (plan 3, Task 2) ------------------------------------------
+
+    #[test]
+    fn the_fireball_rises_and_slows() {
+        let h = |s: f64| cloud(s * 20.0, 200).ball_h;
+        assert!(h(0.0) < 1.0);
+        assert!(h(10.0) > 50.0 && h(10.0) < h(30.0) && h(30.0) < h(120.0));
+        assert!(h(120.0) <= 0.9 * 200.0 + 60.0 + 0.01);
+        assert!(h(20.0) - h(10.0) > h(60.0) - h(50.0), "it slows");
+    }
+
+    #[test]
+    fn the_cap_grows_to_a_limit() {
+        let c = |s: f64| cloud(s * 20.0, 200);
+        assert!(c(10.0).cap_major < c(20.0).cap_major);
+        assert!((c(600.0).cap_major - 1.4 * c(600.0).ball_r).abs() < 0.01);
+        assert!((c(30.0).cap_minor - 0.8 * c(30.0).ball_r).abs() < 0.01);
+        assert!((c(30.0).stem_r - 0.35 * c(30.0).ball_r).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_fire_dies_in_a_minute() {
+        assert!((cloud(0.0, 100).fire - 1.0).abs() < 1e-6);
+        assert!(cloud(60.0 * 20.0, 100).fire < 0.06);
+    }
+
+    #[test]
+    fn the_cloud_fades_after_three_minutes() {
+        assert_eq!(cloud(170.0 * 20.0, 100).fade, 1.0);
+        let mid = cloud(240.0 * 20.0, 100).fade;
+        assert!(mid > 0.0 && mid < 1.0);
+        assert_eq!(cloud(300.0 * 20.0, 100).fade, 0.0);
+        assert_eq!(cloud(400.0 * 20.0, 100).fade, 0.0);
+    }
+
+    #[test]
+    fn the_ring_runs_to_the_reach_then_fades() {
+        assert!((cloud(20.0, 100).ring - 50.0).abs() < 1e-3);
+        assert_eq!(cloud(20.0, 100).ring_fade, 1.0);
+        let reach = 100.0 * 1.12;
+        assert!((cloud(1000.0, 100).ring - reach).abs() < 1e-3);
+        let out_at = reach / FRONT_SPEED as f32;
+        assert!(cloud(out_at as f64 + 100.0, 100).ring_fade > 0.0);
+        assert_eq!(cloud(out_at as f64 + 201.0, 100).ring_fade, 0.0);
+    }
+
+    #[test]
+    fn a_young_cloud_is_finite_at_age_zero() {
+        let c = cloud(0.0, 8);
+        for v in [c.ball_h, c.ball_r, c.stem_r, c.cap_major, c.cap_minor, c.fire, c.fade, c.ring, c.ring_fade] {
+            assert!(v.is_finite() && v >= 0.0);
+        }
+        assert!(cloud(-5.0, 100).fade == 0.0, "not yet");
     }
 }
