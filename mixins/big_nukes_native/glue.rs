@@ -633,7 +633,9 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     let Some(mut guard) = state(game) else { return };
     let st = guard.as_mut().expect("opened");
     st.saved.tick += 1;
-    let (sick, rad) = if st.saved.tick % rules::SECOND == 0 {
+    // Without the assets half there is no damage type, effect, suit or anti-rad:
+    // the radiation stays quiet rather than hurting with nothing to show or stop it.
+    let (sick, rad) = if st.saved.tick % rules::SECOND == 0 && assets_here(game) {
         st.dirty |= st.saved.prune_zones(st.saved.tick);
         (sick(game, st), rad_news(game, st))
     } else {
@@ -672,8 +674,13 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
 /// type is added once the world's registries are built. Only with the assets
 /// half, which brings the type itself. This is the game's own table, not an API:
 /// when it changes, the build breaks, not the game.
+/// Whether the assets half is installed: it brings the marker loot table.
+fn assets_here(game: &Game<'_>) -> bool {
+    world_items!(game).has_loot_table(rules::ASSETS_MARKER)
+}
+
 fn known_damage_type(game: &mut Game<'_>) {
-    if !world_items!(game).has_loot_table(rules::ASSETS_MARKER) {
+    if !assets_here(game) {
         return;
     }
     if let Some(r) = game.ui.registries.by_registry.get_mut("minecraft:damage_type")
@@ -1602,6 +1609,9 @@ const MOBS_PER_PASS: usize = 64;
 /// background where it stands, up to `MOBS_PER_PASS` of them, the next ones on
 /// the next pass.
 fn irradiate_mobs(game: &mut Game<'_>, dimension: &str) {
+    if !assets_here(game) {
+        return;
+    }
     let hurt_now: Vec<(u32, u32)> = {
         let Some(mut guard) = state(game) else { return };
         let st = guard.as_mut().expect("opened");
@@ -2022,7 +2032,14 @@ pub(in crate::game) fn block_changed(
 
 /// The remote's tooltip: the bomb it is linked to.
 pub(in crate::game) fn tooltip(game: &Game<'_>, stack: &ItemStack, lines: &mut Vec<(Text, u32)>) {
-    if &*stack.item != rules::REMOTE || !game.native_on(rules::ID) {
+    if !game.native_on(rules::ID) {
+        return;
+    }
+    // How to use it, under its name.
+    for key in rules::tips(&stack.item) {
+        lines.push((Text::translate(key, &[]).with_color(text::GRAY), u32::MAX));
+    }
+    if &*stack.item != rules::REMOTE {
         return;
     }
     let line = match link_of(game, stack) {

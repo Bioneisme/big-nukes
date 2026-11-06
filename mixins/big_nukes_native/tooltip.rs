@@ -1,4 +1,4 @@
-// An item's tooltip: the remote names the bomb it is linked to.
+// An item's tooltip: how to use it, and the bomb a remote is linked to.
 fn big_nukes_tooltip(
     game: &crate::game::Game<'_>,
     stack: &horizon_client::items::ItemStack,

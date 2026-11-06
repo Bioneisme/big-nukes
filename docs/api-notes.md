@@ -28,8 +28,9 @@ The native half knows the assets half is installed when the loot table `big_nuke
 - `native_run_command` answers false when a command affects nothing (a damage band with no one in it, smoke no player is
   near enough to see), so false is not logged as an error.
 - A mod's `data/<ns>/damage_type/*.json` in the `.hmod` was not found by `/damage` on Nightly 66f3981 ("Can't find
-  element 'big_nukes:blast' of type 'minecraft:damage_type'"), so the blast does `minecraft:explosion` damage. Plan 5's
-  radiation damage has to find a way around this.
+  element 'big_nukes:blast' of type 'minecraft:damage_type'"), so the blast does `minecraft:explosion` damage. The type
+  is loaded; only the command's check refuses it (a Horizon bug, written up in `docs/horizon-issue-damage-types.md`).
+  Radiation adds `big_nukes:radiation` to `game.ui.registries.by_registry` itself (`known_damage_type`, not an API).
 - Sounds are the mod's own (`tools/make_sounds.py`). A local sound reaches `max(volume, 1) × attenuation_distance`
   blocks, so each is played 6 blocks from the player towards the blast, with the delay of the front.
 

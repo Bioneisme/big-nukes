@@ -83,6 +83,36 @@ pub const ITEMS: [(&str, u8, bool); 14] = [
     (GEIGER_COUNTER, 1, false),
 ];
 
+/// What each block and item says under its name about how to use it: lang keys, one line each.
+const TIPS: [(&str, &[&str]); 21] = [
+    ("big_nukes:demolition_charge", &["big_nukes.tip.demolition_charge", "big_nukes.tip.demolition_charge.2"]),
+    ("big_nukes:tactical_warhead", &["big_nukes.tip.tactical_warhead", "big_nukes.tip.tactical_warhead.2"]),
+    ("big_nukes:atomic_bomb", &["big_nukes.tip.atomic_bomb", "big_nukes.tip.atomic_bomb.2"]),
+    ("big_nukes:fuse_detonator", &["big_nukes.tip.fuse_detonator"]),
+    ("big_nukes:keypad_detonator", &["big_nukes.tip.keypad_detonator", "big_nukes.tip.keypad_detonator.2"]),
+    ("big_nukes:receiver_detonator", &["big_nukes.tip.receiver_detonator"]),
+    ("big_nukes:remote", &["big_nukes.tip.remote"]),
+    ("big_nukes:centrifuge", &["big_nukes.tip.centrifuge"]),
+    ("big_nukes:assembly_table", &["big_nukes.tip.assembly_table"]),
+    ("big_nukes:uranium_ore", &["big_nukes.tip.uranium_ore"]),
+    ("big_nukes:deepslate_uranium_ore", &["big_nukes.tip.uranium_ore"]),
+    ("big_nukes:raw_uranium", &["big_nukes.tip.raw_uranium"]),
+    ("big_nukes:enriched_uranium", &["big_nukes.tip.enriched_uranium"]),
+    ("big_nukes:nuclear_charge", &["big_nukes.tip.nuclear_charge"]),
+    ("big_nukes:bomb_casing", &["big_nukes.tip.bomb_casing"]),
+    ("big_nukes:geiger_counter", &["big_nukes.tip.geiger_counter"]),
+    ("big_nukes:hazmat_helmet", &["big_nukes.tip.hazmat"]),
+    ("big_nukes:hazmat_chestplate", &["big_nukes.tip.hazmat"]),
+    ("big_nukes:hazmat_leggings", &["big_nukes.tip.hazmat"]),
+    ("big_nukes:hazmat_boots", &["big_nukes.tip.hazmat"]),
+    ("big_nukes:anti_rad", &["big_nukes.tip.anti_rad"]),
+];
+
+/// The tip lines of `id`, empty for anything else.
+pub fn tips(id: &str) -> &'static [&'static str] {
+    TIPS.iter().find(|t| t.0 == id).map_or(&[], |t| t.1)
+}
+
 /// The hazmat suit: each piece's id, the slot it is worn in, and the vanilla
 /// armour it copies.
 pub const HAZMAT: [(&str, &str, &str); 4] = [
@@ -2636,6 +2666,21 @@ mod tests {
         assert_eq!(&b[1..4], b"PNG", "{path}");
         let int = |at: usize| u32::from_be_bytes(b[at..at + 4].try_into().unwrap());
         (int(16), int(20))
+    }
+
+    #[test]
+    fn every_block_and_item_says_how_to_use_it() {
+        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(FILE_BLOCKS).collect();
+        all.extend(ITEMS.iter().map(|i| i.0));
+        let (en, ru) = (language("en_us"), language("ru_ru"));
+        for id in all.into_iter().filter(|id| *id != "big_nukes:ash") {
+            let keys = tips(id);
+            assert!(!keys.is_empty(), "{id} has no tip");
+            for k in keys {
+                assert!(en.contains_key(*k) && ru.contains_key(*k), "{k}");
+            }
+        }
+        assert!(tips("minecraft:stone").is_empty());
     }
 
     #[test]
