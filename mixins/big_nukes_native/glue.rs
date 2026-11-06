@@ -30,6 +30,9 @@ struct State {
     saved: rules::Saved,
     /// Blasts whose refused edit is already in the log.
     warned: BTreeSet<u64>,
+    /// Something changed since the last save. A wave whose far chunks never load
+    /// never ends, so saving only on changes keeps it from costing forever.
+    dirty: bool,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -51,12 +54,13 @@ fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Option<State>>> {
             .and_then(|b| serde_json::from_slice(&b).map_err(|e| log::warn!("[big_nukes] waves.json: {e}")).ok())
             .unwrap_or_default();
         log::info!("[big_nukes] Big Nukes {} in {}", rules::VERSION, dir.display());
-        *guard = Some(State { dir, saved, warned: BTreeSet::new() });
+        *guard = Some(State { dir, saved, warned: BTreeSet::new(), dirty: false });
     }
     Some(guard)
 }
 
-fn save(st: &State) {
+fn save(st: &mut State) {
+    st.dirty = false;
     let write = || -> std::io::Result<()> {
         fs::create_dir_all(&st.dir)?;
         let tmp = st.dir.join("waves.json.tmp");
@@ -145,7 +149,7 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     let Some(mut guard) = state(game) else { return };
     let st = guard.as_mut().expect("opened");
     st.saved.tick += 1;
-    if !st.saved.waves.finished() && st.saved.tick % SAVE_EVERY == 0 {
+    if st.dirty && st.saved.tick % SAVE_EVERY == 0 {
         save(st);
     }
 }
@@ -157,15 +161,14 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     }
     let Some(mut guard) = state(game) else { return };
     let st = guard.as_mut().expect("opened");
-    if st.saved.waves.finished() {
+    if st.saved.waves.idle(dimension) {
         return;
     }
     let loaded = lock(&LOADED).as_ref().and_then(|m| m.get(dimension)).cloned().unwrap_or_default();
-    let was_idle = st.saved.waves.idle(dimension);
-    st.saved.waves.advance(dimension, st.saved.tick, &|c| loaded.contains(&c));
+    st.dirty |= st.saved.waves.advance(dimension, st.saved.tick, &|c| loaded.contains(&c));
     let started = Instant::now();
     let warned = &mut st.warned;
-    st.saved.waves.work(dimension, BUDGET, &|| started.elapsed(), &mut |blast, chunk| {
+    let done = st.saved.waves.work(dimension, BUDGET, &|| started.elapsed(), &mut |blast, chunk| {
         if !loaded.contains(&chunk) {
             return false;
         }
@@ -181,7 +184,8 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
         }
         true
     });
-    if !was_idle && st.saved.waves.idle(dimension) {
+    st.dirty |= done > 0;
+    if st.saved.waves.idle(dimension) {
         log::info!("[big_nukes] {dimension}: the loaded part of every wave is done at tick {}", st.saved.tick);
     }
     if st.saved.waves.finished() {
@@ -217,7 +221,8 @@ fn native(edit: rules::ChunkEdit) -> NativeBlockEdit {
 pub(in crate::game) fn chunk_load(game: &mut Game<'_>, dimension: &str, chunk: [i32; 2]) {
     lock(&LOADED).get_or_insert_default().entry(dimension.to_owned()).or_default().insert(chunk);
     if let Some(mut guard) = state(game) {
-        guard.as_mut().expect("opened").saved.waves.chunk_loaded(dimension, chunk);
+        let st = guard.as_mut().expect("opened");
+        st.dirty |= st.saved.waves.chunk_loaded(dimension, chunk);
     }
 }
 
@@ -235,7 +240,7 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
         return;
     }
     let mut state = lock(&STATE);
-    if let Some(st) = state.as_ref() {
+    if let Some(st) = state.as_mut() {
         save(st);
     }
     *state = None;

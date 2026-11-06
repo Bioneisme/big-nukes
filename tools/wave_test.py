@@ -100,13 +100,15 @@ def waves_file(world):
 
 
 LEAVES = "minecraft:oak_leaves[persistent=true]"
+# Markers float this high, over any terrain, so the grass is always the surface.
+SKY = 300
 
 
 def s_small():
     launch("bn-small")
     cx, cy, cz = here()
-    mark(cx + 25, cy + 10, cz, LEAVES)
-    mark(cx + 25, cy + 20, cz, "minecraft:grass_block")
+    mark(cx + 25, SKY - 10, cz, LEAVES)
+    mark(cx + 25, SKY, cz, "minecraft:grass_block")
     mark(cx + 43, cy + 10, cz, "minecraft:glass")
     mark(cx + 70, cy + 10, cz, "minecraft:glass")
     print(" blast:", chat("bignukes blast 50"))
@@ -114,8 +116,8 @@ def s_small():
     ctl("screenshot", os.path.join(SHOTS, "small.png"))
     check("the center is a crater", "air" in block(cx, cy - 5, cz), block(cx, cy - 5, cz))
     check("bedrock stays under the center", "bedrock" in block(cx, -64, cz), block(cx, -64, cz))
-    check("the middle loses its leaves", "air" in block(cx + 25, cy + 10, cz), block(cx + 25, cy + 10, cz))
-    check("the middle's grass is scorched", "coarse_dirt" in block(cx + 25, cy + 20, cz), block(cx + 25, cy + 20, cz))
+    check("the middle loses its leaves", "air" in block(cx + 25, SKY - 10, cz), block(cx + 25, SKY - 10, cz))
+    check("the middle's grass is scorched", "coarse_dirt" in block(cx + 25, SKY, cz), block(cx + 25, SKY, cz))
     check("the outer ring loses its glass", "air" in block(cx + 43, cy + 10, cz), block(cx + 43, cy + 10, cz))
     check("beyond the border nothing changes", "glass" in block(cx + 70, cy + 10, cz), block(cx + 70, cy + 10, cz))
     check("no edit was refused", not refused(), str(refused())[:300])
@@ -147,18 +149,21 @@ def s_deferred():
         far = cx + 200
         chat(f"tp @s {far} {cy + 80} {cz}")
         ctl("wait", 60)
-        mark(far, cy + 60, cz, LEAVES)
-        mark(far, cy + 70, cz, "minecraft:grass_block")
+        mark(far, SKY - 10, cz, LEAVES)
+        mark(far, SKY, cz, "minecraft:grass_block")
         chat(f"tp @s {cx} {cy + 2} {cz}")
         ctl("wait", 200)
-        print(" far column before the blast (unloaded?):", block(far, cy + 60, cz))
+        print(" far column before the blast (unloaded?):", block(far, SKY - 10, cz))
         print(" blast:", chat(f"bignukes blast 400 {cx} {cy} {cz}"))
         ctl("wait", 300)
+        waves = waves_file("bn-deferred").get("waves", {}).get("waves", [])
+        deferred = [list(c) for w in waves for c in w.get("deferred", [])]
+        check("the far chunk waits for its load", [far // 16, cz // 16] in deferred, str(waves)[:300])
         chat(f"tp @s {far} {cy + 90} {cz}")
         ctl("wait", 100)
         ctl("screenshot", os.path.join(SHOTS, "deferred.png"))
-        check("a chunk loaded after the wave loses its leaves", "air" in block(far, cy + 60, cz), block(far, cy + 60, cz))
-        check("a chunk loaded after the wave is scorched", "coarse_dirt" in block(far, cy + 70, cz), block(far, cy + 70, cz))
+        check("a chunk loaded after the wave loses its leaves", "air" in block(far, SKY - 10, cz), block(far, SKY - 10, cz))
+        check("a chunk loaded after the wave is scorched", "coarse_dirt" in block(far, SKY, cz), block(far, SKY, cz))
         check("no edit was refused", not refused(), str(refused())[:300])
         quit_game()
     finally:
@@ -169,16 +174,16 @@ def s_deferred():
 def s_restart():
     launch("bn-restart")
     cx, cy, cz = here()
-    mark(cx + 75, cy + 10, cz, LEAVES)
-    mark(cx + 75, cy + 20, cz, "minecraft:grass_block")
+    mark(cx + 75, SKY - 10, cz, LEAVES)
+    mark(cx + 75, SKY, cz, "minecraft:grass_block")
     print(" blast:", chat("bignukes blast 150"))
     ctl("wait", 20)
     quit_game()
     print(" mid-wave:", str(waves_file("bn-restart"))[:200])
     launch("bn-restart")
     ctl("wait", 300)
-    check("after a restart the wave goes on", "air" in block(cx + 75, cy + 10, cz), block(cx + 75, cy + 10, cz))
-    check("after a restart the middle is scorched", "coarse_dirt" in block(cx + 75, cy + 20, cz), block(cx + 75, cy + 20, cz))
+    check("after a restart the wave goes on", "air" in block(cx + 75, SKY - 10, cz), block(cx + 75, SKY - 10, cz))
+    check("after a restart the middle is scorched", "coarse_dirt" in block(cx + 75, SKY, cz), block(cx + 75, SKY, cz))
     quit_game()
     check("an ended wave leaves nothing to do", waves_file("bn-restart").get("waves", {}).get("waves") == [], str(waves_file("bn-restart"))[:300])
 

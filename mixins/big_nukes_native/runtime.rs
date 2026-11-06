@@ -27,11 +27,14 @@ pub const ASSETS_MARKER: &str = "big_nukes:marker";
 pub struct World {
     pub min_y: i32,
     pub height: i32,
+    /// Where a blast stops going up: the world's top, or under the Nether's bedrock roof.
+    pub roof: i32,
 }
 
 impl World {
-    pub const OVERWORLD: World = World { min_y: -64, height: 384 };
-    pub const NETHER: World = World { min_y: 0, height: 256 };
+    pub const OVERWORLD: World = World { min_y: -64, height: 384, roof: 320 };
+    pub const NETHER: World = World { min_y: 0, height: 256, roof: 123 };
+    pub const END: World = World { min_y: 0, height: 256, roof: 256 };
 
     /// The first height above the world.
     pub fn top(&self) -> i32 {
@@ -201,7 +204,7 @@ fn edit() -> ChunkEdit {
 /// run's heightmap is read once, before its edit changes anything.
 pub fn plan_chunk(blast: &Blast, chunk: [i32; 2]) -> [ChunkEdit; 2] {
     let (mut plants, mut surface) = (edit(), edit());
-    let top = blast.world.top();
+    let top = blast.world.roof.min(blast.world.top());
     let from = |y: i32| y.clamp(blast.world.min_y, top);
     for x in chunk[0] * 16..chunk[0] * 16 + 16 {
         for z in chunk[1] * 16..chunk[1] * 16 + 16 {
@@ -314,7 +317,9 @@ impl Waves {
     }
 
     /// Moves the front of each wave in `dimension` on to `now_tick`.
-    pub fn advance(&mut self, dimension: &str, now_tick: u64, loaded: &dyn Fn([i32; 2]) -> bool) {
+    /// Answers whether the front reached any chunk.
+    pub fn advance(&mut self, dimension: &str, now_tick: u64, loaded: &dyn Fn([i32; 2]) -> bool) -> bool {
+        let mut moved = false;
         for w in self.waves.iter_mut().filter(|w| w.blast.dimension == dimension) {
             let front = now_tick.saturating_sub(w.start) as f64 * FRONT_SPEED;
             w.order();
@@ -328,18 +333,23 @@ impl Waves {
                     w.deferred.insert(chunk);
                 }
                 w.reached += 1;
+                moved = true;
             }
         }
         self.waves.retain_mut(|w| !w.done());
+        moved
     }
 
-    /// A chunk came in: its waiting work is next.
-    pub fn chunk_loaded(&mut self, dimension: &str, chunk: [i32; 2]) {
+    /// A chunk came in: its waiting work is next. Answers whether any waited.
+    pub fn chunk_loaded(&mut self, dimension: &str, chunk: [i32; 2]) -> bool {
+        let mut moved = false;
         for w in self.waves.iter_mut().filter(|w| w.blast.dimension == dimension) {
             if w.deferred.remove(&chunk) {
                 w.ready.push_front(chunk);
+                moved = true;
             }
         }
+        moved
     }
 
     /// The next chunk to change, taken off its wave's list.
@@ -366,6 +376,7 @@ impl Waves {
                 w.deferred.insert(chunk);
             }
         }
+        self.waves.retain_mut(|w| !w.done());
         done
     }
 
@@ -393,7 +404,8 @@ pub const MAX_RADIUS: u32 = 1024;
 pub fn world_of(dimension: &str) -> Option<World> {
     match dimension {
         "minecraft:overworld" => Some(World::OVERWORLD),
-        "minecraft:the_nether" | "minecraft:the_end" => Some(World::NETHER),
+        "minecraft:the_nether" => Some(World::NETHER),
+        "minecraft:the_end" => Some(World::END),
         _ => None,
     }
 }
@@ -825,5 +837,37 @@ mod tests {
         assert!(w.idle(OW), "only a deferred chunk is left");
         assert!(!w.finished());
         assert!(w.idle("minecraft:the_nether"));
+    }
+
+    // ---- review fixes ---------------------------------------------------------
+
+    #[test]
+    fn advance_and_loads_tell_whether_anything_moved() {
+        let mut w = waves_with(&[blast([0, 64, 0], 60, 1, World::OVERWORLD)]);
+        let far = [3, 0];
+        assert!(w.advance(OW, 1000, &|c| c != far));
+        drain(&mut w, OW);
+        assert!(!w.advance(OW, 1001, &|_| true), "the front is out and nothing new is reached");
+        assert!(!w.chunk_loaded(OW, [40, 40]), "no work waits there");
+        assert!(w.chunk_loaded(OW, far));
+        assert!(!w.chunk_loaded(OW, far));
+    }
+
+    #[test]
+    fn nether_blasts_keep_the_bedrock_roof() {
+        let b = Blast { dimension: "minecraft:the_nether".into(), ..blast([0, 70, 0], 200, 4, World::NETHER) };
+        for (_, r) in all_runs(&b).iter().filter(|(_, r)| r.surface.is_none()) {
+            assert!(r.y + r.height as i32 <= 123, "{r:?} reaches the roof");
+        }
+        assert_eq!(world_of("minecraft:the_end").map(|w| w.roof), Some(256));
+        assert_eq!(world_of("minecraft:overworld").map(|w| w.roof), Some(320));
+    }
+
+    #[test]
+    fn a_wave_ends_with_its_last_job_without_another_advance() {
+        let mut w = waves_with(&[blast([0, 64, 0], 40, 1, World::OVERWORLD)]);
+        w.advance(OW, 1000, &|_| true);
+        w.work(OW, Duration::from_secs(1), &|| Duration::ZERO, &mut |_, _| true);
+        assert!(w.finished());
     }
 }
