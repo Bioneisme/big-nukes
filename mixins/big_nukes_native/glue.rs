@@ -12,7 +12,8 @@ use horizon_client::{
     hud::HudBatch,
     items::ItemStack,
     lang,
-    mod_api::{NativeCommand, NativeScreen, NativeServerPlayer, ServerTickPhase, WorldPhase},
+    mod_api::{EquipmentSlot, NativeCommand, NativeScreen, NativeServerPlayer, ServerTickPhase, WorldPhase},
+    particles::{ParticleOptions, ParticleType},
     text::{self, ClickEvent, Style, Text},
 };
 use horizon_core::geometry::Direction;
@@ -174,26 +175,46 @@ pub(in crate::game) fn perform(game: &mut Game<'_>, player: &NativeServerPlayer,
     *ran = true;
     let reply = match words.get(1) {
         Some(&"blast") => match rules::parse_blast(&words[2..], player.position) {
-            Some((radius, center)) => {
-                let Some(mut guard) = state(game) else { return };
-                let st = guard.as_mut().expect("opened");
-                match st.saved.blast(&player.dimension, center, radius) {
-                    Some(id) => {
-                        save(st);
-                        let news: Vec<rules::News> =
-                            st.saved.waves.news(&player.dimension, st.saved.tick).into_iter().filter(|n| n.id == id).collect();
-                        drop(guard);
-                        tell_dimension(game, &player.dimension, &news);
-                        Text::translate("big_nukes.blast.started", &[Text::literal(radius.to_string())])
-                    }
-                    None => Text::translate("big_nukes.blast.dimension", &[]),
-                }
-            }
+            Some((radius, center)) => match start_blast(game, &player.dimension, center, radius) {
+                Ok(_) => Text::translate("big_nukes.blast.started", &[Text::literal(radius.to_string())]),
+                Err(why) => refused(why),
+            },
             None => usage(),
         },
         _ => usage(),
     };
     game.native_feedback(reply);
+}
+
+/// Starts a blast of `radius` at `center`, within the operator's limit: its
+/// wave, saved at once, and the news to the players of its dimension. The
+/// command and the bombs both go through here.
+pub(in crate::game) fn start_blast(
+    game: &mut Game<'_>,
+    dimension: &str,
+    center: [i32; 3],
+    radius: u32,
+) -> Result<u64, rules::Refused> {
+    let Some(mut guard) = state(game) else {
+        return Err(rules::Refused::Dimension);
+    };
+    let st = guard.as_mut().expect("opened");
+    let id = st.saved.fire(dimension, center, radius)?;
+    save(st);
+    let news: Vec<rules::News> = st.saved.waves.news(dimension, st.saved.tick).into_iter().filter(|n| n.id == id).collect();
+    drop(guard);
+    tell_dimension(game, dimension, &news);
+    log::info!("[big_nukes] blast {id}: radius {radius} at {center:?} in {dimension}");
+    Ok(id)
+}
+
+/// Why a blast didn't start, for the player who asked.
+fn refused(why: rules::Refused) -> Text {
+    let n = |v: u32| Text::literal(v.to_string());
+    match why {
+        rules::Refused::Dimension => Text::translate("big_nukes.blast.dimension", &[]),
+        rules::Refused::Maxpower { radius, maxpower } => Text::translate("big_nukes.maxpower.over", &[n(radius), n(maxpower)]),
+    }
 }
 
 fn usage() -> Text {
@@ -486,14 +507,19 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
 //
 // The hooks the machines share hand each block to its own functions, by its id.
 
+/// The blocks with a block entity: the machines and the bombs. Its id is its block's.
+fn has_entity(block: &str) -> bool {
+    matches!(block, rules::CENTRIFUGE | rules::ASSEMBLY_TABLE) || rules::BombKind::of_block(block).is_some()
+}
+
 pub(in crate::game) fn block_entity(block: &str, entity: &mut Option<(String, Compound)>) {
-    if matches!(block, rules::CENTRIFUGE | rules::ASSEMBLY_TABLE) && entity.is_none() {
+    if has_entity(block) && entity.is_none() {
         *entity = Some((block.to_owned(), Compound::default()));
     }
 }
 
 pub(in crate::game) fn block_entity_ticks(block: &str, ticks: &mut bool) {
-    if matches!(block, rules::CENTRIFUGE | rules::ASSEMBLY_TABLE) {
+    if has_entity(block) {
         *ticks = true;
     }
 }
@@ -502,27 +528,33 @@ pub(in crate::game) fn container(block: &str, container: &mut Option<ModContaine
     match block {
         rules::CENTRIFUGE => *container = Some(centrifuge_container()),
         rules::ASSEMBLY_TABLE => *container = Some(assembly_container()),
-        _ => {}
+        _ => {
+            if let Some(kind) = rules::BombKind::of_block(block) {
+                *container = Some(bomb_container(kind));
+            }
+        }
     }
 }
 
-pub(in crate::game) fn tick(game: &mut Game<'_>, entity: &mut ModBlockEntity) {
+pub(in crate::game) fn tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity) {
     if !game.native_on(rules::ID) {
         return;
     }
     match entity.id.as_str() {
         rules::CENTRIFUGE => centrifuge_tick(game, entity),
         rules::ASSEMBLY_TABLE => assembly_tick(entity),
+        id if rules::BombKind::of_block(id).is_some() => bomb_tick(game, pos, entity),
         _ => {}
     }
 }
 
-pub(in crate::game) fn menu_button(game: &Game<'_>, entity: &mut ModBlockEntity, id: i32) {
+pub(in crate::game) fn menu_button(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity, id: i32) {
     if !game.native_on(rules::ID) {
         return;
     }
     match entity.id.as_str() {
         rules::ASSEMBLY_TABLE => assembly_button(game, entity, id),
+        block if keypad_bomb(block) => keypad_button(game, pos, entity, id),
         _ => {}
     }
 }
@@ -531,6 +563,7 @@ pub(in crate::game) fn screen(block: &str, screen: &mut Option<NativeScreen>) {
     match block {
         rules::CENTRIFUGE => *screen = Some(centrifuge_screen()),
         rules::ASSEMBLY_TABLE => *screen = Some(assembly_screen()),
+        block if keypad_bomb(block) => *screen = Some(keypad_screen()),
         _ => {}
     }
 }
@@ -539,6 +572,7 @@ pub(in crate::game) fn screen_draw(game: &Game<'_>, block: &str, data: &[i32], b
     match block {
         rules::CENTRIFUGE => centrifuge_screen_draw(game, data, batch, origin),
         rules::ASSEMBLY_TABLE => assembly_screen_draw(game, data, batch, origin),
+        block if keypad_bomb(block) => keypad_draw(game, block, data, batch, origin),
         _ => {}
     }
 }
@@ -546,6 +580,7 @@ pub(in crate::game) fn screen_draw(game: &Game<'_>, block: &str, data: &[i32], b
 pub(in crate::game) fn screen_click(block: &str, at: [f32; 2], right: bool, button: &mut Option<i32>) {
     match block {
         rules::ASSEMBLY_TABLE => assembly_screen_click(at, right, button),
+        block if keypad_bomb(block) => keypad_click(at, right, button),
         _ => {}
     }
 }
@@ -643,7 +678,7 @@ fn make(entity: &mut ModBlockEntity) {
     }
 }
 
-fn centrifuge_tick(game: &Game<'_>, entity: &mut ModBlockEntity) {
+fn centrifuge_tick(game: &mut Game<'_>, entity: &mut ModBlockEntity) {
     if entity.items.len() < rules::CENTRIFUGE_SLOTS {
         entity.items.resize(rules::CENTRIFUGE_SLOTS, None);
     }
@@ -680,6 +715,11 @@ fn centrifuge_tick(game: &Game<'_>, entity: &mut ModBlockEntity) {
 /// A shift-click from the inventory: raw uranium to its slot, fuel to its slot,
 /// nothing else. One from the centrifuge goes the game's way, to the inventory.
 pub(in crate::game) fn quick_move(game: &Game<'_>, entity: &mut ModBlockEntity, container_slots: usize, slot: usize, stack: &mut ItemStack, handled: &mut bool) {
+    // Nothing moves into or out of a bomb's hidden slot.
+    if rules::BombKind::of_block(&entity.id).is_some() {
+        *handled = true;
+        return;
+    }
     if entity.id != rules::CENTRIFUGE || slot < container_slots {
         return;
     }
@@ -885,4 +925,410 @@ fn assembly_screen_click(at: [f32; 2], right: bool, button: &mut Option<i32>) {
     if !right && (bx..bx + bw).contains(&at[0]) && (by..by + bh).contains(&at[1]) {
         *button = Some(rules::ASSEMBLE_BUTTON);
     }
+}
+
+// ---- the bombs -------------------------------------------------------------------
+//
+// A bomb's state lives in its block entity: `nbt` holds the rules' `Bomb` as
+// JSON, its one hidden slot the detonator's item, and `data` what the keypad's
+// screen shows. A right click puts a detonator in, lights a fuse or opens the
+// keypad; the block entity's tick counts down, hisses, beeps and sets the blast
+// off, taking the block with it. Its clock is `Saved.tick`.
+
+/// Vanilla's `SoundSource.BLOCKS` and `SoundSource.PLAYERS`.
+const BLOCKS: usize = 4;
+const PLAYERS: usize = 7;
+/// How far a bomb's refusal is told.
+const TOLD_WITHIN: f64 = 64.0;
+
+/// The player, the bomb and the tick of the last click handled on a bomb. The
+/// game asks once per hand: the off hand's turn of the same click is let go,
+/// so nothing goes in or is lit twice.
+static LAST_CLICK: Mutex<Option<(u128, [i32; 3], u64)>> = Mutex::new(None);
+
+/// A bomb's one slot holds its detonator, out of every hopper's reach and hidden on
+/// its screen: a broken bomb drops it as a chest drops its items. The bombs that
+/// take a keypad open its menu.
+fn bomb_container(kind: rules::BombKind) -> ModContainer {
+    ModContainer {
+        slots: rules::BOMB_SLOTS,
+        faces: Default::default(),
+        inputs: vec![],
+        outputs: vec![],
+        menu: kind.takes(rules::Detonator::Keypad).then(|| rules::KEYPAD_MENU.to_owned()),
+    }
+}
+
+fn bomb_key() -> JavaString {
+    JavaString::from("bomb")
+}
+
+/// A bomb's state; its kind is its block's.
+fn load_bomb(entity: &ModBlockEntity) -> Option<rules::Bomb> {
+    let kind = rules::BombKind::of_block(&entity.id)?;
+    let mut bomb = match entity.nbt.get(&bomb_key()) {
+        Some(Tag::ByteArray(bytes)) => serde_json::from_slice(bytes).unwrap_or_else(|_| rules::Bomb::new(kind)),
+        _ => rules::Bomb::new(kind),
+    };
+    bomb.kind = kind;
+    Some(bomb)
+}
+
+fn store_bomb(entity: &mut ModBlockEntity, bomb: &rules::Bomb) {
+    if let Ok(bytes) = serde_json::to_vec(bomb) {
+        entity.nbt.insert(bomb_key(), Tag::ByteArray(bytes));
+    }
+}
+
+/// The world's clock and the operator's limit.
+fn clock(game: &Game<'_>) -> Option<(u64, u32)> {
+    let guard = state(game)?;
+    let st = guard.as_ref()?;
+    Some((st.saved.tick, st.saved.maxpower))
+}
+
+fn middle(pos: [i32; 3]) -> [f64; 3] {
+    pos.map(|v| f64::from(v) + 0.5)
+}
+
+fn sound(game: &mut Game<'_>, pos: [i32; 3], event: &str, volume: f32, pitch: f32) {
+    game.native_level_play_sound(event, middle(pos), BLOCKS, volume, pitch);
+}
+
+/// A line in the chat of every player near the bomb.
+fn tell_near(game: &mut Game<'_>, dimension: &str, pos: [i32; 3], line: &Text) {
+    let at = middle(pos);
+    for p in game.native_server_players() {
+        let far = (0..3).map(|i| (p.position[i] - at[i]).powi(2)).sum::<f64>().sqrt();
+        if p.dimension == dimension && far <= TOLD_WITHIN {
+            game.native_tell(p.uuid, line.clone());
+        }
+    }
+}
+
+fn item_name(item: &str) -> Text {
+    Text::translate(&format!("item.{}", item.replace(':', ".")), &[])
+}
+
+/// Whether the keypad's menu type is there: the assets half brings it.
+fn keypad_menu_known() -> bool {
+    horizon_client::containers::mod_menu_type(rules::KEYPAD_MENU).is_some()
+}
+
+/// A right click on a bomb, with the main hand's item: a detonator goes in,
+/// flint and steel lights the fuse, and anything else opens the keypad, if
+/// there is one. The furnace the bomb is built on never opens. Sneaking with
+/// something else in hand lets it be used on the bomb (a block placed against it).
+pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
+    if *canceled || !game.native_on(rules::ID) || rules::BombKind::of_block(&game.native_block(pos)).is_none() {
+        return;
+    }
+    let (Some(who), Some((now, maxpower))) = (game.native_acting_player(), clock(game)) else {
+        return;
+    };
+    *canceled = true;
+    {
+        let mut last = lock(&LAST_CLICK);
+        if *last == Some((who.uuid, pos, now)) {
+            return;
+        }
+        *last = Some((who.uuid, pos, now));
+    }
+    let Some(mut bomb) = game.native_with_mod_block_entity(pos, |e| load_bomb(e)).flatten() else {
+        return;
+    };
+    let held = game.native_equipment(EquipmentSlot::MainHand).map(|s| s.item.to_string());
+    let creative = who.game_mode == 1;
+    let tell = |game: &mut Game<'_>, line: Text| {
+        game.native_tell(who.uuid, line);
+    };
+    if let Some(detonator) = held.as_deref().and_then(rules::Detonator::of_item) {
+        match bomb.install(detonator) {
+            Ok(()) => install(game, pos, &bomb, detonator, creative, who.uuid),
+            Err(rules::Refusal::HasOne) => tell(game, Text::translate("big_nukes.bomb.has_detonator", &[])),
+            Err(rules::Refusal::FuseOnly) => tell(game, Text::translate("big_nukes.bomb.fuse_only", &[])),
+        }
+        return;
+    }
+    if held.as_deref() == Some(rules::FLINT_AND_STEEL) {
+        match bomb.detonator {
+            Some(rules::Detonator::Fuse) if bomb.fires_at.is_none() => {
+                let radius = bomb.kind.radius();
+                if radius > maxpower {
+                    tell(game, refused(rules::Refused::Maxpower { radius, maxpower }));
+                } else if bomb.light(now) {
+                    game.native_with_mod_block_entity(pos, |e| store_bomb(e, &bomb));
+                    sound(game, pos, "minecraft:item.flintandsteel.use", 1.0, 1.0);
+                    sound(game, pos, "minecraft:entity.tnt.primed", 1.0, 1.0);
+                    if !creative {
+                        wear_flint(game, &who);
+                    }
+                }
+            }
+            // A lit fuse isn't lit again.
+            Some(rules::Detonator::Fuse) => {}
+            Some(_) => tell(game, Text::translate("big_nukes.bomb.not_fuse", &[])),
+            None => tell(game, Text::translate("big_nukes.bomb.no_detonator", &[])),
+        }
+        return;
+    }
+    let keypad = bomb.detonator == Some(rules::Detonator::Keypad);
+    if (keypad && keypad_menu_known()) || (held.is_some() && game.native_sneaking()) {
+        // The game goes on: the block opens its keypad, or the item is used.
+        *canceled = false;
+        return;
+    }
+    let hint = match bomb.detonator {
+        None => "big_nukes.bomb.no_detonator",
+        Some(rules::Detonator::Fuse) => "big_nukes.bomb.light_fuse",
+        Some(rules::Detonator::Receiver) => "big_nukes.bomb.receiver",
+        Some(rules::Detonator::Keypad) => return,
+    };
+    tell(game, Text::translate(hint, &[]));
+}
+
+/// The detonator goes in: out of the player's hand, unless they're creative,
+/// into the bomb's slot and its state.
+fn install(game: &mut Game<'_>, pos: [i32; 3], bomb: &rules::Bomb, detonator: rules::Detonator, creative: bool, player: u128) {
+    if !creative && game.native_take_items(detonator.item(), 1) == 0 {
+        return;
+    }
+    let put = game.native_with_mod_block_entity(pos, |e| {
+        if e.items.len() < rules::BOMB_SLOTS {
+            e.items.resize(rules::BOMB_SLOTS, None);
+        }
+        e.items[rules::DETONATOR_SLOT] = Some(stack_of(detonator.item()));
+        store_bomb(e, bomb);
+    });
+    if put.is_none() {
+        if !creative {
+            game.native_give_items(detonator.item(), 1);
+        }
+        return;
+    }
+    sound(game, pos, "minecraft:block.iron_trapdoor.close", 1.0, 1.4);
+    game.native_tell(player, Text::translate("big_nukes.bomb.installed", &[item_name(detonator.item())]));
+}
+
+/// One use off the flint and steel in the acting player's main hand; its last
+/// use breaks it.
+fn wear_flint(game: &mut Game<'_>, who: &NativeServerPlayer) {
+    let Some(mut flint) = game.native_equipment(EquipmentSlot::MainHand) else {
+        return;
+    };
+    let Some(living) = u32::try_from(who.entity_id)
+        .ok()
+        .filter(|id| *id > 0)
+        .and_then(|id| game.native_entity(id))
+        .and_then(|e| game.native_living(e))
+    else {
+        return;
+    };
+    let worn = rules::worn(flint.damage);
+    if worn.is_none() {
+        game.native_level_play_sound("minecraft:entity.item.break", who.position, PLAYERS, 0.8, 1.0);
+    }
+    let left = worn.map(|damage| {
+        flint.damage = damage;
+        flint
+    });
+    game.native_living_set_equipment(living, EquipmentSlot::MainHand, left);
+}
+
+/// A bomb's tick: the hiss and smoke of a lit fuse, the beeps of a countdown,
+/// and the blast at its end.
+fn bomb_tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity) {
+    let (Some(mut bomb), Some((now, maxpower))) = (load_bomb(entity), clock(game)) else {
+        return;
+    };
+    let was = bomb.clone();
+    let dimension = game.native_dimension();
+    if let Some(left) = bomb.left(now) {
+        counting(game, pos, &bomb, left);
+    }
+    if bomb.tick(now) {
+        let radius = bomb.kind.radius();
+        let start = if radius > maxpower {
+            Err(rules::Refused::Maxpower { radius, maxpower })
+        } else {
+            start_blast(game, dimension, pos, radius)
+        };
+        match start {
+            Ok(_) => {
+                // The bomb goes with its blast, and its detonator with it.
+                entity.items.iter_mut().for_each(|s| *s = None);
+                if let Some(air) = game.pack.assets.registry.default_state("minecraft:air") {
+                    game.native_set_block(dimension, pos, air, 3);
+                }
+                return;
+            }
+            Err(why) => tell_near(game, dimension, pos, &refused(why)),
+        }
+    }
+    let data = bomb.data(now).to_vec();
+    if entity.data != data {
+        entity.data = data;
+    }
+    if bomb != was {
+        store_bomb(entity, &bomb);
+    }
+}
+
+/// What a counting bomb shows: a lit fuse smokes and sparks on top, a keypad
+/// beeps each second, higher as it ends.
+fn counting(game: &mut Game<'_>, pos: [i32; 3], bomb: &rules::Bomb, left: u64) {
+    match bomb.detonator {
+        Some(rules::Detonator::Fuse) => {
+            let top = [f64::from(pos[0]) + 0.5, f64::from(pos[1]) + 1.05, f64::from(pos[2]) + 0.5];
+            let smoke = ParticleOptions::simple(ParticleType::Smoke);
+            game.native_level_send_particles(&smoke, None, top, [0.1, 0.05, 0.1], 0.02, 2);
+            if left % 2 == 0 {
+                let flame = ParticleOptions::simple(ParticleType::Flame);
+                game.native_level_send_particles(&flame, None, top, [0.05, 0.02, 0.05], 0.01, 1);
+            }
+            if left % 20 == 0 {
+                sound(game, pos, "minecraft:block.fire.extinguish", 0.3, 2.0);
+            }
+        }
+        Some(rules::Detonator::Keypad) if left % 20 == 0 => {
+            let pitch = 1.0 + (rules::COUNTDOWN_TICKS.saturating_sub(left) as f32) / 200.0;
+            sound(game, pos, "minecraft:block.note_block.pling", 1.0, pitch);
+        }
+        _ => {}
+    }
+}
+
+/// A keypad button pressed on the server.
+fn keypad_button(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity, id: i32) {
+    let (Some(mut bomb), Some(key), Some((now, maxpower))) = (load_bomb(entity), rules::Key::of_button(id), clock(game)) else {
+        return;
+    };
+    match bomb.press(key, now) {
+        rules::Press::Accepted if bomb.kind.radius() > maxpower => {
+            // The code was right, but the bomb is over the operator's limit.
+            bomb.fires_at = None;
+            let why = rules::Refused::Maxpower { radius: bomb.kind.radius(), maxpower };
+            let dimension = game.native_dimension();
+            tell_near(game, dimension, pos, &refused(why));
+        }
+        rules::Press::CodeSet => sound(game, pos, "minecraft:block.note_block.chime", 1.0, 1.0),
+        rules::Press::Wrong => sound(game, pos, "minecraft:block.note_block.bass", 1.0, 0.8),
+        rules::Press::Locked => sound(game, pos, "minecraft:block.note_block.bass", 1.0, 0.5),
+        rules::Press::Accepted | rules::Press::Typed | rules::Press::Cleared | rules::Press::Ignored => {}
+    }
+    entity.data = bomb.data(now).to_vec();
+    store_bomb(entity, &bomb);
+}
+
+// ---- the keypad's screen ---------------------------------------------------------
+//
+// Drawn over the game's plain panel, as a chest's with six rows is laid out: the
+// bomb's name, the digits typed as stars, a line of what the keypad waits for,
+// and twelve buttons, then the inventory.
+
+const PAD_HEIGHT: f32 = 222.0;
+const PAD_INVENTORY_Y: f32 = 140.0;
+const KEY_SIZE: [f32; 2] = [32.0, 16.0];
+const KEY_GAP: f32 = 4.0;
+/// The top left of the first key.
+const KEYS_AT: [f32; 2] = [36.0, 48.0];
+/// The menu buttons in their places, row by row: 1 to 9, then clear, 0, enter.
+const KEY_ROWS: [[i32; 3]; 4] = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 0, 11]];
+
+fn keypad_bomb(block: &str) -> bool {
+    rules::BombKind::of_block(block).is_some_and(|k| k.takes(rules::Detonator::Keypad))
+}
+
+/// Each key's button and its box from the screen's top left.
+fn keys() -> impl Iterator<Item = (i32, [f32; 4])> {
+    KEY_ROWS.into_iter().enumerate().flat_map(|(row, ids)| {
+        ids.into_iter().enumerate().map(move |(col, id)| {
+            let x = KEYS_AT[0] + col as f32 * (KEY_SIZE[0] + KEY_GAP);
+            let y = KEYS_AT[1] + row as f32 * (KEY_SIZE[1] + KEY_GAP);
+            (id, [x, y, KEY_SIZE[0], KEY_SIZE[1]])
+        })
+    })
+}
+
+fn inside(at: [f32; 2], [x, y, w, h]: [f32; 4]) -> bool {
+    at[0] >= x && at[0] < x + w && at[1] >= y && at[1] < y + h
+}
+
+/// The keypad's line for its state, from its data slots.
+fn pad_status(data: &[i32]) -> String {
+    let get = |i: usize| data.get(i).copied().unwrap_or(0);
+    let with = |key: &str, n: i32| lang::get(key).replacen("%s", &n.to_string(), 1);
+    match get(0) {
+        rules::PAD_COUNTING => with("big_nukes.screen.keypad.countdown", get(2)),
+        rules::PAD_LOCKED => with("big_nukes.screen.keypad.locked", get(2)),
+        rules::PAD_ENTER if get(3) < i32::from(rules::TRIES) => with("big_nukes.screen.keypad.wrong", get(3)),
+        rules::PAD_ENTER => lang::get("big_nukes.screen.keypad.enter"),
+        rules::PAD_SET => lang::get("big_nukes.screen.keypad.set"),
+        _ => String::new(),
+    }
+}
+
+fn keypad_screen() -> NativeScreen {
+    NativeScreen {
+        width: 176.0,
+        height: PAD_HEIGHT,
+        // The detonator's slot is hidden.
+        slots: vec![None],
+        inventory_y: PAD_INVENTORY_Y,
+        inventory_x: 8.0,
+        own_labels: true,
+        own_background: false,
+    }
+}
+
+fn keypad_draw(game: &Game<'_>, block: &str, data: &[i32], batch: &mut HudBatch, origin: [f32; 2]) {
+    const LABEL: u32 = 0x40_4040;
+    let [x, y] = origin;
+    let centered = |batch: &mut HudBatch, text: &str, top: f32, rgb: u32, shadow: bool| {
+        let width = game.native_text_width(text);
+        game.native_text(batch, text, [x + (176.0 - width) / 2.0, y + top], rgb, shadow);
+    };
+    centered(batch, &lang::get(&format!("block.{}", block.replace(':', "."))), 6.0, LABEL, false);
+    // The display: a star for each digit typed.
+    game.native_fill(batch, [x + 37.0, y + 17.0, 102.0, 14.0], 0xFF37_3737);
+    game.native_fill(batch, [x + 38.0, y + 18.0, 100.0, 12.0], 0xFF10_1810);
+    let typed = data.get(1).copied().unwrap_or(0).clamp(0, rules::CODE_DIGITS as i32) as usize;
+    centered(batch, &"*".repeat(typed), 21.0, 0x55_FF55, false);
+    let state = data.get(0).copied();
+    let status_color = match state {
+        Some(rules::PAD_COUNTING | rules::PAD_LOCKED) => 0xAA_0000,
+        _ => LABEL,
+    };
+    centered(batch, &pad_status(data), 35.0, status_color, false);
+    // The keys, dimmed while the keypad takes nothing.
+    let open = matches!(state, Some(rules::PAD_SET | rules::PAD_ENTER));
+    let cursor = game.native_cursor();
+    let at = [cursor[0] - x, cursor[1] - y];
+    for (id, [kx, ky, w, h]) in keys() {
+        let lit = open && inside(at, [kx, ky, w, h]);
+        let face = match (open, lit) {
+            (false, _) => 0xFF6B_6B6B,
+            (true, true) => 0xFFB8_B8D8,
+            (true, false) => 0xFF9C_9C9C,
+        };
+        game.native_fill(batch, [x + kx, y + ky, w, h], 0xFF2A_2A2A);
+        game.native_fill(batch, [x + kx + 1.0, y + ky + 1.0, w - 2.0, h - 2.0], face);
+        let label = match id {
+            10 => lang::get("big_nukes.screen.keypad.clear"),
+            11 => lang::get("big_nukes.screen.keypad.ok"),
+            digit => digit.to_string(),
+        };
+        let width = game.native_text_width(&label);
+        let rgb = if open { 0xFF_FFFF } else { 0xA0_A0A0 };
+        game.native_text(batch, &label, [x + kx + (w - width) / 2.0, y + ky + 4.0], rgb, true);
+    }
+    game.native_text(batch, &lang::get("container.inventory"), [x + 8.0, y + PAD_INVENTORY_Y - 11.0], LABEL, false);
+}
+
+/// A left press on a key of the keypad, sent to the server as its menu button.
+fn keypad_click(at: [f32; 2], right: bool, button: &mut Option<i32>) {
+    if right || button.is_some() {
+        return;
+    }
+    *button = keys().find(|(_, r)| inside(at, *r)).map(|(id, _)| id);
 }

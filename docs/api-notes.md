@@ -33,6 +33,19 @@ The native half knows the assets half is installed when the loot table `big_nuke
 - Sounds are the mod's own (`tools/make_sounds.py`). A local sound reaches `max(volume, 1) × attenuation_distance`
   blocks, so each is played 6 blocks from the player towards the blast, with the delay of the front.
 
+## The bombs
+
+- `native_right_click_block` runs once per hand of a click and has no hand of its own. A canceled main hand ends the
+  click, and the glue lets go of a second turn of the same player on the same bomb in the same tick. The main hand's
+  stack is `native_equipment(EquipmentSlot::MainHand)`; the player is `native_acting_player`.
+- `native_run_command` answers false inside a player's hook, so sounds and particles go through
+  `native_level_play_sound` and `native_level_send_particles`. A worn flint and steel is written back with
+  `native_living_set_equipment` on the acting player's `native_entity(entity_id)`.
+- A mod block's items spill when it is broken only if its block has a `ModContainer`: each bomb has one hidden slot for
+  its detonator, with no faces, inputs or outputs, and the keypad's menu type (`big_nukes:keypad`, 1 slot, 4 data
+  slots). A block the mod removes during its own tick drops what is left in `items`, so a bomb clears its slot first.
+- The block entity's tick knows its level from `native_dimension`; `native_set_block` there takes the bomb away.
+
 ## The sky
 
 - The renderer's hooks (`native_world_drawn`, `native_render_needs`, API 58) are free functions in
