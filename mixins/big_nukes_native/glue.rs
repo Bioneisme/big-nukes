@@ -280,7 +280,18 @@ pub(in crate::game) fn flash(game: &Game<'_>, batch: &mut HudBatch) {
 }
 
 pub(in crate::game) fn shake(game: &Game<'_>, partial: f32, shake: &mut NativeShake) {
-    for (t, d, n) in felt(game, partial as f64) {
+    let felt = felt(game, partial as f64);
+    // Once a frame with the part of the tick: the renderer's list of blasts too.
+    *horizon_client::gfx::native_render::big_nukes_sky::SKY.lock().unwrap_or_else(|e| e.into_inner()) = felt
+        .iter()
+        .map(|(t, _, n)| horizon_client::gfx::native_render::big_nukes_sky::SkyBlast {
+            center: n.center.map(|v| v as f64 + 0.5),
+            radius: n.radius as f32,
+            seed: n.seed as u32,
+            age: *t as f32,
+        })
+        .collect();
+    for (t, d, n) in felt {
         let [pitch, yaw, roll, x, y, z] = rules::shake(t, d, n.radius, n.seed);
         shake.pitch += pitch;
         shake.yaw += yaw;

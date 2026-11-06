@@ -15,6 +15,15 @@ file = "crates/horizon-client/src/game.rs"
 name = "big_nukes"
 source = "runtime.rs"
 
+# The renderer's share: the clouds and the rings, over the finished world.
+[[module]]
+id = "sky"
+file = "crates/horizon-client-render/src/gfx/native_render.rs"
+name = "big_nukes_sky"
+source = "sky.rs"
+# The window's glue, in another crate, fills its list.
+visibility = "pub"
+
 # Everything that names the game's types.
 [[module]]
 id = "glue"
@@ -145,4 +154,23 @@ bindings = [
   { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
   { name = "partial", ty = "f32", value = "partial" },
   { name = "shake", ty = "&mut horizon_client::mod_api::NativeShake", value = "&mut *shake" },
+]
+
+# The renderer: the scene's depth while a blast is felt, and the drawing (API 58).
+[[injection]]
+id = "render-needs"
+kind = "HEAD"
+target = "horizon_client_render::gfx::native_render::native_render_needs"
+helper = "render_needs.rs"
+bindings = [
+  { name = "needs", ty = "&mut crate::gfx::native_render::RenderNeeds", value = "&mut *needs" },
+]
+
+[[injection]]
+id = "world-drawn"
+kind = "HEAD"
+target = "horizon_client_render::gfx::native_render::native_world_drawn"
+helper = "world_drawn.rs"
+bindings = [
+  { name = "world", ty = "&mut crate::gfx::native_render::WorldDrawn<'_>", value = "&mut *world" },
 ]
