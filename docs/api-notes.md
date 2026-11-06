@@ -46,6 +46,29 @@ The native half knows the assets half is installed when the loot table `big_nuke
   slots). A block the mod removes during its own tick drops what is left in `items`, so a bomb clears its slot first.
 - The block entity's tick knows its level from `native_dimension`; `native_set_block` there takes the bomb away.
 
+## The remote
+
+- The link is an item component: `native_component_types` (API 65, an associated function with no `self`) registers
+  `big_nukes:link`, and `native_set_component`/`native_component` write and read it as NBT (a compound of
+  `dimension`, a string, and `pos`, an int array). The stack written goes back to the main hand with
+  `native_living_set_equipment`. The component's types are process-wide, so the window's tooltip reads it too.
+- `native_use_item` (API 13) runs for a right click in the air and for one on a block whose use let it through; it
+  has the hand's stack but not the hand, and the acting player is `native_acting_player`. A click on a bomb with the
+  remote should not reach it, as the bomb's right click is canceled (read in the source, not yet seen in the game).
+- `native_block_changed` is `GameLevel`'s, not `Game`'s, and runs for every `Level.setBlock`. A bulk edit
+  (`native_edit_blocks`) writes as `fill ... strict` does and reports nothing, so a blast's crater is checked for the
+  recorded bombs after each chunk. The level may set a block while the mod's state is locked (a command run during a
+  level's tick), so a changed bomb is queued and forgotten the next time the state is opened.
+- `native_set_block` and `native_with_mod_block_entity` only reach the level in place: a remote takes its bomb away
+  at once only in a loaded chunk of the player's own level; elsewhere the bomb goes with its wave's crater.
+- Which levels tick (`levels_to_tick` in `game/levels.rs`): those with a player, a bed's owner, forced chunks
+  (`/forceload` or a mod's tickets), a pending portal arrival or a game test; the overworld when nothing else does.
+  A level nobody is in closes after 300 idle ticks. `execute in <dim> run forceload query` opens a closed level
+  (`enter_command_level`), which then ticks only if it has forced chunks. So the remote opens a bomb's other
+  dimension that way, for an operator's forced chunks there, and otherwise the wave waits: its front is reckoned from
+  the world's clock, and every chunk it reached unloaded is written when it loads. `native_run_command` answers
+  false inside a player's hook, so the command waits for the end of the server's tick.
+
 ## The sky
 
 - The renderer's hooks (`native_world_drawn`, `native_render_needs`, API 58) are free functions in

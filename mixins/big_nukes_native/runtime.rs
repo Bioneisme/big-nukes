@@ -285,8 +285,9 @@ pub fn name_key(id: &str) -> String {
 //
 // A bomb's state lives in its block entity, as the centrifuge's does. It goes
 // off only through its detonator: a fuse lit with flint and steel, a keypad's
-// code, or a receiver's remote (still to come). Each counts to a tick of
-// `Saved.tick`, and the block entity's tick sets the blast off.
+// code, or a receiver's remote. The fuse and the keypad count to a tick of
+// `Saved.tick`, and the block entity's tick sets the blast off; a remote sets
+// it off at once, from the world's record of the bomb (`Saved.bombs`).
 
 pub const FLINT_AND_STEEL: &str = "minecraft:flint_and_steel";
 /// The uses in a flint and steel, vanilla's `max_damage`.
@@ -419,8 +420,7 @@ impl Bomb {
     }
 
     /// Starts the count to the blast, `ticks` from `now`; false when it already
-    /// counts. The fuse and the keypad come here, and so can a receiver's
-    /// remote, with no ticks: the block entity's next tick sets the blast off.
+    /// counts. The fuse and the keypad come here.
     pub fn arm(&mut self, now: u64, ticks: u64) -> bool {
         if self.fires_at.is_some() {
             return false;
@@ -900,6 +900,11 @@ impl Waves {
         self.waves.is_empty()
     }
 
+    /// Whether a running blast in `dimension` went off at `center`.
+    pub fn centered_at(&self, dimension: &str, center: [i32; 3]) -> bool {
+        self.waves.iter().any(|w| w.blast.dimension == dimension && w.blast.center == center)
+    }
+
     /// Nothing more to do in `dimension` until a chunk loads: every front there
     /// is out and every ready chunk changed.
     pub fn idle(&mut self, dimension: &str) -> bool {
@@ -949,6 +954,9 @@ pub struct Saved {
     /// The operator's limit on a blast's radius: bombs and the command keep within it.
     #[serde(default = "largest_radius")]
     pub maxpower: u32,
+    /// The bombs with a receiver: a remote fires one from its record, its chunk loaded or not.
+    #[serde(default)]
+    pub bombs: Vec<Receiver>,
 }
 
 fn largest_radius() -> u32 {
@@ -957,7 +965,7 @@ fn largest_radius() -> u32 {
 
 impl Default for Saved {
     fn default() -> Self {
-        Saved { tick: 0, next_id: 0, waves: Waves::default(), maxpower: largest_radius() }
+        Saved { tick: 0, next_id: 0, waves: Waves::default(), maxpower: largest_radius(), bombs: Vec::new() }
     }
 }
 
@@ -966,6 +974,8 @@ impl Default for Saved {
 pub enum Refused {
     Dimension,
     Maxpower { radius: u32, maxpower: u32 },
+    /// A remote's bomb that isn't there any more: broken, or already gone off.
+    Gone,
 }
 
 impl Saved {
@@ -990,6 +1000,98 @@ impl Saved {
             return Err(Refused::Maxpower { radius, maxpower: self.maxpower });
         }
         self.blast(dimension, center, radius).ok_or(Refused::Dimension)
+    }
+}
+
+/// The limits `/bignukes maxpower` takes: each bomb's radius, then the largest blast.
+pub const MAXPOWER_STEPS: [u32; 4] = [16, 50, 250, 1024];
+
+/// `maxpower [limit]`, after the command's name: Some(None) asks for the limit,
+/// Some(Some(limit)) sets one of the steps, None is anything else.
+pub fn parse_maxpower(args: &[&str]) -> Option<Option<u32>> {
+    match args {
+        [] => Some(None),
+        [limit] => limit.parse().ok().filter(|l| MAXPOWER_STEPS.contains(l)).map(Some),
+        _ => None,
+    }
+}
+
+// ---- the remote --------------------------------------------------------------
+//
+// A remote is linked to a bomb with a receiver by a right click on it, and keeps
+// the bomb's dimension and place in its `big_nukes:link` component. The world
+// keeps each bomb with a receiver in `Saved.bombs`, so a remote fires one from
+// anywhere, its chunk loaded or not: the wave writes the chunk when it loads.
+
+pub const REMOTE: &str = "big_nukes:remote";
+/// The remote's component: the linked bomb's dimension and place.
+pub const LINK: &str = "big_nukes:link";
+
+/// A bomb with a receiver, as the world keeps it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Receiver {
+    pub dimension: String,
+    pub pos: [i32; 3],
+    pub kind: BombKind,
+}
+
+/// What a remote is linked to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Link {
+    pub dimension: String,
+    pub pos: [i32; 3],
+}
+
+impl Link {
+    /// A link read from a remote; none without a dimension.
+    pub fn of(dimension: &str, pos: [i32; 3]) -> Option<Link> {
+        (!dimension.is_empty()).then(|| Link { dimension: dimension.to_owned(), pos })
+    }
+}
+
+impl Saved {
+    /// Records a bomb with a receiver, or what it is now when it was recorded
+    /// before. False for a bomb whose blast is still running: it went off, and
+    /// only stands until its wave reaches its chunk.
+    pub fn record(&mut self, dimension: &str, pos: [i32; 3], kind: BombKind) -> bool {
+        if self.waves.centered_at(dimension, pos) {
+            return false;
+        }
+        match self.bombs.iter_mut().find(|b| b.dimension == dimension && b.pos == pos) {
+            Some(b) => b.kind = kind,
+            None => self.bombs.push(Receiver { dimension: dimension.to_owned(), pos, kind }),
+        }
+        true
+    }
+
+    /// The bomb recorded at `pos`, if there is one.
+    pub fn recorded(&self, dimension: &str, pos: [i32; 3]) -> Option<BombKind> {
+        self.bombs.iter().find(|b| b.dimension == dimension && b.pos == pos).map(|b| b.kind)
+    }
+
+    /// Forgets the bomb at `pos`: it was broken or went off. Whether there was one.
+    pub fn forget(&mut self, dimension: &str, pos: [i32; 3]) -> bool {
+        let before = self.bombs.len();
+        self.bombs.retain(|b| b.dimension != dimension || b.pos != pos);
+        self.bombs.len() != before
+    }
+
+    /// The recorded bombs in `chunk`.
+    pub fn bombs_in(&self, dimension: &str, chunk: [i32; 2]) -> Vec<[i32; 3]> {
+        self.bombs
+            .iter()
+            .filter(|b| b.dimension == dimension && chunk_of(b.pos[0], b.pos[2]) == chunk)
+            .map(|b| b.pos)
+            .collect()
+    }
+
+    /// A remote's press: the recorded bomb at `pos` goes off, within the
+    /// operator's limit, and is forgotten. One over the limit stays recorded.
+    pub fn fire_bomb(&mut self, dimension: &str, pos: [i32; 3]) -> Result<u64, Refused> {
+        let kind = self.recorded(dimension, pos).ok_or(Refused::Gone)?;
+        let id = self.fire(dimension, pos, kind.radius())?;
+        self.forget(dimension, pos);
+        Ok(id)
     }
 }
 
@@ -2498,6 +2600,114 @@ mod tests {
         let empty: Bomb = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, Bomb::default());
         assert_eq!((empty.detonator, empty.fires_at), (None, None));
+    }
+
+    // ---- the remote and the operator's limit (Task 6) -------------------------
+
+    const NETHER: &str = "minecraft:the_nether";
+
+    #[test]
+    fn a_remote_fires_its_linked_bomb_once() {
+        let mut saved = Saved::default();
+        let at = [5, 64, -3];
+        assert!(saved.record(OVERWORLD, at, BombKind::Tactical));
+        assert_eq!(saved.recorded(OVERWORLD, at), Some(BombKind::Tactical));
+        // Its chunk needn't be loaded: the wave starts at the bomb, with the bomb's radius.
+        assert_eq!(saved.fire_bomb(OVERWORLD, at), Ok(1));
+        let news = saved.waves.news(OVERWORLD, saved.tick);
+        assert_eq!(news.iter().map(|n| (n.id, n.center, n.radius)).collect::<Vec<_>>(), vec![(1, at, 50)]);
+        // The record goes with the blast: a second press finds no bomb.
+        assert_eq!(saved.recorded(OVERWORLD, at), None);
+        assert_eq!(saved.fire_bomb(OVERWORLD, at), Err(Refused::Gone));
+        assert_eq!(saved.next_id, 1, "no second blast");
+        // The bomb still standing while its wave runs isn't linked again.
+        assert!(!saved.record(OVERWORLD, at, BombKind::Tactical));
+        assert_eq!(saved.fire_bomb(OVERWORLD, at), Err(Refused::Gone));
+        // A bomb is its dimension's and its place's: the same place elsewhere is another.
+        assert_eq!(saved.fire_bomb(NETHER, at), Err(Refused::Gone));
+        assert!(saved.record(NETHER, at, BombKind::Atomic));
+        assert_eq!(saved.fire_bomb(NETHER, at), Ok(2));
+        // A link is a dimension and a place.
+        let link = Link { dimension: NETHER.into(), pos: at };
+        assert_eq!(Link::of(&link.dimension, link.pos), Some(link));
+        assert_eq!(Link::of("", at), None);
+    }
+
+    #[test]
+    fn a_broken_bomb_is_forgotten() {
+        let mut saved = Saved::default();
+        let (a, b) = ([0, 64, 0], [40, 70, 40]);
+        assert!(saved.record(OVERWORLD, a, BombKind::Atomic));
+        assert!(saved.record(OVERWORLD, b, BombKind::Tactical));
+        // A bomb linked again keeps one record, of what it is now.
+        assert!(saved.record(OVERWORLD, b, BombKind::Atomic));
+        assert_eq!(saved.bombs.len(), 2);
+        assert_eq!(saved.recorded(OVERWORLD, b), Some(BombKind::Atomic));
+        // The bombs of a chunk, for a blast that went through it.
+        assert_eq!(saved.bombs_in(OVERWORLD, chunk_of(40, 40)), vec![b]);
+        assert_eq!(saved.bombs_in(NETHER, chunk_of(40, 40)), Vec::<[i32; 3]>::new());
+        assert!(saved.forget(OVERWORLD, a));
+        assert!(!saved.forget(OVERWORLD, a), "forgotten once");
+        assert!(!saved.forget(NETHER, b), "only in its own dimension");
+        assert_eq!(saved.fire_bomb(OVERWORLD, a), Err(Refused::Gone));
+        assert!(saved.waves.finished(), "a broken bomb doesn't go off");
+        assert_eq!(saved.fire_bomb(OVERWORLD, b), Ok(1));
+    }
+
+    #[test]
+    fn maxpower_caps_blasts_and_bombs() {
+        let mut saved = Saved { maxpower: 50, ..Saved::default() };
+        // The command's blasts.
+        assert_eq!(saved.fire(OVERWORLD, [0, 64, 0], 51), Err(Refused::Maxpower { radius: 51, maxpower: 50 }));
+        assert_eq!(saved.fire(OVERWORLD, [0, 64, 0], 50), Ok(1));
+        // A remote's bomb over the limit stays, to go off once the limit allows it.
+        let (atomic, tactical) = ([100, 64, 0], [200, 64, 0]);
+        saved.record(OVERWORLD, atomic, BombKind::Atomic);
+        saved.record(OVERWORLD, tactical, BombKind::Tactical);
+        assert_eq!(saved.fire_bomb(OVERWORLD, atomic), Err(Refused::Maxpower { radius: 250, maxpower: 50 }));
+        assert_eq!(saved.recorded(OVERWORLD, atomic), Some(BombKind::Atomic));
+        assert_eq!(saved.fire_bomb(OVERWORLD, tactical), Ok(2));
+        saved.maxpower = 16;
+        assert!(saved.allows(BombKind::Demolition.radius()));
+        assert!(!saved.allows(BombKind::Tactical.radius()));
+        assert_eq!(saved.fire_bomb(OVERWORLD, atomic), Err(Refused::Maxpower { radius: 250, maxpower: 16 }));
+        saved.maxpower = 250;
+        assert_eq!(saved.fire_bomb(OVERWORLD, atomic), Ok(3));
+    }
+
+    #[test]
+    fn maxpower_takes_only_the_four_steps() {
+        assert_eq!(MAXPOWER_STEPS, [16, 50, 250, 1024]);
+        assert_eq!(*MAXPOWER_STEPS.last().unwrap(), MAX_RADIUS);
+        assert_eq!(parse_maxpower(&[]), Some(None), "no number: tell the limit");
+        for step in MAXPOWER_STEPS {
+            assert_eq!(parse_maxpower(&[&step.to_string()]), Some(Some(step)));
+        }
+        for bad in ["0", "15", "17", "100", "1023", "1025", "-16", "big", "16.0"] {
+            assert_eq!(parse_maxpower(&[bad]), None, "{bad}");
+        }
+        assert_eq!(parse_maxpower(&["16", "50"]), None);
+        // Each bomb's radius is a step, so a limit lets whole kinds through.
+        for k in BombKind::ALL {
+            assert!(MAXPOWER_STEPS.contains(&k.radius()), "{k:?}");
+        }
+    }
+
+    #[test]
+    fn saved_bombs_round_trip() {
+        let mut saved = Saved { maxpower: 250, ..Saved::default() };
+        saved.record(OVERWORLD, [1, -60, 2], BombKind::Tactical);
+        saved.record(NETHER, [-30_000, 120, 7], BombKind::Atomic);
+        let back: Saved = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(back.bombs, saved.bombs);
+        assert_eq!(back.maxpower, 250);
+        assert_eq!(back.recorded(NETHER, [-30_000, 120, 7]), Some(BombKind::Atomic));
+        // A world saved before the remote: no bombs, nothing else lost.
+        let mut json = serde_json::to_value(&saved).unwrap();
+        json.as_object_mut().unwrap().remove("bombs");
+        let old: Saved = serde_json::from_value(json).unwrap();
+        assert!(old.bombs.is_empty());
+        assert_eq!(old.maxpower, 250);
     }
 
     #[test]
