@@ -39,6 +39,8 @@ struct State {
     warned: BTreeSet<u64>,
     /// Blasts whose opening (the fireball and the debris) has been shown.
     opened: BTreeSet<u64>,
+    /// Whether the game has the ash block, asked once a world, when a wave first works.
+    ash: Option<bool>,
     /// Something changed since the last save. A wave whose far chunks never load
     /// never ends, so saving only on changes keeps it from costing forever.
     dirty: bool,
@@ -63,7 +65,7 @@ fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Option<State>>> {
             .and_then(|b| serde_json::from_slice(&b).map_err(|e| log::warn!("[big_nukes] waves.json: {e}")).ok())
             .unwrap_or_default();
         log::info!("[big_nukes] Big Nukes {} in {}", rules::VERSION, dir.display());
-        *guard = Some(State { dir, saved, warned: BTreeSet::new(), opened: BTreeSet::new(), dirty: false });
+        *guard = Some(State { dir, saved, warned: BTreeSet::new(), opened: BTreeSet::new(), ash: None, dirty: false });
     }
     Some(guard)
 }
@@ -382,6 +384,7 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     }
     let loaded = lock(&LOADED).as_ref().and_then(|m| m.get(dimension)).cloned().unwrap_or_default();
     st.dirty |= st.saved.waves.advance(dimension, st.saved.tick, &|c| loaded.contains(&c));
+    let ash = *st.ash.get_or_insert_with(|| has_ash(game, dimension));
     let started = Instant::now();
     let warned = &mut st.warned;
     let done = st.saved.waves.work(dimension, BUDGET, &|| started.elapsed(), &mut |blast, chunk| {
@@ -392,6 +395,7 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
             if edit.runs.is_empty() {
                 continue;
             }
+            let edit = if ash { edit } else { edit.without_ash() };
             if let Err(e) = game.native_edit_blocks(&blast.dimension, &native(edit))
                 && warned.insert(blast.id)
             {
@@ -407,6 +411,19 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     if st.saved.waves.finished() {
         log::info!("[big_nukes] every wave is over");
         save(st);
+    }
+}
+
+/// Whether the ash block is in the game: it comes with the assets half. An edit with no runs reads its palette as
+/// any other does, and changes nothing; an entry that doesn't read refuses it.
+fn has_ash(game: &mut Game<'_>, dimension: &str) -> bool {
+    let probe = NativeBlockEdit { palette: vec![rules::ASH.into()], ..Default::default() };
+    match game.native_edit_blocks(dimension, &probe) {
+        Ok(_) => true,
+        Err(e) => {
+            log::info!("[big_nukes] no ash ({e}): the scorch is coarse dirt");
+            false
+        }
     }
 }
 

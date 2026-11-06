@@ -17,6 +17,8 @@ The native half knows the assets half is installed when the loot table `big_nuke
 - In 26.3, `#minecraft:dirt` is only dirt, coarse dirt and rooted dirt; grass, podzol and mycelium are
   `#minecraft:grass_blocks`, and `#minecraft:substrate_overworld` holds all of them with mud and moss.
 - `#minecraft:replaceable` holds water and lava, so plants are named one by one.
+- An edit reads its whole palette before its runs, and one entry that doesn't read refuses it all; so an edit with no
+  runs tells whether a block is in the game. The scorch asks so once a world for `big_nukes:ash` (the assets half).
 - The game builds with `-D warnings`: an unused constant or a never-built enum variant in the rules fails the build.
 
 ## The blast's effects
