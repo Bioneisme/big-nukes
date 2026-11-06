@@ -130,12 +130,18 @@ check("the suit wears", '"damage": 0' not in inv[inv.find("armor"):inv.find("arm
 # The anti-rad takes dose off.
 chat("clear @s")
 ctl("wait", 300)
+# Out of the zone, so the dose only heals slowly while the file catches up (the mod writes it every 10 s).
+chat(f"tp @s {bx + 0.5} {by + 40} {bz + 900.5}")
+ctl("wait", 220)
 before = dose()
 chat("give @s big_nukes:anti_rad")
 ctl("select", 1)
-ctl("use-item")
-ctl("wait", 60)
+ctl("use-item", "--hold", 2)
+ctl("wait", 220)
 after = dose()
+inv = json.dumps(ctl("inventory"), ensure_ascii=False)
+check("drinking leaves a glass bottle", "glass_bottle" in inv, inv[:200])
+stand(bx, by, bz)
 check("the anti-rad takes about 300 off", before > 200 and after < before - 200, f"{before:.0f} -> {after:.0f}")
 
 # Mobs in the zone are hurt.
@@ -166,7 +172,7 @@ ctl("wait", 20)
 
 # The dose across a reload.
 chat("gamemode survival")
-ctl("wait", 100)
+ctl("wait", 220)  # the mod writes the dose every 10 s
 kept = dose()
 ctl("quit")
 time.sleep(8)
