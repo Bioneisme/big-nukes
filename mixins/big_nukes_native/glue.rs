@@ -12,6 +12,7 @@ use crate::game::{
 };
 use horizon_client::{
     containers::{ModBlockEntity, ModContainer},
+    fog::{FogData, FogType},
     hud::HudBatch,
     items::ItemStack,
     lang,
@@ -57,6 +58,9 @@ struct State {
     /// Each dimension's next pass over its mobs in the zones: its tick, and where
     /// it starts in their list.
     mobs: HashMap<String, (u64, usize)>,
+    /// Players whose window was last told of some radiation: they are told once
+    /// more when there is none, so it lets go.
+    told: BTreeSet<u128>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -99,6 +103,7 @@ fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Option<State>>> {
             dirty: false,
             wake: Vec::new(),
             mobs: HashMap::new(),
+            told: BTreeSet::new(),
         });
     }
     let broken = std::mem::take(&mut *lock(&BROKEN));
@@ -490,6 +495,135 @@ pub(in crate::game) fn shake(game: &Game<'_>, partial: f32, shake: &mut NativeSh
     }
 }
 
+// ---- radiation in the window --------------------------------------------------------
+//
+// The server tells the window its zones, the mod's clock and the dose once a
+// second (`rad_news`); between the messages the window counts on with its own
+// game time. The Geiger counter in either hand clicks and shows the reading
+// over the hotbar; in a zone the fog turns green and closes in.
+
+/// What the window was last told of the radiation.
+static TOLD: Mutex<Option<rules::Told>> = Mutex::new(None);
+/// The window's ticks, for the clicks' rolls, and the game time of the last one:
+/// a clock that stands (single player paused) doesn't click.
+static CLICKS: Mutex<(u64, i64)> = Mutex::new((0, i64::MIN));
+/// The zone's fog as shown, and when: it eases toward the background's, so
+/// crossing into a zone or out of one doesn't jump.
+static FOG: Mutex<Option<(Instant, f64)>> = Mutex::new(None);
+
+/// The radiation's message, in the window. One with nothing to tell lets go.
+pub(in crate::game) fn told(game: &mut Game<'_>, channel: &str, data: &[u8]) {
+    if channel != rules::RAD_CHANNEL || !game.native_on(rules::ID) {
+        return;
+    }
+    let Some(clock) = game.native_clock() else { return };
+    match serde_json::from_slice::<rules::Rad>(data) {
+        Ok(rad) => *lock(&TOLD) = (!rad.is_empty()).then(|| rules::Told { rad, at: clock_ticks(clock.game_time) }),
+        Err(e) => log::warn!("[big_nukes] the radiation's message: {e}"),
+    }
+}
+
+/// The window's level goes (another dimension, or the world left): what it was
+/// told goes with it. The next message comes within a second.
+pub(in crate::game) fn forget_rad() {
+    *lock(&TOLD) = None;
+}
+
+/// A game time as the rules count it: never below 0.
+fn clock_ticks(game_time: i64) -> u64 {
+    game_time.max(0) as u64
+}
+
+/// The background at `pos` in the window's dimension, by what it was told.
+fn background_here(game: &Game<'_>, pos: [f64; 3]) -> f64 {
+    let (Some(player), Some(clock)) = (game.native_player(), game.native_clock()) else {
+        return 0.0;
+    };
+    lock(&TOLD).as_ref().map_or(0.0, |t| t.background(player.dimension, pos, clock_ticks(clock.game_time)))
+}
+
+/// The Geiger counter's reading when the player holds one in either hand: the
+/// background at their eyes, their dose and where the eyes are.
+fn reading(game: &Game<'_>) -> Option<(f64, f64, [f64; 3])> {
+    let holds = [EquipmentSlot::MainHand, EquipmentSlot::OffHand]
+        .into_iter()
+        .any(|slot| game.native_equipment(slot).is_some_and(|s| &*s.item == rules::GEIGER_COUNTER));
+    if !holds {
+        return None;
+    }
+    let player = game.native_player()?;
+    let eyes = [player.x, player.y + 1.62, player.z];
+    let dose = lock(&TOLD).as_ref().map_or(0.0, |t| t.rad.dose);
+    Some((background_here(game, eyes), dose, eyes))
+}
+
+/// The window's tick: the counter clicks by the background, at most once a tick.
+pub(in crate::game) fn client_tick(game: &mut Game<'_>) {
+    if !game.native_window() || !game.native_on(rules::ID) {
+        return;
+    }
+    let Some(clock) = game.native_clock() else { return };
+    let tick = {
+        let mut clicks = lock(&CLICKS);
+        let standing = clicks.1 == clock.game_time;
+        clicks.0 += 1;
+        clicks.1 = clock.game_time;
+        if standing {
+            return;
+        }
+        clicks.0
+    };
+    let Some((background, _, eyes)) = reading(game) else { return };
+    if rules::clicks(background, tick) {
+        game.native_play_local_sound(rules::GEIGER_CLICK, eyes, 0.6, rules::click_pitch(tick), 0);
+    }
+}
+
+/// The counter's reading over the hotbar, coloured by the danger. With the HUD:
+/// F1 hides it, and a screen covers it.
+pub(in crate::game) fn hud(game: &Game<'_>, layer: &str, batch: &mut HudBatch) {
+    if layer != "minecraft:hotbar" || !game.native_on(rules::ID) {
+        return;
+    }
+    let Some((background, dose, _)) = reading(game) else { return };
+    let (bg, dose_text) = rules::reading_numbers(background, dose);
+    let line = lang::tr("big_nukes.geiger.reading", &[&bg, &dose_text]);
+    let x = ((batch.width - game.native_text_width(&line)) / 2.0).round();
+    game.native_text(batch, &line, [x, batch.height - READING_Y], rules::reading_colour(background), true);
+}
+
+/// The reading's line, this many GUI pixels over the bottom: above the hotbar,
+/// the health and food rows, the item's name and the action bar.
+const READING_Y: f32 = 84.0;
+
+/// The world's fog, every frame: a zone's turns it green and brings it in, by
+/// the background at the camera, eased over time. Only the fog of the open air:
+/// water, lava and powder snow keep their own.
+pub(in crate::game) fn fog(game: &Game<'_>, camera: [f64; 3], fog_type: FogType, fog: &mut FogData) {
+    if !game.native_on(rules::ID) {
+        return;
+    }
+    let target = rules::fog_strength(background_here(game, camera));
+    let now = Instant::now();
+    let shown = {
+        let mut eased = lock(&FOG);
+        let shown = match *eased {
+            Some((then, shown)) => rules::ease(shown, target, now.duration_since(then).as_secs_f64()),
+            None => target,
+        };
+        *eased = Some((now, shown));
+        shown
+    };
+    if fog_type != FogType::Atmospheric {
+        return;
+    }
+    if let Some((color, start, end)) = rules::tint_fog(shown, fog.color, fog.environmental_start, fog.environmental_end) {
+        fog.color = color;
+        fog.environmental_start = start;
+        fog.environmental_end = end;
+    }
+}
+
 // ---- ticks, chunks and the world's phases ----------------------------------------
 
 pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) {
@@ -499,11 +633,11 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     let Some(mut guard) = state(game) else { return };
     let st = guard.as_mut().expect("opened");
     st.saved.tick += 1;
-    let sick = if st.saved.tick % rules::SECOND == 0 {
+    let (sick, rad) = if st.saved.tick % rules::SECOND == 0 {
         st.dirty |= st.saved.prune_zones(st.saved.tick);
-        sick(game, st)
+        (sick(game, st), rad_news(game, st))
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     if st.dirty && st.saved.tick % SAVE_EVERY == 0 {
         save(st);
@@ -517,6 +651,11 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     // The commands run with the state let go: a death they cause is heard at once.
     for (name, stage, damage) in sick {
         sicken(game, &name, stage, damage);
+    }
+    for (player, bytes) in rad {
+        if let Err(e) = game.native_net_send_to_player(player, rules::RAD_CHANNEL, &bytes) {
+            log::warn!("[big_nukes] telling a player of the radiation: {e}");
+        }
     }
     // A level nobody has entered since the world opened isn't open, and its
     // forced chunks don't tick: a command run in it opens it, so a blast there
@@ -707,6 +846,7 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
     *state = None;
     *lock(&LOADED) = None;
     lock(&HEARD).clear();
+    forget_rad();
     lock(&PLACED).clear();
     lock(&DIED).clear();
     lock(&ANTI_RAD).clear();
@@ -1401,6 +1541,32 @@ fn sick(game: &Game<'_>, st: &mut State) -> Vec<(String, u8, Option<u32>)> {
         }
     }
     sick
+}
+
+/// The radiation each player's window is told of, once a second: the zones of
+/// their dimension and their dose, for the Geiger counter and the fog. Only to
+/// the players with something to tell, and once more to those who had and now
+/// have nothing, so their window lets go.
+fn rad_news(game: &Game<'_>, st: &mut State) -> Vec<(u128, Vec<u8>)> {
+    if st.saved.zones.is_empty() && st.saved.doses.is_empty() && st.told.is_empty() {
+        return Vec::new();
+    }
+    let mut news = Vec::new();
+    for p in game.native_server_players() {
+        let rad = st.saved.rad_for(p.uuid, &p.dimension, p.position);
+        if rad.is_empty() {
+            if !st.told.remove(&p.uuid) {
+                continue;
+            }
+        } else {
+            st.told.insert(p.uuid);
+        }
+        match serde_json::to_vec(&rad) {
+            Ok(bytes) => news.push((p.uuid, bytes)),
+            Err(e) => log::warn!("[big_nukes] the radiation's message: {e}"),
+        }
+    }
+    news
 }
 
 /// A sick player's effects, kept on for a few seconds at a time, and the damage due.

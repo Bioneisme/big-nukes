@@ -1491,6 +1491,154 @@ impl Saved {
     pub fn died(&mut self, uuid: u128) -> bool {
         self.doses.remove(&dose_key(uuid)).is_some()
     }
+
+    /// What the window of a player at `pos` in `dimension` is told: the zones
+    /// of that dimension nearest to them, at most `RAD_ZONES`, the mod's clock
+    /// and their dose.
+    pub fn rad_for(&self, uuid: u128, dimension: &str, pos: [f64; 3]) -> Rad {
+        let now = self.tick;
+        let outside = |z: &Zone| {
+            let d2: f64 = (0..3).map(|i| (pos[i] - (z.center[i] as f64 + 0.5)).powi(2)).sum();
+            (d2.sqrt() - z.radius).max(0.0)
+        };
+        let mut zones: Vec<&Zone> = self.zones.iter().filter(|z| z.dimension == dimension).collect();
+        zones.sort_by(|a, b| outside(a).total_cmp(&outside(b)).then(b.at(pos, now).total_cmp(&a.at(pos, now))));
+        zones.truncate(RAD_ZONES);
+        Rad {
+            zones: zones.into_iter().cloned().collect(),
+            now,
+            dose: self.doses.get(&dose_key(uuid)).map_or(0.0, |d| d.rad),
+        }
+    }
+}
+
+// ---- radiation in the window ----------------------------------------------------
+//
+// The server tells each player's window its zones, its clock and their dose once
+// a second; the window works out the background where the player is from them, on
+// its own clock between the messages, for the Geiger counter and the fog.
+
+/// The mod message that carries `Rad`.
+pub const RAD_CHANNEL: &str = "big_nukes:rad";
+/// The most zones a message carries: the nearest.
+pub const RAD_ZONES: usize = 32;
+/// The counter's click, a sound event of the assets half.
+pub const GEIGER_CLICK: &str = "big_nukes:geiger.click";
+
+/// What a window knows of the radiation: its dimension's nearest zones, the
+/// mod's clock they are reckoned on, and the player's dose.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Rad {
+    pub zones: Vec<Zone>,
+    pub now: u64,
+    pub dose: f64,
+}
+
+impl Rad {
+    /// Nothing to tell: no zone and no dose. Sent once, so the window lets go.
+    pub fn is_empty(&self) -> bool {
+        self.zones.is_empty() && self.dose <= 0.0
+    }
+}
+
+/// A `Rad` as the window keeps it, with its own game time when it came.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Told {
+    pub rad: Rad,
+    pub at: u64,
+}
+
+impl Told {
+    /// The background at `pos` in `dimension` when the window's game time is
+    /// `clock`: the mod's clock counts on from the message. A clock behind the
+    /// message's counts as no time passed.
+    pub fn background(&self, dimension: &str, pos: [f64; 3], clock: u64) -> f64 {
+        background(&self.rad.zones, dimension, pos, self.rad.now + clock.saturating_sub(self.at))
+    }
+}
+
+/// The counter's chance of a click in a tick: a quarter for each rad a second, at most 0.9.
+pub fn click_chance(background: f64) -> f64 {
+    if background > 0.0 { (background * 0.25).min(0.9) } else { 0.0 }
+}
+
+/// A number from 0 to 1 made from `tick` and `salt`, the same each time.
+fn roll(tick: u64, salt: u64) -> f64 {
+    (mix(tick ^ salt) >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// Whether the counter clicks on the window's tick `tick` in `background`.
+pub fn clicks(background: f64, tick: u64) -> bool {
+    roll(tick, 0x6E16_E500) < click_chance(background)
+}
+
+/// A click's pitch, 0.9 to 1.1, so they don't sound alike.
+pub fn click_pitch(tick: u64) -> f32 {
+    (0.9 + 0.2 * roll(tick, 0xC11C_0000)) as f32
+}
+
+pub const GREEN: u32 = 0x55_FF55;
+pub const YELLOW: u32 = 0xFF_FF55;
+pub const RED: u32 = 0xFF_5555;
+
+/// The reading's colour: green below 1 rad a second, yellow below 5, red from 5.
+pub fn reading_colour(background: f64) -> u32 {
+    if background >= 5.0 {
+        RED
+    } else if background >= 1.0 {
+        YELLOW
+    } else {
+        GREEN
+    }
+}
+
+/// The reading's numbers: the background to a tenth, the dose to a whole rad.
+pub fn reading_numbers(background: f64, dose: f64) -> (String, String) {
+    (format!("{:.1}", background.max(0.0)), format!("{:.0}", dose.max(0.0)))
+}
+
+/// The fog of a zone shows from this background, and is full at `FOG_FULL`.
+const FOG_FROM: f64 = 0.2;
+const FOG_FULL: f64 = 5.0;
+/// The colour a full zone's fog turns to, and how near it ends.
+const FOG_TINT: [f32; 3] = [0.55, 0.62, 0.45];
+const FOG_END: f32 = 64.0;
+/// A fog starting this far is Horizon's Fog option turned off: its distances stay.
+const FOG_OFF: f32 = 1e8;
+/// The seconds the fog takes to come most of the way (63%) to a new strength.
+const FOG_EASE: f64 = 0.4;
+
+/// How strong the zone's fog is in `background`, 0 to 1.
+pub fn fog_strength(background: f64) -> f64 {
+    if background >= FOG_FROM { (background / FOG_FULL).min(1.0) } else { 0.0 }
+}
+
+/// The fog shown moves from `shown` toward `target`, `seconds` later: by the
+/// time gone, so the frame rate doesn't change it.
+pub fn ease(shown: f64, target: f64, seconds: f64) -> f64 {
+    shown + (target - shown) * (1.0 - (-seconds.max(0.0) / FOG_EASE).exp())
+}
+
+/// The world's fog (its colour, the start and the end of the fog of the
+/// surroundings) with a zone's of `strength` over it: the colour toward the
+/// zone's, the end in toward 64 blocks and the start toward the eyes. None for
+/// no fog, and when the result isn't one the game takes.
+pub fn tint_fog(strength: f64, color: [f32; 4], start: f32, end: f32) -> Option<([f32; 4], f32, f32)> {
+    let s = strength.min(1.0) as f32;
+    if !(s > 0.0) || !start.is_finite() || !end.is_finite() {
+        return None;
+    }
+    let mut tinted = color;
+    for i in 0..3 {
+        tinted[i] = (color[i] + (FOG_TINT[i] - color[i]) * s).clamp(0.0, 1.0);
+    }
+    if start >= FOG_OFF {
+        return Some((tinted, start, end));
+    }
+    let start = start + (start.min(0.0) - start) * s;
+    let end = end + (end.min(FOG_END) - end) * s;
+    (end > start).then_some((tinted, start, end))
 }
 
 // ---- the blast's effects ------------------------------------------------------
@@ -2316,7 +2464,8 @@ mod tests {
     #[test]
     fn every_sound_event_has_its_files() {
         let sounds: serde_json::Value = serde_json::from_str(&file("content/assets/big_nukes/sounds.json")).unwrap();
-        for event in ["blast.near", "blast.far", "wave.roar"] {
+        let click = GEIGER_CLICK.strip_prefix("big_nukes:").unwrap();
+        for event in ["blast.near", "blast.far", "wave.roar", click] {
             let entry = &sounds[event];
             assert!(entry.is_object(), "{event} isn't declared");
             for s in entry["sounds"].as_array().unwrap() {
@@ -3485,5 +3634,128 @@ mod tests {
         assert_eq!(old.next_id, 1);
         let dose: Dose = serde_json::from_str(r#"{"rad": 5.0}"#).unwrap();
         assert_eq!(dose, Dose { rad: 5.0, stepped: 0, hurt: None });
+    }
+
+    // ---- radiation in the window (plan 5, Task 4) ----------------------------------
+
+    #[test]
+    fn the_client_reads_the_same_background() {
+        let me = 9u128;
+        let mut saved = Saved { tick: 5_000, ..Saved::default() };
+        saved.blast(OW, [0, 64, 0], 120).unwrap();
+        saved.blast(OW, [100, 64, 0], 250).unwrap();
+        saved.tick = 9_000;
+        let rad = saved.rad_for(me, OW, [10.0, 64.0, 0.0]);
+        // The window's clock is its own: it only counts on from the message.
+        let told = Told { rad, at: 123_456 };
+        for (pos, later) in [([10.5, 65.6, 0.5], 0), ([40.5, 70.0, -20.5], 300), ([150.5, 64.0, 0.5], 12_000)] {
+            let server = background(&saved.zones, OW, pos, saved.tick + later);
+            let client = told.background(OW, pos, 123_456 + later);
+            assert!(close(server, client), "{pos:?} {later}: {server} {client}");
+            assert!(server > 0.0);
+        }
+        assert_eq!(told.background("minecraft:the_nether", [0.5, 64.0, 0.5], 123_456), 0.0);
+        // A clock behind the message's (another world) counts as no time passed.
+        assert!(close(told.background(OW, [0.5, 64.0, 0.5], 0), background(&saved.zones, OW, [0.5, 64.0, 0.5], 9_000)));
+    }
+
+    #[test]
+    fn rad_message_round_trips() {
+        let me = 9u128;
+        let mut saved = Saved::default();
+        for k in 0..40 {
+            saved.blast(OW, [k * 1000, 64, 0], 120).unwrap();
+        }
+        saved.blast("minecraft:the_nether", [0, 64, 0], 120).unwrap();
+        saved.doses.entry(dose_key(me)).or_default().rad = 42.4;
+        let rad = saved.rad_for(me, OW, [20_000.0, 64.0, 0.0]);
+        // Only the dimension's zones, the nearest first, and no more than a message holds.
+        assert_eq!(rad.zones.len(), RAD_ZONES);
+        assert!(rad.zones.iter().all(|z| z.dimension == OW));
+        assert_eq!(rad.zones[0].center, [20_000, 64, 0]);
+        assert!(rad.zones.iter().any(|z| z.center == [19_000, 64, 0]) && rad.zones.iter().any(|z| z.center == [21_000, 64, 0]));
+        assert!(!rad.zones.iter().any(|z| z.center == [39_000, 64, 0] || z.center == [0, 64, 0]));
+        assert_eq!((rad.now, rad.dose), (saved.tick, 42.4));
+        assert!(!rad.is_empty());
+        let bytes = serde_json::to_vec(&rad).unwrap();
+        assert!(bytes.len() < 30_000 / 4, "{} bytes", bytes.len());
+        let back: Rad = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back, rad);
+        // Nothing to tell: no zone in the dimension and no dose.
+        let other = saved.rad_for(7, "minecraft:the_end", [0.0, 64.0, 0.0]);
+        assert!(other.is_empty() && other.zones.is_empty() && other.dose == 0.0);
+        assert!(!saved.rad_for(me, "minecraft:the_end", [0.0, 64.0, 0.0]).is_empty(), "a dose is still news");
+    }
+
+    #[test]
+    fn geiger_clicks_scale_with_background() {
+        assert_eq!(click_chance(0.0), 0.0);
+        assert!(close(click_chance(1.0), 0.25));
+        assert!(close(click_chance(2.0), 0.5));
+        assert!(close(click_chance(3.6), 0.9));
+        assert!(close(click_chance(100.0), 0.9));
+        assert_eq!(click_chance(-1.0), 0.0);
+        assert_eq!(click_chance(f64::NAN), 0.0);
+        let count = |bg: f64| (0..20_000u64).filter(|&t| clicks(bg, t)).count();
+        assert_eq!(count(0.0), 0);
+        let (low, mid, high) = (count(0.4), count(2.0), count(50.0));
+        assert!((1_700..2_300).contains(&low), "{low}");
+        assert!((9_500..10_500).contains(&mid), "{mid}");
+        assert!((17_600..18_400).contains(&high), "{high}");
+        // The same tick clicks the same way: no clock of its own.
+        assert_eq!(clicks(2.0, 77), clicks(2.0, 77));
+        // The pitch wanders a little around 1.
+        for t in 0..100 {
+            assert!((0.9..=1.1).contains(&click_pitch(t)));
+        }
+        // The reading's colour by danger, and its numbers.
+        assert_eq!([0.0, 0.99, 1.0, 4.99, 5.0, 40.0].map(reading_colour), [GREEN, GREEN, YELLOW, YELLOW, RED, RED]);
+        assert_eq!(reading_numbers(2.345, 151.6), ("2.3".to_owned(), "152".to_owned()));
+        assert_eq!(reading_numbers(0.0, 0.0), ("0.0".to_owned(), "0".to_owned()));
+    }
+
+    fn zone_fog(bg: f64, color: [f32; 4], start: f32, end: f32) -> Option<([f32; 4], f32, f32)> {
+        tint_fog(fog_strength(bg), color, start, end)
+    }
+
+    #[test]
+    fn fog_by_background() {
+        let sky = [0.6, 0.7, 0.9, 1.0];
+        assert_eq!(zone_fog(0.0, sky, 0.0, 1024.0), None);
+        assert_eq!(zone_fog(0.19, sky, 0.0, 1024.0), None);
+        // Full from 5 rad/s: the zone's colour, the fog's end at 64 blocks.
+        let (c, start, end) = zone_fog(5.0, sky, 0.0, 1024.0).unwrap();
+        assert!(c.iter().zip([0.55, 0.62, 0.45, 1.0]).all(|(a, b)| (a - b).abs() < 1e-6), "{c:?}");
+        assert_eq!((start, end), (0.0, 64.0));
+        assert_eq!(zone_fog(50.0, sky, 0.0, 1024.0), zone_fog(5.0, sky, 0.0, 1024.0));
+        // Half way at 2.5.
+        let (c, _, end) = zone_fog(2.5, sky, 0.0, 1024.0).unwrap();
+        assert!((c[2] - 0.675).abs() < 1e-6 && (end - 544.0).abs() < 1e-3, "{c:?} {end}");
+        // A fog already nearer keeps its end; the start comes in to the eyes, so the end stays past it.
+        let (_, start, end) = zone_fog(5.0, sky, 10.0, 48.0).unwrap();
+        assert_eq!((start, end), (0.0, 48.0));
+        let (_, start, end) = zone_fog(2.5, sky, 10.0, 48.0).unwrap();
+        assert_eq!((start, end), (5.0, 48.0));
+        let (_, start, end) = zone_fog(5.0, sky, 200.0, 1024.0).unwrap();
+        assert!(end > start && end == 64.0, "{start} {end}");
+        // Horizon's Fog option off: the distances are the player's, only the colour turns.
+        let (_, start, end) = zone_fog(5.0, sky, 1e9, 2e9).unwrap();
+        assert_eq!((start, end), (1e9, 2e9));
+        // The result is always one the game takes.
+        for bg in [0.2, 0.7, 3.0, 9.0, f64::INFINITY] {
+            for (start, end) in [(0.0, 1024.0), (-8.0, 96.0), (60.0, 64.0), (300.0, 301.0)] {
+                let (c, s, e) = zone_fog(bg, [1.0, 0.0, 1.0, 1.0], start, end).unwrap();
+                assert!(c.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) && s.is_finite() && e > s, "{bg} {start} {end}");
+            }
+        }
+        assert_eq!(zone_fog(f64::NAN, sky, 0.0, 1024.0), None);
+        // The shown strength eases toward the target over time, not frames.
+        assert_eq!(fog_strength(0.1), 0.0);
+        assert!(close(fog_strength(1.0), 0.2));
+        let one = ease(0.0, 1.0, 0.1);
+        let two = ease(ease(0.0, 1.0, 0.05), 1.0, 0.05);
+        assert!(close(one, two) && one > 0.0 && one < 0.5, "{one} {two}");
+        assert!(ease(0.0, 1.0, 5.0) > 0.99);
+        assert_eq!(ease(0.3, 0.3, 1.0), 0.3);
     }
 }

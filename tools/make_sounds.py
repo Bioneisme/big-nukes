@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Makes the mod's sounds from noise, so every one of them is original.
 
-    python tools/make_sounds.py
+    python tools/make_sounds.py [name ...]
 
-Writes content/assets/big_nukes/sounds/*.ogg (mono, 44.1 kHz, Vorbis) with numpy and ffmpeg.
-The same seed gives the same files.
+Writes content/assets/big_nukes/sounds/*.ogg (mono, 44.1 kHz, Vorbis) with numpy and ffmpeg, or only the
+named ones. The same seed gives the same samples; Vorbis gives each file a new stream serial, so a sound
+that is already there is best left out.
 """
 import os
 import subprocess
+import sys
 import tempfile
 import wave
 
@@ -88,6 +90,15 @@ def wave_roar():
     return normalize(wind + grit, 0.85)
 
 
+def geiger_click():
+    """A Geiger counter's click: a dry tick of a few milliseconds, with its own seed."""
+    own = np.random.default_rng(26_4)
+    n = seconds(0.03)
+    tick = own.standard_normal(n) * envelope(n, 0.0002, 0.0015)
+    body = np.sin(2 * np.pi * 3200 * np.arange(n) / RATE) * envelope(n, 0.0001, 0.001) * 0.6
+    return normalize(tick + body, 0.7)
+
+
 def write(name, x):
     os.makedirs(OUT, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -102,7 +113,16 @@ def write(name, x):
         print(name, os.path.getsize(ogg), "bytes")
 
 
+SOUNDS = {
+    "blast_near": near,
+    "blast_far": far,
+    "wave_roar": wave_roar,
+    "geiger_click": geiger_click,
+}
+
 if __name__ == "__main__":
-    write("blast_near", near())
-    write("blast_far", far())
-    write("wave_roar", wave_roar())
+    wanted = sys.argv[1:] or list(SOUNDS)
+    # The noise is drawn in this order whichever are written, so each sound stays the same.
+    made = {name: make() for name, make in SOUNDS.items()}
+    for name in wanted:
+        write(name, made[name])
