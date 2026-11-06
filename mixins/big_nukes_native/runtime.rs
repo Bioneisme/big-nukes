@@ -20,9 +20,11 @@ pub const ASSETS_MARKER: &str = "big_nukes:blocks/atomic_bomb";
 pub const CENTRIFUGE: &str = "big_nukes:centrifuge";
 pub const ASSEMBLY_TABLE: &str = "big_nukes:assembly_table";
 
-/// The bombs, smallest first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The bombs, smallest first. A bomb's saved state names its kind; one saved
+/// without it is read as the smallest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BombKind {
+    #[default]
     Demolition,
     Tactical,
     Atomic,
@@ -37,6 +39,25 @@ impl BombKind {
             BombKind::Tactical => "big_nukes:tactical_warhead",
             BombKind::Atomic => "big_nukes:atomic_bomb",
         }
+    }
+
+    /// How far the blast reaches, before the operator's limit.
+    pub fn radius(self) -> u32 {
+        match self {
+            BombKind::Demolition => 16,
+            BombKind::Tactical => 50,
+            BombKind::Atomic => 250,
+        }
+    }
+
+    /// The bomb a block is, if it is one.
+    pub fn of_block(id: &str) -> Option<BombKind> {
+        Self::ALL.into_iter().find(|k| k.id() == id)
+    }
+
+    /// The demolition charge takes only a fuse; the others take any detonator.
+    pub fn takes(self, detonator: Detonator) -> bool {
+        self != BombKind::Demolition || detonator == Detonator::Fuse
     }
 }
 
@@ -148,6 +169,234 @@ pub fn arrow_width(spin: i32, spin_max: i32) -> i32 {
         return 0;
     }
     spin.min(spin_max) * ARROW_WIDTH / spin_max
+}
+
+// ---- the bombs -------------------------------------------------------------------
+//
+// A bomb's state lives in its block entity, as the centrifuge's does. It goes
+// off only through its detonator: a fuse lit with flint and steel, a keypad's
+// code, or a receiver's remote (still to come). Each counts to a tick of
+// `Saved.tick`, and the block entity's tick sets the blast off.
+
+pub const FLINT_AND_STEEL: &str = "minecraft:flint_and_steel";
+/// The uses in a flint and steel, vanilla's `max_damage`.
+pub const FLINT_AND_STEEL_USES: u32 = 64;
+/// A lit fuse hisses this long before the blast.
+pub const FUSE_TICKS: u64 = 80;
+/// The right code starts a countdown this long.
+pub const COUNTDOWN_TICKS: u64 = 100;
+/// Wrong codes in a row that lock the keypad, and for how long.
+pub const TRIES: u8 = 3;
+pub const LOCK_TICKS: u64 = 600;
+/// The longest code.
+pub const CODE_DIGITS: usize = 8;
+/// The keypad's menu type, content/data/big_nukes/horizon/menu/keypad.json.
+/// Its one slot holds the detonator, hidden, so a broken bomb drops it as a
+/// container drops its items.
+pub const KEYPAD_MENU: &str = "big_nukes:keypad";
+pub const BOMB_SLOTS: usize = 1;
+pub const DETONATOR_SLOT: usize = 0;
+/// The keypad screen's data slots: what it shows, the digits typed, the seconds
+/// of a lock or a countdown, and the tries left.
+pub const PAD_DATA: usize = 4;
+pub const PAD_SET: i32 = 0;
+pub const PAD_ENTER: i32 = 1;
+pub const PAD_LOCKED: i32 = 2;
+pub const PAD_COUNTING: i32 = 3;
+
+/// What sets a bomb off, put in as an item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Detonator {
+    Fuse,
+    Keypad,
+    Receiver,
+}
+
+impl Detonator {
+    pub const ALL: [Detonator; 3] = [Detonator::Fuse, Detonator::Keypad, Detonator::Receiver];
+
+    pub fn item(self) -> &'static str {
+        match self {
+            Detonator::Fuse => "big_nukes:fuse_detonator",
+            Detonator::Keypad => "big_nukes:keypad_detonator",
+            Detonator::Receiver => "big_nukes:receiver_detonator",
+        }
+    }
+
+    pub fn of_item(item: &str) -> Option<Detonator> {
+        Self::ALL.into_iter().find(|d| d.item() == item)
+    }
+}
+
+/// A flint and steel's damage after one more use; none when that use breaks it.
+pub fn worn(damage: u32) -> Option<u32> {
+    let damage = damage + 1;
+    (damage < FLINT_AND_STEEL_USES).then_some(damage)
+}
+
+/// A placed bomb: its detonator, and the keypad's code and what was typed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Bomb {
+    pub kind: BombKind,
+    pub detonator: Option<Detonator>,
+    /// The keypad's code, its digits; empty until the first entry sets it.
+    pub code: String,
+    /// The digits typed since the last enter or clear.
+    pub entry: String,
+    /// Wrong codes in a row.
+    pub tries: u8,
+    /// The keypad takes nothing before this tick.
+    pub locked_until: u64,
+    /// The tick it goes off, once its fuse is lit or its code entered.
+    pub fires_at: Option<u64>,
+}
+
+/// Why a detonator doesn't go in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    HasOne,
+    FuseOnly,
+}
+
+/// A key of the keypad.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    Digit(u8),
+    Clear,
+    Enter,
+}
+
+impl Key {
+    /// The key a menu button stands for: the digits 0 to 9, then clear and enter.
+    pub fn of_button(id: i32) -> Option<Key> {
+        match id {
+            0..=9 => Some(Key::Digit(id as u8)),
+            10 => Some(Key::Clear),
+            11 => Some(Key::Enter),
+            _ => None,
+        }
+    }
+}
+
+/// What a key press did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Press {
+    Ignored,
+    Typed,
+    Cleared,
+    CodeSet,
+    Accepted,
+    Wrong,
+    Locked,
+}
+
+impl Bomb {
+    pub fn new(kind: BombKind) -> Bomb {
+        Bomb { kind, ..Bomb::default() }
+    }
+
+    /// Puts a detonator in, the only one it gets.
+    pub fn install(&mut self, detonator: Detonator) -> Result<(), Refusal> {
+        if self.detonator.is_some() {
+            return Err(Refusal::HasOne);
+        }
+        if !self.kind.takes(detonator) {
+            return Err(Refusal::FuseOnly);
+        }
+        self.detonator = Some(detonator);
+        Ok(())
+    }
+
+    /// Starts the count to the blast, `ticks` from `now`; false when it already
+    /// counts. The fuse and the keypad come here, and so can a receiver's
+    /// remote, with no ticks: the block entity's next tick sets the blast off.
+    pub fn arm(&mut self, now: u64, ticks: u64) -> bool {
+        if self.fires_at.is_some() {
+            return false;
+        }
+        self.fires_at = Some(now + ticks);
+        true
+    }
+
+    /// Lights the fuse: false without one, or when it's already lit.
+    pub fn light(&mut self, now: u64) -> bool {
+        self.detonator == Some(Detonator::Fuse) && self.arm(now, FUSE_TICKS)
+    }
+
+    /// A key of the keypad. The first code entered becomes the code; then the
+    /// right one starts the countdown, and `TRIES` wrong ones in a row lock the
+    /// keypad. Nothing is taken while it's locked or counting.
+    pub fn press(&mut self, key: Key, now: u64) -> Press {
+        if self.detonator != Some(Detonator::Keypad) || self.fires_at.is_some() || now < self.locked_until {
+            return Press::Ignored;
+        }
+        match key {
+            Key::Digit(d) if d <= 9 && self.entry.len() < CODE_DIGITS => {
+                self.entry.push(char::from(b'0' + d));
+                Press::Typed
+            }
+            Key::Digit(_) => Press::Ignored,
+            Key::Clear => {
+                self.entry.clear();
+                Press::Cleared
+            }
+            Key::Enter if self.entry.is_empty() => Press::Ignored,
+            Key::Enter => {
+                let entry = std::mem::take(&mut self.entry);
+                if self.code.is_empty() {
+                    self.code = entry;
+                    Press::CodeSet
+                } else if entry == self.code {
+                    self.tries = 0;
+                    self.arm(now, COUNTDOWN_TICKS);
+                    Press::Accepted
+                } else {
+                    self.tries += 1;
+                    if self.tries < TRIES {
+                        return Press::Wrong;
+                    }
+                    self.tries = 0;
+                    self.locked_until = now + LOCK_TICKS;
+                    Press::Locked
+                }
+            }
+        }
+    }
+
+    /// The ticks left before it goes off, while it counts.
+    pub fn left(&self, now: u64) -> Option<u64> {
+        self.fires_at.map(|at| at.saturating_sub(now))
+    }
+
+    /// A tick: true once, when it goes off. A lock or a count read from a
+    /// world whose clock went back is cut to its own length.
+    pub fn tick(&mut self, now: u64) -> bool {
+        self.locked_until = self.locked_until.min(now + LOCK_TICKS);
+        self.fires_at = self.fires_at.map(|at| at.min(now + FUSE_TICKS.max(COUNTDOWN_TICKS)));
+        match self.fires_at {
+            Some(at) if at <= now => {
+                self.fires_at = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The keypad screen's data slots (`PAD_DATA` of them).
+    pub fn data(&self, now: u64) -> [i32; PAD_DATA] {
+        let seconds = |ticks: u64| ticks.div_ceil(20).min(i16::MAX as u64) as i32;
+        let tries_left = i32::from(TRIES.saturating_sub(self.tries));
+        if let Some(left) = self.left(now) {
+            [PAD_COUNTING, 0, seconds(left), tries_left]
+        } else if now < self.locked_until {
+            [PAD_LOCKED, 0, seconds(self.locked_until - now), tries_left]
+        } else if self.code.is_empty() {
+            [PAD_SET, self.entry.len() as i32, 0, tries_left]
+        } else {
+            [PAD_ENTER, self.entry.len() as i32, 0, tries_left]
+        }
+    }
 }
 
 // ---- blast geometry ----------------------------------------------------------
@@ -566,12 +815,32 @@ pub fn parse_blast(args: &[&str], at: [f64; 3]) -> Option<(u32, [i32; 3])> {
 }
 
 /// What a world keeps in `<world>/horizon-big-nukes/waves.json`.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Saved {
     /// Server ticks counted since the mod first saw the world.
     pub tick: u64,
     pub next_id: u64,
     pub waves: Waves,
+    /// The operator's limit on a blast's radius: bombs and the command keep within it.
+    #[serde(default = "largest_radius")]
+    pub maxpower: u32,
+}
+
+fn largest_radius() -> u32 {
+    MAX_RADIUS
+}
+
+impl Default for Saved {
+    fn default() -> Self {
+        Saved { tick: 0, next_id: 0, waves: Waves::default(), maxpower: largest_radius() }
+    }
+}
+
+/// Why a blast doesn't start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    Dimension,
+    Maxpower { radius: u32, maxpower: u32 },
 }
 
 impl Saved {
@@ -583,6 +852,19 @@ impl Saved {
         let seed = mix(self.tick ^ mix(id));
         self.waves.start(Blast { id, dimension: dimension.to_owned(), center, radius, seed, world }, self.tick);
         Some(id)
+    }
+
+    /// Whether the operator's limit lets a blast of `radius` go off.
+    pub fn allows(&self, radius: u32) -> bool {
+        radius <= self.maxpower
+    }
+
+    /// A new blast, as `blast`, within the operator's limit.
+    pub fn fire(&mut self, dimension: &str, center: [i32; 3], radius: u32) -> Result<u64, Refused> {
+        if !self.allows(radius) {
+            return Err(Refused::Maxpower { radius, maxpower: self.maxpower });
+        }
+        self.blast(dimension, center, radius).ok_or(Refused::Dimension)
     }
 }
 
@@ -1715,5 +1997,228 @@ mod tests {
         assert_eq!(arrow_width(200, SPIN_TICKS as i32), ARROW_WIDTH / 2);
         assert_eq!(arrow_width(400, SPIN_TICKS as i32), ARROW_WIDTH);
         assert_eq!(arrow_width(5, 0), 0, "before the server's first values");
+    }
+
+    // ---- the bombs (plan 4, Task 5) ------------------------------------------
+
+    const OVERWORLD: &str = "minecraft:overworld";
+
+    /// A bomb with a keypad, its code `code` set when it isn't empty.
+    fn keypad(code: &str) -> Bomb {
+        let mut b = Bomb::new(BombKind::Atomic);
+        b.install(Detonator::Keypad).unwrap();
+        if !code.is_empty() {
+            type_in(&mut b, code, 0);
+            assert_eq!(b.press(Key::Enter, 0), Press::CodeSet);
+        }
+        b
+    }
+
+    fn type_in(b: &mut Bomb, digits: &str, now: u64) {
+        for d in digits.bytes() {
+            assert_eq!(b.press(Key::Digit(d - b'0'), now), Press::Typed, "{digits}");
+        }
+    }
+
+    #[test]
+    fn bombs_know_their_radius() {
+        assert_eq!(BombKind::ALL.map(BombKind::radius), [16, 50, 250]);
+        for k in BombKind::ALL {
+            assert_eq!(BombKind::of_block(k.id()), Some(k));
+            assert!((MIN_RADIUS..=MAX_RADIUS).contains(&k.radius()), "{k:?}");
+        }
+        assert_eq!(BombKind::of_block(CENTRIFUGE), None);
+    }
+
+    #[test]
+    fn a_detonator_goes_in_once() {
+        let mut b = Bomb::new(BombKind::Atomic);
+        assert_eq!(b.detonator, None);
+        assert_eq!(b.install(Detonator::Keypad), Ok(()));
+        for d in Detonator::ALL {
+            assert_eq!(b.install(d), Err(Refusal::HasOne), "{d:?}");
+        }
+        assert_eq!(b.detonator, Some(Detonator::Keypad));
+        // Each detonator is one of the mod's items, and only those are.
+        for d in Detonator::ALL {
+            assert_eq!(Detonator::of_item(d.item()), Some(d));
+            assert!(ITEMS.iter().any(|i| i.0 == d.item()), "{d:?}");
+        }
+        assert_eq!(Detonator::of_item(FLINT_AND_STEEL), None);
+        assert_eq!(Detonator::of_item(RAW_URANIUM), None);
+        // A bomb without a detonator never goes off.
+        let mut bare = Bomb::new(BombKind::Tactical);
+        assert!(!bare.light(0));
+        assert_eq!(bare.press(Key::Digit(1), 0), Press::Ignored);
+        assert_eq!(bare.press(Key::Enter, 0), Press::Ignored);
+        assert!((0..1000).all(|t| !bare.tick(t)));
+    }
+
+    #[test]
+    fn the_demolition_charge_takes_only_a_fuse() {
+        for d in [Detonator::Keypad, Detonator::Receiver] {
+            let mut b = Bomb::new(BombKind::Demolition);
+            assert_eq!(b.install(d), Err(Refusal::FuseOnly), "{d:?}");
+            assert_eq!(b.detonator, None);
+        }
+        assert_eq!(Bomb::new(BombKind::Demolition).install(Detonator::Fuse), Ok(()));
+        for kind in [BombKind::Tactical, BombKind::Atomic] {
+            for d in Detonator::ALL {
+                assert_eq!(Bomb::new(kind).install(d), Ok(()), "{kind:?} {d:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_fuse_counts_down_to_the_blast() {
+        let mut b = Bomb::new(BombKind::Tactical);
+        b.install(Detonator::Fuse).unwrap();
+        assert_eq!(b.left(100), None);
+        assert!(b.light(100));
+        assert!(!b.light(101), "a lit fuse isn't lit again");
+        assert_eq!(b.left(100), Some(FUSE_TICKS));
+        assert_eq!(FUSE_TICKS, 80);
+        for t in 100..180 {
+            assert!(!b.tick(t), "{t}");
+        }
+        assert!(b.tick(180));
+        assert_eq!(b.fires_at, None);
+        assert!(!b.tick(181), "it goes off once");
+        // Only a fuse is lit.
+        let mut k = keypad("");
+        assert!(!k.light(0));
+        assert_eq!(k.fires_at, None);
+        // Each lighting wears the flint and steel; its last use breaks it.
+        assert_eq!(worn(0), Some(1));
+        assert_eq!(worn(FLINT_AND_STEEL_USES - 2), Some(FLINT_AND_STEEL_USES - 1));
+        assert_eq!(worn(FLINT_AND_STEEL_USES - 1), None);
+    }
+
+    #[test]
+    fn the_first_code_is_set_then_checked() {
+        let mut b = keypad("");
+        assert_eq!(b.data(0), [PAD_SET, 0, 0, TRIES as i32]);
+        assert_eq!(b.press(Key::Enter, 0), Press::Ignored, "an empty entry sets nothing");
+        type_in(&mut b, "1234", 0);
+        assert_eq!(b.data(0)[..2], [PAD_SET, 4]);
+        assert_eq!(b.press(Key::Enter, 0), Press::CodeSet);
+        assert_eq!((b.code.as_str(), b.entry.as_str(), b.fires_at), ("1234", "", None));
+        assert_eq!(b.data(0), [PAD_ENTER, 0, 0, TRIES as i32]);
+        // A wrong code counts, and doesn't go off.
+        type_in(&mut b, "9", 1);
+        assert_eq!(b.press(Key::Enter, 1), Press::Wrong);
+        assert_eq!((b.tries, b.fires_at), (1, None));
+        assert_eq!(b.data(1), [PAD_ENTER, 0, 0, TRIES as i32 - 1]);
+        // Clear empties the entry.
+        type_in(&mut b, "12", 2);
+        assert_eq!(b.press(Key::Clear, 2), Press::Cleared);
+        assert_eq!(b.entry, "");
+        // The right code starts the countdown and forgets the wrong ones.
+        type_in(&mut b, "1234", 10);
+        assert_eq!(b.press(Key::Enter, 10), Press::Accepted);
+        assert_eq!((b.tries, b.fires_at), (0, Some(10 + COUNTDOWN_TICKS)));
+        assert_eq!(COUNTDOWN_TICKS, 100);
+        assert_eq!(b.data(10), [PAD_COUNTING, 0, 5, TRIES as i32]);
+        assert_eq!(b.data(81), [PAD_COUNTING, 0, 2, TRIES as i32], "seconds round up");
+        // Presses while it counts are ignored.
+        assert_eq!(b.press(Key::Digit(1), 11), Press::Ignored);
+        assert_eq!(b.press(Key::Clear, 11), Press::Ignored);
+        assert!((10..110).all(|t| !b.tick(t)));
+        assert!(b.tick(110));
+        // A code has at most 8 digits.
+        let mut c = keypad("");
+        type_in(&mut c, "12345678", 0);
+        assert_eq!(c.press(Key::Digit(9), 0), Press::Ignored);
+        assert_eq!(c.entry.len(), CODE_DIGITS);
+        // The screen's buttons: the digits, then clear and enter.
+        assert_eq!(Key::of_button(0), Some(Key::Digit(0)));
+        assert_eq!(Key::of_button(9), Some(Key::Digit(9)));
+        assert_eq!(Key::of_button(10), Some(Key::Clear));
+        assert_eq!(Key::of_button(11), Some(Key::Enter));
+        assert_eq!(Key::of_button(12), None);
+        assert_eq!(Key::of_button(-1), None);
+    }
+
+    #[test]
+    fn three_wrong_codes_lock_the_pad() {
+        let mut b = keypad("42");
+        for i in 1..TRIES {
+            type_in(&mut b, "1", 5);
+            assert_eq!(b.press(Key::Enter, 5), Press::Wrong);
+            assert_eq!(b.tries, i);
+        }
+        type_in(&mut b, "1", 5);
+        assert_eq!(b.press(Key::Enter, 5), Press::Locked);
+        assert_eq!((b.tries, b.locked_until, b.fires_at), (0, 5 + LOCK_TICKS, None));
+        assert_eq!(LOCK_TICKS, 600);
+        assert_eq!(b.data(5), [PAD_LOCKED, 0, 30, TRIES as i32]);
+        // Nothing is typed while it's locked, not even the right code.
+        assert_eq!(b.press(Key::Digit(4), 604), Press::Ignored);
+        assert_eq!(b.press(Key::Enter, 604), Press::Ignored);
+        assert_eq!(b.entry, "");
+        type_in(&mut b, "42", 605);
+        assert_eq!(b.press(Key::Enter, 605), Press::Accepted);
+        // A right code resets the count of wrong ones.
+        let mut c = keypad("42");
+        for _ in 1..TRIES {
+            type_in(&mut c, "7", 0);
+            assert_eq!(c.press(Key::Enter, 0), Press::Wrong);
+        }
+        type_in(&mut c, "42", 0);
+        assert_eq!(c.press(Key::Enter, 0), Press::Accepted);
+        assert_eq!(c.tries, 0);
+        // A lock or a count from a clock that went back is cut to its length.
+        let mut d = keypad("42");
+        d.locked_until = 1_000_000;
+        d.tick(700);
+        assert_eq!(d.locked_until, 700 + LOCK_TICKS);
+        d.fires_at = Some(1_000_000);
+        d.tick(700);
+        assert_eq!(d.fires_at, Some(700 + COUNTDOWN_TICKS));
+    }
+
+    #[test]
+    fn a_bomb_over_maxpower_refuses() {
+        assert_eq!(Saved::default().maxpower, MAX_RADIUS);
+        let mut saved = Saved { maxpower: 50, ..Saved::default() };
+        let atomic = BombKind::Atomic.radius();
+        assert!(!saved.allows(atomic));
+        assert!(saved.allows(BombKind::Tactical.radius()));
+        assert_eq!(saved.fire(OVERWORLD, [0, 64, 0], atomic), Err(Refused::Maxpower { radius: 250, maxpower: 50 }));
+        assert!(saved.waves.finished(), "no wave started");
+        assert_eq!(saved.fire(OVERWORLD, [0, 64, 0], BombKind::Tactical.radius()), Ok(1));
+        assert_eq!(saved.fire("mymod:moon", [0, 64, 0], 16), Err(Refused::Dimension));
+        // A world saved before the limit existed gets the largest radius.
+        let mut json = serde_json::to_value(Saved::default()).unwrap();
+        json.as_object_mut().unwrap().remove("maxpower");
+        let old: Saved = serde_json::from_value(json).unwrap();
+        assert_eq!(old.maxpower, MAX_RADIUS);
+    }
+
+    #[test]
+    fn bomb_state_round_trips() {
+        let b = Bomb {
+            kind: BombKind::Atomic,
+            detonator: Some(Detonator::Keypad),
+            code: "1234".into(),
+            entry: "12".into(),
+            tries: 2,
+            locked_until: 700,
+            fires_at: Some(900),
+        };
+        let back: Bomb = serde_json::from_slice(&serde_json::to_vec(&b).unwrap()).unwrap();
+        assert_eq!(back, b);
+        // An empty entity reads as a bomb with nothing in it.
+        let empty: Bomb = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, Bomb::default());
+        assert_eq!((empty.detonator, empty.fires_at), (None, None));
+    }
+
+    #[test]
+    fn the_keypad_menu_has_the_bombs_slot_and_data() {
+        let (namespace, name) = KEYPAD_MENU.split_once(':').unwrap();
+        let menu: serde_json::Value = serde_json::from_str(&file(&format!("content/data/{namespace}/horizon/menu/{name}.json"))).unwrap();
+        assert_eq!(menu["slots"], BOMB_SLOTS);
+        assert_eq!(menu["data_slots"], PAD_DATA);
     }
 }
