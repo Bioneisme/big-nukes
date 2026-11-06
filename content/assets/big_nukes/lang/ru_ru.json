@@ -1,4 +1,7 @@
 {
   "big_nukes.mod.description": "Бомбы, ударная волна которых катится по земле.",
-  "big_nukes.missing.native": "Big Nukes: не установлен нативный мод, поэтому бомб нет. Поставьте ещё big_nukes_native:"
+  "big_nukes.missing.native": "Big Nukes: не установлен нативный мод, поэтому бомб нет. Поставьте ещё big_nukes_native:",
+  "big_nukes.blast.started": "Взрыв радиусом %s: волна пошла.",
+  "big_nukes.blast.usage": "Использование: /bignukes blast <радиус от %s до %s> [x y z]",
+  "big_nukes.blast.dimension": "Big Nukes не умеет взрывать в этом измерении."
 }

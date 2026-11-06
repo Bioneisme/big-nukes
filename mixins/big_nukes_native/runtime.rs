@@ -9,6 +9,9 @@ use std::{
 };
 
 pub const ID: &str = "big_nukes_native";
+pub const VERSION: &str = "0.1.0";
+/// The mod's folder in a world's folder.
+pub const DIR: &str = "horizon-big-nukes";
 /// A loot table only the assets half brings: the sign that it's installed.
 pub const ASSETS_MARKER: &str = "big_nukes:marker";
 
@@ -132,9 +135,7 @@ pub fn crater_floor(blast: &Blast, d: f64) -> i32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surface {
     WorldSurface,
-    MotionBlocking,
     MotionBlockingNoLeaves,
-    OceanFloor,
 }
 
 /// `height` blocks up column (`x`, `z`) from `y`, set to palette entry `block`
@@ -370,6 +371,55 @@ impl Waves {
 
     pub fn finished(&self) -> bool {
         self.waves.is_empty()
+    }
+}
+
+// ---- the command and what a world keeps -----------------------------------------
+
+/// The smallest and largest radius `/bignukes blast` takes.
+pub const MIN_RADIUS: u32 = 8;
+pub const MAX_RADIUS: u32 = 1024;
+
+/// A dimension's height, for the ones the game has.
+pub fn world_of(dimension: &str) -> Option<World> {
+    match dimension {
+        "minecraft:overworld" => Some(World::OVERWORLD),
+        "minecraft:the_nether" | "minecraft:the_end" => Some(World::NETHER),
+        _ => None,
+    }
+}
+
+/// `blast <radius> [x y z]`, after the command's name: the radius and the
+/// center, the player's block when no place is given.
+pub fn parse_blast(args: &[&str], at: [f64; 3]) -> Option<(u32, [i32; 3])> {
+    let (radius, place) = args.split_first()?;
+    let radius: u32 = radius.parse().ok().filter(|r| (MIN_RADIUS..=MAX_RADIUS).contains(r))?;
+    let center = match place {
+        [] => at.map(|v| v.floor() as i32),
+        [x, y, z] => [x.parse().ok()?, y.parse().ok()?, z.parse().ok()?],
+        _ => return None,
+    };
+    Some((radius, center))
+}
+
+/// What a world keeps in `<world>/horizon-big-nukes/waves.json`.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Saved {
+    /// Server ticks counted since the mod first saw the world.
+    pub tick: u64,
+    pub next_id: u64,
+    pub waves: Waves,
+}
+
+impl Saved {
+    /// A new blast at `center`, its wave started now.
+    pub fn blast(&mut self, dimension: &str, center: [i32; 3], radius: u32) -> Option<u64> {
+        let world = world_of(dimension)?;
+        self.next_id += 1;
+        let id = self.next_id;
+        let seed = mix(self.tick ^ mix(id));
+        self.waves.start(Blast { id, dimension: dimension.to_owned(), center, radius, seed, world }, self.tick);
+        Some(id)
     }
 }
 
@@ -725,5 +775,33 @@ mod tests {
         assert_eq!(drain(&mut w, OW), drain(&mut back, OW));
         back.chunk_loaded(OW, [2, 2]);
         assert_eq!(drain(&mut back, OW), vec![(1, [2, 2])]);
+    }
+
+    // ---- the command (Task 4) ----------------------------------------------
+
+    #[test]
+    fn the_blast_command_reads_a_radius_and_an_optional_place() {
+        let at = [-0.5, 70.9, 10.2];
+        assert_eq!(parse_blast(&["50"], at), Some((50, [-1, 70, 10])));
+        assert_eq!(parse_blast(&["250", "-7", "64", "3"], at), Some((250, [-7, 64, 3])));
+        assert_eq!(parse_blast(&["7"], at), None);
+        assert_eq!(parse_blast(&["1025"], at), None);
+        assert_eq!(parse_blast(&["50", "1", "2"], at), None);
+        assert_eq!(parse_blast(&["fifty"], at), None);
+        assert_eq!(parse_blast(&[], at), None);
+    }
+
+    #[test]
+    fn blasts_know_their_dimension_and_get_their_own_ids() {
+        let mut saved = Saved::default();
+        assert_eq!(saved.blast("minecraft:overworld", [0, 64, 0], 50), Some(1));
+        assert_eq!(saved.blast("minecraft:the_nether", [0, 64, 0], 50), Some(2));
+        assert_eq!(saved.blast("mymod:moon", [0, 64, 0], 50), None);
+        let json = serde_json::to_string(&saved).unwrap();
+        let mut back: Saved = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.blast("minecraft:overworld", [0, 64, 0], 50), Some(3));
+        back.waves.advance("minecraft:the_nether", 1000, &|_| true);
+        let (b, _) = back.waves.next_job("minecraft:the_nether").unwrap();
+        assert_eq!((b.id, b.world), (2, World::NETHER));
     }
 }
