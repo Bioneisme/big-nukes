@@ -234,6 +234,7 @@ struct Cache {
     device: wgpu::Device,
     format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
 }
 
@@ -252,7 +253,10 @@ pub fn needs(needs: &mut RenderNeeds) {
 }
 
 fn build(device: &wgpu::Device, format: wgpu::TextureFormat) -> Option<Cache> {
-    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    // A backend that can't compile the shader raises an internal error, not a
+    // validation one: both are caught, as Horizon's own passes do.
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("big_nukes sky"),
         source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -291,11 +295,13 @@ fn build(device: &wgpu::Device, format: wgpu::TextureFormat) -> Option<Cache> {
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    if let Some(e) = pollster::block_on(scope.pop()) {
+    let layout = pipeline.get_bind_group_layout(0);
+    let failed = [pollster::block_on(validation.pop()), pollster::block_on(internal.pop())];
+    if let Some(e) = failed.into_iter().flatten().next() {
         log::warn!("[big_nukes] the sky's pipeline failed, clouds are left out: {e}");
         return None;
     }
-    Some(Cache { device: device.clone(), format, pipeline, uniforms })
+    Some(Cache { device: device.clone(), format, pipeline, layout, uniforms })
 }
 
 /// Two matrices, two sizes, a count with padding, and four blasts of four vectors.
@@ -350,7 +356,7 @@ pub fn drawn(world: &mut WorldDrawn<'_>) {
     world.queue.write_buffer(&cache.uniforms, 0, &uniforms(world, &shown));
     let group = world.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("big_nukes sky"),
-        layout: &cache.pipeline.get_bind_group_layout(0),
+        layout: &cache.layout,
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: cache.uniforms.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(world.depth) },

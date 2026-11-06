@@ -525,6 +525,12 @@ impl Heard {
     }
 }
 
+/// The felt blasts in the order they are drawn: the newest first, so a fresh
+/// fireball is never left out for older clouds when there are too many.
+pub fn newest_first(felt: &mut [(f64, f64, News)]) {
+    felt.sort_by(|a, b| a.0.total_cmp(&b.0));
+}
+
 /// How long a cloud stands: it is gone at five minutes.
 pub const CLOUD_TICKS: f64 = 6000.0;
 
@@ -1379,5 +1385,14 @@ mod tests {
         for entry in ["vs", "fs"] {
             assert!(module.entry_points.iter().any(|e| e.name == entry), "{entry}");
         }
+    }
+
+    #[test]
+    fn the_newest_blasts_are_drawn_first() {
+        let n = |id| News { id, center: [0, 64, 0], radius: 100, seed: 1, age: 0 };
+        let mut felt = vec![(5000.0, 10.0, n(1)), (30.0, 10.0, n(5)), (4000.0, 10.0, n(2)), (900.0, 10.0, n(4)), (3000.0, 10.0, n(3))];
+        newest_first(&mut felt);
+        let ids: Vec<u64> = felt.iter().take(4).map(|f| f.2.id).collect();
+        assert_eq!(ids, vec![5, 4, 3, 2]);
     }
 }

@@ -279,9 +279,12 @@ pub(in crate::game) fn flash(game: &Game<'_>, batch: &mut HudBatch) {
     }
 }
 
-pub(in crate::game) fn shake(game: &Game<'_>, partial: f32, shake: &mut NativeShake) {
-    let felt = felt(game, partial as f64);
-    // Once a frame with the part of the tick: the renderer's list of blasts too.
+/// Every drawn frame, whatever the screen (death, inventory, chat): the renderer's
+/// list of blasts, newest first.
+pub(in crate::game) fn frame(game: &mut Game<'_>) {
+    let partial = game.native_camera().map_or(0.0, |c| c.partial_tick as f64);
+    let mut felt = felt(game, partial);
+    rules::newest_first(&mut felt);
     *horizon_client::gfx::native_render::big_nukes_sky::SKY.lock().unwrap_or_else(|e| e.into_inner()) = felt
         .iter()
         .map(|(t, _, n)| {
@@ -294,6 +297,10 @@ pub(in crate::game) fn shake(game: &Game<'_>, partial: f32, shake: &mut NativeSh
             }
         })
         .collect();
+}
+
+pub(in crate::game) fn shake(game: &Game<'_>, partial: f32, shake: &mut NativeShake) {
+    let felt = felt(game, partial as f64);
     for (t, d, n) in felt {
         let [pitch, yaw, roll, x, y, z] = rules::shake(t, d, n.radius, n.seed);
         shake.pitch += pitch;
