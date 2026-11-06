@@ -498,15 +498,6 @@ fn known_damage_type(game: &mut Game<'_>) {
     }
 }
 
-/// A probe for plan 5: whether the game ticks the player in single player.
-pub(in crate::game) fn player_tick_probe(game: &mut Game<'_>) {
-    static SEEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    if SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3 {
-        let who = game.native_acting_player().map(|p| (p.name, p.entity_id));
-        log::info!("[big_nukes] player tick: {who:?}");
-    }
-}
-
 /// The end of a level's tick: its waves move on, and some of their work is done.
 pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     if !game.native_on(rules::ID) {
