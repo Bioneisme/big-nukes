@@ -29,7 +29,7 @@
   "big_nukes.remote.gone": "Бомбы больше нет.",
   "big_nukes.remote.tooltip.linked": "Привязан к %s (%s)",
   "big_nukes.remote.tooltip.unlinked": "Не привязан",
-  "big_nukes.screen.keypad.set": "Задайте новый код",
+  "big_nukes.screen.keypad.set": "Задайте новый код: от 3 до 8 цифр",
   "big_nukes.screen.keypad.enter": "Введите код",
   "big_nukes.screen.keypad.wrong": "Неверный код. Попыток: %s",
   "big_nukes.screen.keypad.locked": "Заблокировано: %s с",

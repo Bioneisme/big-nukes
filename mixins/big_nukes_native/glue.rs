@@ -1376,7 +1376,7 @@ fn keypad_button(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity
             tell_near(game, dimension, pos, &refused(why));
         }
         rules::Press::CodeSet => sound(game, pos, "minecraft:block.note_block.chime", 1.0, 1.0),
-        rules::Press::Wrong => sound(game, pos, "minecraft:block.note_block.bass", 1.0, 0.8),
+        rules::Press::Wrong | rules::Press::TooShort => sound(game, pos, "minecraft:block.note_block.bass", 1.0, 0.8),
         rules::Press::Locked => sound(game, pos, "minecraft:block.note_block.bass", 1.0, 0.5),
         rules::Press::Accepted | rules::Press::Typed | rules::Press::Cleared | rules::Press::Ignored => {}
     }

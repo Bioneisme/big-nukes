@@ -29,7 +29,7 @@
   "big_nukes.remote.gone": "The bomb is gone.",
   "big_nukes.remote.tooltip.linked": "Linked to %s (%s)",
   "big_nukes.remote.tooltip.unlinked": "Not linked",
-  "big_nukes.screen.keypad.set": "Set a new code",
+  "big_nukes.screen.keypad.set": "Set a new code: 3 to 8 digits",
   "big_nukes.screen.keypad.enter": "Enter the code",
   "big_nukes.screen.keypad.wrong": "Wrong code. Tries left: %s",
   "big_nukes.screen.keypad.locked": "Locked: %s s",

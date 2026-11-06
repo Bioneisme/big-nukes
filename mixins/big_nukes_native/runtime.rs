@@ -301,6 +301,8 @@ pub const TRIES: u8 = 3;
 pub const LOCK_TICKS: u64 = 600;
 /// The longest code.
 pub const CODE_DIGITS: usize = 8;
+/// The shortest code a keypad takes, so it can't be guessed in a few tries.
+pub const CODE_MIN_DIGITS: usize = 3;
 /// The keypad's menu type, content/data/big_nukes/horizon/menu/keypad.json.
 /// Its one slot holds the detonator, hidden, so a broken bomb drops it as a
 /// container drops its items.
@@ -397,6 +399,8 @@ pub enum Press {
     Typed,
     Cleared,
     CodeSet,
+    /// A new code shorter than `CODE_MIN_DIGITS`: its digits stay, to go on typing.
+    TooShort,
     Accepted,
     Wrong,
     Locked,
@@ -454,7 +458,10 @@ impl Bomb {
             Key::Enter if self.entry.is_empty() => Press::Ignored,
             Key::Enter => {
                 let entry = std::mem::take(&mut self.entry);
-                if self.code.is_empty() {
+                if self.code.is_empty() && entry.len() < CODE_MIN_DIGITS {
+                    self.entry = entry;
+                    Press::TooShort
+                } else if self.code.is_empty() {
                     self.code = entry;
                     Press::CodeSet
                 } else if entry == self.code {
@@ -2494,6 +2501,19 @@ mod tests {
     }
 
     #[test]
+    fn a_code_has_at_least_three_digits() {
+        let mut b = keypad("");
+        type_in(&mut b, "12", 0);
+        assert_eq!(b.press(Key::Enter, 0), Press::TooShort);
+        // The digits stay, to go on typing.
+        assert_eq!((b.code.as_str(), b.entry.as_str()), ("", "12"));
+        type_in(&mut b, "3", 0);
+        assert_eq!(b.press(Key::Enter, 0), Press::CodeSet);
+        assert_eq!(b.code, "123");
+        assert_eq!(CODE_MIN_DIGITS, 3);
+    }
+
+    #[test]
     fn the_first_code_is_set_then_checked() {
         let mut b = keypad("");
         assert_eq!(b.data(0), [PAD_SET, 0, 0, TRIES as i32]);
@@ -2540,7 +2560,7 @@ mod tests {
 
     #[test]
     fn three_wrong_codes_lock_the_pad() {
-        let mut b = keypad("42");
+        let mut b = keypad("420");
         for i in 1..TRIES {
             type_in(&mut b, "1", 5);
             assert_eq!(b.press(Key::Enter, 5), Press::Wrong);
@@ -2555,19 +2575,19 @@ mod tests {
         assert_eq!(b.press(Key::Digit(4), 604), Press::Ignored);
         assert_eq!(b.press(Key::Enter, 604), Press::Ignored);
         assert_eq!(b.entry, "");
-        type_in(&mut b, "42", 605);
+        type_in(&mut b, "420", 605);
         assert_eq!(b.press(Key::Enter, 605), Press::Accepted);
         // A right code resets the count of wrong ones.
-        let mut c = keypad("42");
+        let mut c = keypad("420");
         for _ in 1..TRIES {
             type_in(&mut c, "7", 0);
             assert_eq!(c.press(Key::Enter, 0), Press::Wrong);
         }
-        type_in(&mut c, "42", 0);
+        type_in(&mut c, "420", 0);
         assert_eq!(c.press(Key::Enter, 0), Press::Accepted);
         assert_eq!(c.tries, 0);
         // A lock or a count from a clock that went back is cut to its length.
-        let mut d = keypad("42");
+        let mut d = keypad("420");
         d.locked_until = 1_000_000;
         d.tick(700);
         assert_eq!(d.locked_until, 700 + LOCK_TICKS);
