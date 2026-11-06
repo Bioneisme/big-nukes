@@ -13,7 +13,8 @@ pub const VERSION: &str = "0.1.0";
 /// The mod's folder in a world's folder.
 pub const DIR: &str = "horizon-big-nukes";
 /// A loot table only the assets half brings: the sign that it's installed.
-/// The damage radiation does, `data/big_nukes/damage_type/radiation.json` in the assets half.
+/// The damage radiation does and the effect that marks the sickness' stage: the assets half's
+/// `data/big_nukes/damage_type/radiation.json` and `horizon/mob_effect/radiation.json`.
 pub const RADIATION: &str = "big_nukes:radiation";
 pub const ASSETS_MARKER: &str = "big_nukes:blocks/atomic_bomb";
 
@@ -99,8 +100,8 @@ pub const GEIGER_COUNTER: &str = "big_nukes:geiger_counter";
 
 /// How many rad a drink of anti-rad takes off.
 const ANTI_RAD_DOSE: f64 = 300.0;
-/// How much wear a piece of the suit takes.
-const HAZMAT_DURABILITY: u32 = 600;
+/// How much wear a piece of the suit takes, and what the dose's wear counts when the game doesn't tell it.
+pub const HAZMAT_DURABILITY: u32 = 600;
 
 /// The vanilla item an item copies: a suit piece its iron armour, the rest paper.
 pub fn template(id: &str) -> &'static str {
@@ -680,23 +681,24 @@ pub fn edge(blast: &Blast, x: i32, z: i32) -> f64 {
     dist / border
 }
 
+/// The rings of a blast's damage, by a column's share of the border's distance (`edge`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Zone {
+pub enum Ring {
     Core,
     Middle,
     Outer,
     Untouched,
 }
 
-pub fn zone(d: f64) -> Zone {
+pub fn ring(d: f64) -> Ring {
     if d < CORE {
-        Zone::Core
+        Ring::Core
     } else if d < MIDDLE {
-        Zone::Middle
+        Ring::Middle
     } else if d < 1.0 {
-        Zone::Outer
+        Ring::Outer
     } else {
-        Zone::Untouched
+        Ring::Untouched
     }
 }
 
@@ -802,9 +804,9 @@ pub fn plan_chunk(blast: &Blast, chunk: [i32; 2]) -> [ChunkEdit; 2] {
                 (y < top).then(|| Run { x, z, y, height: (top - y) as u32, surface: None, block, only })
             };
             let below = blast.center[1] - PLANTS_BELOW;
-            match zone(d) {
-                Zone::Core => plants.runs.extend(absolute(crater_floor(blast, d), AIR, None)),
-                Zone::Middle => {
+            match ring(d) {
+                Ring::Core => plants.runs.extend(absolute(crater_floor(blast, d), AIR, None)),
+                Ring::Middle => {
                     for f in [LEAVES, LOGS, GLASS].into_iter().chain(PLANTS) {
                         plants.runs.extend(absolute(below, AIR, Some(f)));
                     }
@@ -820,7 +822,7 @@ pub fn plan_chunk(blast: &Blast, chunk: [i32; 2]) -> [ChunkEdit; 2] {
                         on(Surface::MotionBlockingNoLeaves, 0, 1, FLAME, EMPTY);
                     }
                 }
-                Zone::Outer => {
+                Ring::Outer => {
                     plants.runs.extend(absolute(below, AIR, Some(GLASS)));
                     if chance(blast.seed, x, z, 2) < (1.0 - d) / (1.0 - MIDDLE) {
                         plants.runs.extend(absolute(below, AIR, Some(LEAVES)));
@@ -829,7 +831,7 @@ pub fn plan_chunk(blast: &Blast, chunk: [i32; 2]) -> [ChunkEdit; 2] {
                         }
                     }
                 }
-                Zone::Untouched => {}
+                Ring::Untouched => {}
             }
         }
     }
@@ -1051,6 +1053,12 @@ pub struct Saved {
     /// blast's wave sets off the ones it reaches, loaded when it gets there or later.
     #[serde(default)]
     pub placed: Vec<Receiver>,
+    /// The contaminated zones the larger blasts left.
+    #[serde(default)]
+    pub zones: Vec<Zone>,
+    /// Each player's dose, by their UUID in hex (`dose_key`).
+    #[serde(default)]
+    pub doses: BTreeMap<String, Dose>,
 }
 
 fn largest_radius() -> u32 {
@@ -1059,7 +1067,16 @@ fn largest_radius() -> u32 {
 
 impl Default for Saved {
     fn default() -> Self {
-        Saved { tick: 0, next_id: 0, waves: Waves::default(), maxpower: largest_radius(), bombs: Vec::new(), placed: Vec::new() }
+        Saved {
+            tick: 0,
+            next_id: 0,
+            waves: Waves::default(),
+            maxpower: largest_radius(),
+            bombs: Vec::new(),
+            placed: Vec::new(),
+            zones: Vec::new(),
+            doses: BTreeMap::new(),
+        }
     }
 }
 
@@ -1079,7 +1096,9 @@ impl Saved {
         self.next_id += 1;
         let id = self.next_id;
         let seed = mix(self.tick ^ mix(id));
-        self.waves.start(Blast { id, dimension: dimension.to_owned(), center, radius, seed, world }, self.tick);
+        let blast = Blast { id, dimension: dimension.to_owned(), center, radius, seed, world };
+        self.zones.extend(zone_of(&blast, self.tick));
+        self.waves.start(blast, self.tick);
         Some(id)
     }
 
@@ -1235,6 +1254,242 @@ impl Saved {
         self.forget(dimension, pos);
         self.unplace(dimension, pos);
         Ok(id)
+    }
+}
+
+// ---- radiation ---------------------------------------------------------------
+//
+// A blast of radius 40 or more leaves a zone: a rule, not a map of chunks. The
+// background in a place is worked out from the zones, falling from the center to
+// the edge and with time. A player's dose builds in it, less in a hazmat suit,
+// and heals slowly outside; its stage brings the sickness.
+
+/// The smallest blast that leaves a zone: the demolition charge leaves none.
+pub const ZONE_MIN_RADIUS: u32 = 40;
+/// A zone reaches this much past the blast's radius.
+const ZONE_REACH: f64 = 1.2;
+/// The background at a zone's center, in rad a second, for each block of radius.
+const PEAK_PER_BLOCK: f64 = 1.0 / 12.0;
+/// From this radius a zone fades slower and never quite goes.
+const BIG_ZONE: u32 = 150;
+const HALF_LIFE: u64 = 12_000;
+const BIG_HALF_LIFE: u64 = 48_000;
+const BIG_FLOOR: f64 = 0.05;
+/// A zone with no floor goes once it is this faint, or this many half-lives old.
+const ZONE_GONE: f64 = 0.001;
+const ZONE_HALF_LIVES: u64 = 10;
+
+/// A contaminated zone: `peak` rad a second at `center`, nothing past `radius`
+/// blocks, halved every `half_life` ticks since `start`, but never below `floor`
+/// of the peak.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Zone {
+    pub dimension: String,
+    pub center: [i32; 3],
+    pub radius: f64,
+    pub peak: f64,
+    pub start: u64,
+    pub half_life: u64,
+    pub floor: f64,
+}
+
+impl Zone {
+    fn age(&self, now: u64) -> u64 {
+        now.saturating_sub(self.start)
+    }
+
+    /// The share of the peak left at `now`.
+    pub fn fade(&self, now: u64) -> f64 {
+        0.5f64.powf(self.age(now) as f64 / self.half_life.max(1) as f64).max(self.floor)
+    }
+
+    /// The background at `pos` (a point in the zone's dimension) at `now`: the
+    /// distance counts up and down as well as across, from the middle of the
+    /// center's block.
+    pub fn at(&self, pos: [f64; 3], now: u64) -> f64 {
+        let d2: f64 = (0..3).map(|i| (pos[i] - (self.center[i] as f64 + 0.5)).powi(2)).sum();
+        let r2 = self.radius * self.radius;
+        if d2 >= r2 {
+            return 0.0;
+        }
+        self.peak * (1.0 - d2 / r2) * self.fade(now)
+    }
+
+    /// Whether the zone has faded out for good: one with a floor never does.
+    fn gone(&self, now: u64) -> bool {
+        self.floor <= 0.0 && (self.age(now) > ZONE_HALF_LIVES * self.half_life || self.peak * self.fade(now) < ZONE_GONE)
+    }
+}
+
+/// The zone a blast leaves at `now`, if it is large enough to leave one.
+pub fn zone_of(blast: &Blast, now: u64) -> Option<Zone> {
+    if blast.radius < ZONE_MIN_RADIUS {
+        return None;
+    }
+    let r = blast.radius as f64;
+    let big = blast.radius >= BIG_ZONE;
+    Some(Zone {
+        dimension: blast.dimension.clone(),
+        center: blast.center,
+        radius: ZONE_REACH * r,
+        peak: r * PEAK_PER_BLOCK,
+        start: now,
+        half_life: if big { BIG_HALF_LIFE } else { HALF_LIFE },
+        floor: if big { BIG_FLOOR } else { 0.0 },
+    })
+}
+
+/// The background at `pos` in `dimension`: every zone's share added up.
+pub fn background(zones: &[Zone], dimension: &str, pos: [f64; 3], now: u64) -> f64 {
+    zones.iter().filter(|z| z.dimension == dimension).map(|z| z.at(pos, now)).sum()
+}
+
+/// Ticks in a second: a dose is reckoned once a second.
+pub const SECOND: u64 = 20;
+/// The dose heals by this much a second.
+const HEAL: f64 = 0.5;
+/// The doses where each stage starts, in rad.
+pub const STAGES: [f64; 4] = [100.0, 300.0, 600.0, 1000.0];
+
+/// A player's dose and its clock.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Dose {
+    /// The dose, in rad.
+    pub rad: f64,
+    /// The tick the dose was last reckoned at.
+    pub stepped: u64,
+    /// The tick the sickness last did damage at.
+    pub hurt: Option<u64>,
+}
+
+/// The dose after one second in `background`, with `protection` kept out.
+pub fn dose_step(dose: f64, background: f64, protection: f64) -> f64 {
+    (dose + background * (1.0 - protection.clamp(0.0, 1.0)) - HEAL).max(0.0)
+}
+
+/// The sickness' stage: 0 well, 1 weak and hungry, 2 sick, 3 very sick, 4 lethal.
+pub fn stage(dose: f64) -> u8 {
+    STAGES.iter().filter(|&&s| dose >= s).count() as u8
+}
+
+/// The damage a stage does and how often, in ticks.
+pub fn harm(stage: u8) -> Option<(u32, u64)> {
+    match stage {
+        0 | 1 => None,
+        2 => Some((1, 5 * SECOND)),
+        3 => Some((2, 2 * SECOND)),
+        _ => Some((1000, SECOND)),
+    }
+}
+
+/// The damage a mob takes each second in `background`.
+pub fn mob_harm(background: f64) -> Option<u32> {
+    if background >= 5.0 {
+        Some(2)
+    } else if background >= 1.0 {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// What each piece keeps out, head to feet.
+const SUIT: [f64; 4] = [0.25, 0.30, 0.25, 0.15];
+/// A worn piece loses a point of durability each second the background is at least this.
+pub const WEARS_FROM: f64 = 0.1;
+
+/// The share of the background the worn pieces keep out.
+pub fn protection(head: bool, chest: bool, legs: bool, feet: bool) -> f64 {
+    [head, chest, legs, feet].iter().zip(SUIT).filter(|(worn, _)| **worn).map(|(_, kept)| kept).sum()
+}
+
+/// The hazmat piece that belongs in an armour slot, by the inventory's numbers
+/// (100 feet to 103 head).
+pub fn hazmat_in(slot: i32) -> Option<&'static str> {
+    (100..=103).contains(&slot).then(|| HAZMAT[(103 - slot) as usize].0)
+}
+
+/// A piece's damage after one more point of wear; none when that breaks it.
+pub fn wear(damage: u32, max_damage: u32) -> Option<u32> {
+    let damage = damage + 1;
+    (damage < max_damage).then_some(damage)
+}
+
+/// The key of a player's dose: their UUID in hex.
+pub fn dose_key(uuid: u128) -> String {
+    format!("{uuid:032x}")
+}
+
+
+/// A UUID as commands take it: `00000000-0000-0000-0000-000000000000`.
+pub fn uuid_text(uuid: u128) -> String {
+    let h = format!("{uuid:032x}");
+    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+}
+
+impl Saved {
+    /// The zones that faded out for good are dropped. Whether any was.
+    pub fn prune_zones(&mut self, now: u64) -> bool {
+        let before = self.zones.len();
+        self.zones.retain(|z| !z.gone(now));
+        self.zones.len() != before
+    }
+
+    /// A second of the player's exposure at `pos`, with `protection` kept out:
+    /// the background there, or None when a second hasn't passed since the last.
+    pub fn expose(&mut self, uuid: u128, dimension: &str, pos: [f64; 3], protection: f64) -> Option<f64> {
+        let (now, key) = (self.tick, dose_key(uuid));
+        // A player with no dose is looked at on the second's ticks; one with a
+        // dose a second after the last time, which holds while the clock stands.
+        match self.doses.get(&key) {
+            Some(d) if now < d.stepped + SECOND => return None,
+            None if now % SECOND != 0 => return None,
+            _ => {}
+        }
+        let bg = background(&self.zones, dimension, pos, now);
+        let dose = self.doses.entry(key.clone()).or_default();
+        dose.rad = dose_step(dose.rad, bg, protection);
+        dose.stepped = now;
+        if dose.rad <= 0.0 {
+            self.doses.remove(&key);
+        }
+        Some(bg)
+    }
+
+    /// The player's stage and the damage due now, once a second; the damage's
+    /// clock starts again when it is done.
+    pub fn sicken(&mut self, uuid: u128) -> Option<(u8, Option<u32>)> {
+        let now = self.tick;
+        let dose = self.doses.get_mut(&dose_key(uuid))?;
+        let stage = stage(dose.rad);
+        if stage == 0 {
+            return None;
+        }
+        let due = harm(stage).filter(|(_, every)| dose.hurt.is_none_or(|h| now >= h + every));
+        let damage = due.map(|(n, _)| {
+            dose.hurt = Some(now);
+            n
+        });
+        Some((stage, damage))
+    }
+
+    /// The anti-radiation drug takes `amount` off the player's dose. Whether there was any.
+    pub fn take_dose(&mut self, uuid: u128, amount: f64) -> bool {
+        let key = dose_key(uuid);
+        let Some(dose) = self.doses.get_mut(&key) else {
+            return false;
+        };
+        dose.rad = (dose.rad - amount.max(0.0)).max(0.0);
+        if dose.rad <= 0.0 {
+            self.doses.remove(&key);
+        }
+        true
+    }
+
+    /// The player died: their dose is gone. Whether they had one.
+    pub fn died(&mut self, uuid: u128) -> bool {
+        self.doses.remove(&dose_key(uuid)).is_some()
     }
 }
 
@@ -1554,12 +1809,12 @@ mod tests {
         Blast { id: 1, dimension: "minecraft:overworld".into(), center, radius, seed, world }
     }
 
-    fn columns_in(b: &Blast, wanted: Zone) -> BTreeSet<[i32; 2]> {
+    fn columns_in(b: &Blast, wanted: Ring) -> BTreeSet<[i32; 2]> {
         let r = b.radius as i32 * 2;
         let mut out = BTreeSet::new();
         for x in b.center[0] - r..=b.center[0] + r {
             for z in b.center[2] - r..=b.center[2] + r {
-                if zone(edge(b, x, z)) == wanted {
+                if ring(edge(b, x, z)) == wanted {
                     out.insert([x, z]);
                 }
             }
@@ -1602,13 +1857,13 @@ mod tests {
 
     #[test]
     fn zones_split_at_035_07_and_1() {
-        assert_eq!(zone(0.0), Zone::Core);
-        assert_eq!(zone(0.3499), Zone::Core);
-        assert_eq!(zone(0.35), Zone::Middle);
-        assert_eq!(zone(0.6999), Zone::Middle);
-        assert_eq!(zone(0.7), Zone::Outer);
-        assert_eq!(zone(0.9999), Zone::Outer);
-        assert_eq!(zone(1.0), Zone::Untouched);
+        assert_eq!(ring(0.0), Ring::Core);
+        assert_eq!(ring(0.3499), Ring::Core);
+        assert_eq!(ring(0.35), Ring::Middle);
+        assert_eq!(ring(0.6999), Ring::Middle);
+        assert_eq!(ring(0.7), Ring::Outer);
+        assert_eq!(ring(0.9999), Ring::Outer);
+        assert_eq!(ring(1.0), Ring::Untouched);
     }
 
     #[test]
@@ -1625,9 +1880,9 @@ mod tests {
     fn a_blast_at_minus_one_is_symmetric() {
         let a = blast([-1, 64, -1], 24, 3, World::OVERWORLD);
         let b = blast([0, 64, 0], 24, 3, World::OVERWORLD);
-        let shifted: BTreeSet<[i32; 2]> = columns_in(&b, Zone::Core).iter().map(|[x, z]| [x - 1, z - 1]).collect();
-        assert_eq!(columns_in(&a, Zone::Core), shifted);
-        assert!(columns_in(&a, Zone::Core).contains(&[4, -1]) && columns_in(&a, Zone::Core).contains(&[-6, -1]));
+        let shifted: BTreeSet<[i32; 2]> = columns_in(&b, Ring::Core).iter().map(|[x, z]| [x - 1, z - 1]).collect();
+        assert_eq!(columns_in(&a, Ring::Core), shifted);
+        assert!(columns_in(&a, Ring::Core).contains(&[4, -1]) && columns_in(&a, Ring::Core).contains(&[-6, -1]));
     }
 
     fn all_runs(b: &Blast) -> Vec<(usize, Run)> {
@@ -3031,5 +3286,204 @@ mod tests {
         let menu: serde_json::Value = serde_json::from_str(&file(&format!("content/data/{namespace}/horizon/menu/{name}.json"))).unwrap();
         assert_eq!(menu["slots"], BOMB_SLOTS);
         assert_eq!(menu["data_slots"], PAD_DATA);
+    }
+
+    // ---- radiation (plan 5, Task 2) ----------------------------------------------
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    #[test]
+    fn a_zone_fades_from_center_and_with_time() {
+        let z = zone_of(&blast([0, 64, 0], 120, 1, World::OVERWORLD), 1000).unwrap();
+        assert_eq!((z.dimension.as_str(), z.center, z.start, z.half_life), (OW, [0, 64, 0], 1000, 12_000));
+        assert!(close(z.radius, 144.0) && close(z.peak, 10.0) && close(z.floor, 0.0), "{z:?}");
+        let zones = [z];
+        let at = |pos: [f64; 3], now: u64| background(&zones, OW, pos, now);
+        let mid = [0.5, 64.5, 0.5];
+        assert!(close(at(mid, 1000), 10.0));
+        // Half way out a quarter is gone; up and down count as across.
+        assert!(close(at([72.5, 64.5, 0.5], 1000), 7.5));
+        assert!(close(at([0.5, 136.5, 0.5], 1000), 7.5));
+        assert!(at([60.5, 64.5, 60.5], 1000) < at([30.5, 64.5, 30.5], 1000));
+        assert_eq!(at([144.5, 64.5, 0.5], 1000), 0.0);
+        assert_eq!(at([500.5, 64.5, 0.5], 1000), 0.0);
+        assert_eq!(background(&zones, "minecraft:the_nether", mid, 1000), 0.0);
+        // Halved every half-life, as strong as new before it starts.
+        assert!(close(at(mid, 13_000), 5.0));
+        assert!(close(at(mid, 25_000), 2.5));
+        assert!(close(at(mid, 0), 10.0));
+        // Two zones add up.
+        let two = [zones[0].clone(), zone_of(&blast([100, 64, 0], 120, 2, World::OVERWORLD), 1000).unwrap()];
+        assert!(close(background(&two, OW, [50.5, 64.5, 0.5], 1000), 2.0 * 10.0 * (1.0 - (50.0f64 / 144.0).powi(2))));
+        // Old zones go.
+        let mut saved = Saved { zones: zones.to_vec(), ..Saved::default() };
+        assert!(!saved.prune_zones(1000 + 5 * 12_000));
+        assert_eq!(saved.zones.len(), 1);
+        assert!(saved.prune_zones(1000 + 10 * 12_000 + 1));
+        assert!(saved.zones.is_empty());
+    }
+
+    #[test]
+    fn small_blasts_leave_no_zone() {
+        for r in [16, 39] {
+            assert_eq!(zone_of(&blast([0, 64, 0], r, 1, World::OVERWORLD), 0), None, "{r}");
+        }
+        assert!(zone_of(&blast([0, 64, 0], ZONE_MIN_RADIUS, 1, World::OVERWORLD), 0).is_some());
+        let mut saved = Saved { tick: 77, ..Saved::default() };
+        saved.blast(OW, [0, 64, 0], BombKind::Demolition.radius()).unwrap();
+        assert!(saved.zones.is_empty());
+        // Every blast goes through `blast`: the command, the bombs, the remote, a chain.
+        saved.fire(OW, [5, 70, 5], BombKind::Tactical.radius()).unwrap();
+        assert_eq!(saved.zones.len(), 1);
+        assert_eq!((saved.zones[0].center, saved.zones[0].start), ([5, 70, 5], 77));
+        assert_eq!(saved.blast("mymod:moon", [0, 64, 0], 250), None);
+        assert_eq!(saved.zones.len(), 1, "no zone where no blast can go");
+    }
+
+    #[test]
+    fn a_big_zone_keeps_a_floor() {
+        let small = zone_of(&blast([0, 64, 0], 149, 1, World::OVERWORLD), 0).unwrap();
+        assert_eq!((small.half_life, small.floor), (12_000, 0.0));
+        let z = zone_of(&blast([0, 64, 0], 250, 1, World::OVERWORLD), 0).unwrap();
+        assert_eq!(z.half_life, 48_000);
+        assert!(close(z.floor, 0.05) && close(z.radius, 300.0) && close(z.peak, 250.0 / 12.0));
+        let mid = [0.5, 64.5, 0.5];
+        assert!(close(z.at(mid, 48_000), z.peak / 2.0));
+        assert!(close(z.at(mid, 100 * 48_000), z.peak * 0.05));
+        assert!(z.at(mid, 100 * 48_000) >= 1.0, "an atomic bomb's center still hurts mobs");
+        let mut saved = Saved { zones: vec![z, small], ..Saved::default() };
+        assert!(saved.prune_zones(100 * 48_000));
+        assert_eq!(saved.zones.len(), 1, "the big zone stays");
+        assert_eq!(saved.zones[0].half_life, 48_000);
+    }
+
+    #[test]
+    fn a_dose_builds_and_heals() {
+        assert!(close(dose_step(0.0, 10.0, 0.0), 9.5));
+        assert!(close(dose_step(5.0, 0.0, 0.0), 4.5));
+        assert_eq!(dose_step(0.2, 0.0, 0.0), 0.0);
+        assert_eq!(dose_step(0.0, 0.3, 0.0), 0.0, "below the healing, nothing builds");
+        let me: u128 = 0x1234_5678_9abc_def0_1234_5678_9abc_def0;
+        let key = dose_key(me);
+        assert_eq!(key, "123456789abcdef0123456789abcdef0");
+        let mut saved = Saved::default();
+        saved.blast(OW, [0, 64, 0], 120).unwrap();
+        let mid = [0.5, 64.5, 0.5];
+        // Once a second, however often the player ticks.
+        assert!(saved.expose(me, OW, mid, 0.0).is_some());
+        assert!(saved.expose(me, OW, mid, 0.0).is_none());
+        for _ in 0..59 {
+            saved.tick += SECOND;
+            let bg = saved.expose(me, OW, mid, 0.0).unwrap();
+            assert!(bg > 9.0, "the zone fades a little in a minute: {bg}");
+        }
+        let rad = saved.doses[&key].rad;
+        assert!(rad > 540.0 && rad < 560.0, "{rad}");
+        // It is kept with the world.
+        let back: Saved = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(back.doses, saved.doses);
+        assert_eq!(back.zones, saved.zones);
+        // Away from the zone it heals.
+        let away = [1000.5, 64.5, 0.5];
+        saved.tick += SECOND;
+        assert_eq!(saved.expose(me, OW, away, 0.0), Some(0.0));
+        assert!(close(saved.doses[&key].rad, rad - 0.5));
+        // The drug takes some off, never below 0, and the entry goes at 0.
+        assert!(saved.take_dose(me, 300.0));
+        assert!(close(saved.doses[&key].rad, rad - 300.5));
+        assert!(saved.take_dose(me, 1000.0));
+        assert!(!saved.doses.contains_key(&key));
+        assert!(!saved.take_dose(me, 300.0));
+        // Nothing builds where there is nothing, and no entry is made.
+        saved.tick += SECOND;
+        assert_eq!(saved.expose(me, OW, away, 0.0), Some(0.0));
+        assert!(saved.doses.is_empty());
+        // Death clears it.
+        saved.tick += SECOND;
+        saved.expose(me, OW, mid, 0.0).unwrap();
+        assert!(saved.died(me));
+        assert!(saved.doses.is_empty());
+        assert!(!saved.died(me));
+    }
+
+    #[test]
+    fn a_full_suit_keeps_most_out() {
+        assert!(close(protection(true, true, true, true), 0.95));
+        assert_eq!(protection(false, false, false, false), 0.0);
+        assert!(close(protection(true, false, false, false), 0.25));
+        assert!(close(protection(false, true, false, false), 0.30));
+        assert!(close(protection(false, false, true, true), 0.40));
+        assert!(close(dose_step(0.0, 20.0, 0.95), 0.5));
+        assert!(close(dose_step(0.0, 20.0, 0.0), 19.5));
+        // The pieces by their armour slots.
+        assert_eq!(hazmat_in(103), Some("big_nukes:hazmat_helmet"));
+        assert_eq!(hazmat_in(102), Some("big_nukes:hazmat_chestplate"));
+        assert_eq!(hazmat_in(101), Some("big_nukes:hazmat_leggings"));
+        assert_eq!(hazmat_in(100), Some("big_nukes:hazmat_boots"));
+        assert_eq!(hazmat_in(0), None);
+        assert_eq!(hazmat_in(-106), None);
+        // A piece wears a point at a time and breaks on its last.
+        assert_eq!(wear(0, HAZMAT_DURABILITY), Some(1));
+        assert_eq!(wear(598, HAZMAT_DURABILITY), Some(599));
+        assert_eq!(wear(599, HAZMAT_DURABILITY), None);
+    }
+
+    #[test]
+    fn stages_by_dose() {
+        let stages = [0.0, 99.9, 100.0, 299.9, 300.0, 599.9, 600.0, 999.9, 1000.0, 5000.0].map(stage);
+        assert_eq!(stages, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]);
+        assert_eq!(harm(0), None);
+        assert_eq!(harm(1), None);
+        assert_eq!(harm(2), Some((1, 100)));
+        assert_eq!(harm(3), Some((2, 40)));
+        assert_eq!(harm(4), Some((1000, 20)));
+        assert_eq!([0.0, 0.99, 1.0, 4.99, 5.0, 30.0].map(mob_harm), [None, None, Some(1), Some(1), Some(2), Some(2)]);
+        // The damage comes at once, then on its clock.
+        let me = 7u128;
+        let mut saved = Saved::default();
+        let set = |saved: &mut Saved, rad: f64| saved.doses.entry(dose_key(me)).or_default().rad = rad;
+        assert_eq!(saved.sicken(me), None);
+        set(&mut saved, 50.0);
+        assert_eq!(saved.sicken(me), None);
+        set(&mut saved, 150.0);
+        assert_eq!(saved.sicken(me), Some((1, None)));
+        set(&mut saved, 350.0);
+        assert_eq!(saved.sicken(me), Some((2, Some(1))));
+        saved.tick = 20;
+        assert_eq!(saved.sicken(me), Some((2, None)));
+        saved.tick = 100;
+        assert_eq!(saved.sicken(me), Some((2, Some(1))));
+        set(&mut saved, 700.0);
+        saved.tick = 120;
+        assert_eq!(saved.sicken(me), Some((3, None)));
+        saved.tick = 140;
+        assert_eq!(saved.sicken(me), Some((3, Some(2))));
+        set(&mut saved, 1000.0);
+        saved.tick = 160;
+        assert_eq!(saved.sicken(me), Some((4, Some(1000))));
+        saved.tick = 180;
+        assert_eq!(saved.sicken(me), Some((4, Some(1000))), "until they die");
+    }
+
+    #[test]
+    fn a_mob_is_named_by_its_uuid_as_commands_read_it() {
+        assert_eq!(uuid_text(0x0123_4567_89ab_cdef_0011_2233_4455_6677), "01234567-89ab-cdef-0011-223344556677");
+        assert_eq!(uuid_text(1), "00000000-0000-0000-0000-000000000001");
+    }
+
+    #[test]
+    fn old_files_read() {
+        let mut saved = Saved::default();
+        saved.blast(OW, [0, 64, 0], 50).unwrap();
+        let mut json = serde_json::to_value(&saved).unwrap();
+        let o = json.as_object_mut().unwrap();
+        assert!(o.remove("zones").is_some() && o.remove("doses").is_some());
+        let old: Saved = serde_json::from_value(json).unwrap();
+        assert!(old.zones.is_empty() && old.doses.is_empty());
+        assert_eq!(old.next_id, 1);
+        let dose: Dose = serde_json::from_str(r#"{"rad": 5.0}"#).unwrap();
+        assert_eq!(dose, Dose { rad: 5.0, stepped: 0, hurt: None });
     }
 }

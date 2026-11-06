@@ -322,7 +322,28 @@ bindings = [
   { name = "phase", ty = "horizon_client::mod_api::ServerTickPhase", value = "phase" },
 ]
 
-# The end of each level's tick: where the waves work (API 23).
+# Radiation: a player's dose builds in their own tick, where their armour is in place (API 31),
+# and goes when they die (API 40).
+[[injection]]
+id = "player-tick"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_player_tick"
+helper = "player_tick.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+[[injection]]
+id = "player-died"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_player_died"
+helper = "player_died.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "player", ty = "u128", value = "player" },
+]
+
+# The end of each level's tick: where the waves work (API 23), and the mobs in the zones are hurt (API 37).
 [[injection]]
 id = "level-tick"
 kind = "HEAD"
