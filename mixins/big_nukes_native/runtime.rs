@@ -975,6 +975,10 @@ pub struct Saved {
     /// The bombs with a receiver: a remote fires one from its record, its chunk loaded or not.
     #[serde(default)]
     pub bombs: Vec<Receiver>,
+    /// Every bomb standing in the world, as placing and taking it away tell: a
+    /// blast's wave sets off the ones it reaches, loaded when it gets there or later.
+    #[serde(default)]
+    pub placed: Vec<Receiver>,
 }
 
 fn largest_radius() -> u32 {
@@ -983,7 +987,7 @@ fn largest_radius() -> u32 {
 
 impl Default for Saved {
     fn default() -> Self {
-        Saved { tick: 0, next_id: 0, waves: Waves::default(), maxpower: largest_radius(), bombs: Vec::new() }
+        Saved { tick: 0, next_id: 0, waves: Waves::default(), maxpower: largest_radius(), bombs: Vec::new(), placed: Vec::new() }
     }
 }
 
@@ -1045,6 +1049,18 @@ pub const REMOTE: &str = "big_nukes:remote";
 /// The remote's component: the linked bomb's dimension and place.
 pub const LINK: &str = "big_nukes:link";
 
+/// The bombs of `placed` in `chunk` that `blast` sets off: within its radius of
+/// its center, in its dimension, its own bomb apart.
+pub fn reached(placed: &[Receiver], blast: &Blast, chunk: [i32; 2]) -> Vec<([i32; 3], BombKind)> {
+    let reach = f64::from(blast.radius).powi(2);
+    placed
+        .iter()
+        .filter(|b| b.dimension == blast.dimension && b.pos != blast.center && chunk_of(b.pos[0], b.pos[2]) == chunk)
+        .filter(|b| (0..3).map(|i| f64::from(b.pos[i] - blast.center[i]).powi(2)).sum::<f64>() <= reach)
+        .map(|b| (b.pos, b.kind))
+        .collect()
+}
+
 /// A bomb with a receiver, as the world keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Receiver {
@@ -1094,6 +1110,42 @@ impl Saved {
         self.bombs.len() != before
     }
 
+    /// A bomb placed at `pos`: false when it was known already.
+    pub fn place(&mut self, dimension: &str, pos: [i32; 3], kind: BombKind) -> bool {
+        if self.placed.iter().any(|b| b.dimension == dimension && b.pos == pos && b.kind == kind) {
+            return false;
+        }
+        self.unplace(dimension, pos);
+        self.placed.push(Receiver { dimension: dimension.to_owned(), pos, kind });
+        true
+    }
+
+    /// The bomb at `pos` taken away: false when none was known there.
+    pub fn unplace(&mut self, dimension: &str, pos: [i32; 3]) -> bool {
+        let before = self.placed.len();
+        self.placed.retain(|b| b.dimension != dimension || b.pos != pos);
+        self.placed.len() != before
+    }
+
+    /// The placed bombs in `chunk`.
+    pub fn placed_in(&self, dimension: &str, chunk: [i32; 2]) -> Vec<[i32; 3]> {
+        self.placed
+            .iter()
+            .filter(|b| b.dimension == dimension && chunk_of(b.pos[0], b.pos[2]) == chunk)
+            .map(|b| b.pos)
+            .collect()
+    }
+
+    /// The bomb at `pos`, reached by another blast, goes off with its own radius
+    /// and is forgotten, its remote's record too. One over the operator's limit stays.
+    pub fn set_off(&mut self, dimension: &str, pos: [i32; 3]) -> Result<u64, Refused> {
+        let kind = self.placed.iter().find(|b| b.dimension == dimension && b.pos == pos).map(|b| b.kind).ok_or(Refused::Gone)?;
+        let id = self.fire(dimension, pos, kind.radius())?;
+        self.unplace(dimension, pos);
+        self.forget(dimension, pos);
+        Ok(id)
+    }
+
     /// The recorded bombs in `chunk`.
     pub fn bombs_in(&self, dimension: &str, chunk: [i32; 2]) -> Vec<[i32; 3]> {
         self.bombs
@@ -1109,6 +1161,7 @@ impl Saved {
         let kind = self.recorded(dimension, pos).ok_or(Refused::Gone)?;
         let id = self.fire(dimension, pos, kind.radius())?;
         self.forget(dimension, pos);
+        self.unplace(dimension, pos);
         Ok(id)
     }
 }
@@ -2648,6 +2701,41 @@ mod tests {
         assert_eq!(saved.waves.centers_in(NETHER, chunk_of(40, -20)), vec![roof_bomb]);
         assert!(saved.waves.centers_in(NETHER, chunk_of(56, -20)).is_empty(), "another chunk");
         assert!(saved.waves.centers_in(OVERWORLD, chunk_of(40, -20)).is_empty(), "another dimension");
+    }
+
+    #[test]
+    fn a_blast_sets_off_the_bombs_it_reaches() {
+        let mut saved = Saved::default();
+        let center = [0, 64, 0];
+        assert!(saved.place(OVERWORLD, center, BombKind::Atomic));
+        assert!(!saved.place(OVERWORLD, center, BombKind::Atomic), "a bomb is known once");
+        let near = [10, 64, 3];
+        assert!(saved.place(OVERWORLD, near, BombKind::Tactical));
+        assert!(saved.place(OVERWORLD, [60, 64, 0], BombKind::Demolition));
+        assert!(saved.place(NETHER, [10, 64, 4], BombKind::Tactical));
+        let id = saved.fire(OVERWORLD, center, 50).unwrap();
+        let blast = saved.waves.waves.iter().find(|w| w.blast.id == id).unwrap().blast.clone();
+        // The chunk of the center: its own bomb is the blast, the other goes off.
+        assert_eq!(reached(&saved.placed, &blast, chunk_of(0, 0)), vec![(near, BombKind::Tactical)]);
+        // Beyond the radius, and in another dimension, nothing goes off.
+        assert!(reached(&saved.placed, &blast, chunk_of(60, 0)).is_empty());
+        // A bomb set off goes off once, within the operator's limit.
+        assert!(saved.record(OVERWORLD, near, BombKind::Tactical));
+        assert_eq!(saved.set_off(OVERWORLD, near), Ok(2));
+        assert!(reached(&saved.placed, &blast, chunk_of(0, 0)).is_empty());
+        assert_eq!(saved.recorded(OVERWORLD, near), None, "its remote finds it gone");
+        assert_eq!(saved.set_off(OVERWORLD, near), Err(Refused::Gone));
+        saved.maxpower = 16;
+        assert!(saved.place(OVERWORLD, [12, 64, 0], BombKind::Atomic));
+        assert_eq!(saved.set_off(OVERWORLD, [12, 64, 0]), Err(Refused::Maxpower { radius: 250, maxpower: 16 }));
+        assert_eq!(reached(&saved.placed, &blast, chunk_of(0, 0)), vec![([12, 64, 0], BombKind::Atomic)], "it stays");
+        // A bomb taken away is forgotten.
+        assert!(saved.unplace(OVERWORLD, [12, 64, 0]));
+        assert!(!saved.unplace(OVERWORLD, [12, 64, 0]));
+        // A world's file from before the placed bombs still reads.
+        let mut old = serde_json::to_value(Saved::default()).unwrap();
+        old.as_object_mut().unwrap().remove("placed");
+        assert!(serde_json::from_value::<Saved>(old).unwrap().placed.is_empty());
     }
 
     #[test]

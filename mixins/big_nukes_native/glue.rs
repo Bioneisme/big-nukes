@@ -63,6 +63,9 @@ static LOADED: Mutex<Option<HashMap<String, BTreeSet<[i32; 2]>>>> = Mutex::new(N
 /// Bombs whose block changed into another, heard from the level, which may change
 /// a block while the state is locked: they are forgotten the next time it opens.
 static BROKEN: Mutex<Vec<(String, [i32; 3])>> = Mutex::new(Vec::new());
+/// Bombs placed (`Some`) and taken away (`None`), heard from the level the same
+/// way: the world's list of standing bombs takes them the next time it opens.
+static PLACED: Mutex<Vec<(String, [i32; 3], Option<rules::BombKind>)>> = Mutex::new(Vec::new());
 
 fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -93,6 +96,12 @@ fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Option<State>>> {
     let mut forgot = false;
     for (dimension, pos) in broken {
         forgot |= st.saved.forget(&dimension, pos);
+    }
+    for (dimension, pos, kind) in std::mem::take(&mut *lock(&PLACED)) {
+        forgot |= match kind {
+            Some(kind) => st.saved.place(&dimension, pos, kind),
+            None => st.saved.unplace(&dimension, pos),
+        };
     }
     if forgot {
         save(st);
@@ -483,11 +492,19 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     let started = Instant::now();
     let warned = &mut st.warned;
     let mut worked = Vec::new();
+    // The bombs a wave reaches go off as it gets to them: read before the edits take them.
+    let placed = st.saved.placed.clone();
+    let mut reached: Vec<[i32; 3]> = Vec::new();
     let done = st.saved.waves.work(dimension, BUDGET, &|| started.elapsed(), &mut |blast, chunk| {
         if !loaded.contains(&chunk) {
             return false;
         }
         worked.push(chunk);
+        for (pos, kind) in rules::reached(&placed, blast, chunk) {
+            if rules::BombKind::of_block(&game.native_block(pos)) == Some(kind) {
+                reached.push(pos);
+            }
+        }
         for edit in rules::plan_chunk(blast, chunk) {
             if edit.runs.is_empty() {
                 continue;
@@ -506,14 +523,26 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     // receiver that a blast took are forgotten here. A bomb at a blast's center
     // that its crater missed (above the Nether's roof) goes now, so a bomb set
     // off from afar can't stay to be linked and set off again.
+    let mut news = Vec::new();
+    for pos in reached {
+        if let Ok(id) = st.saved.set_off(dimension, pos) {
+            log::info!("[big_nukes] blast {id}: set off by another at {pos:?} in {dimension}");
+            take_bomb(game, dimension, pos);
+            news.extend(st.saved.waves.news(dimension, st.saved.tick).into_iter().filter(|n| n.id == id));
+        }
+    }
+    if !news.is_empty() {
+        save(st);
+    }
     for chunk in worked {
+        for pos in st.saved.placed_in(dimension, chunk) {
+            if rules::BombKind::of_block(&game.native_block(pos)).is_none() {
+                st.dirty |= st.saved.unplace(dimension, pos);
+            }
+        }
         for center in st.saved.waves.centers_in(dimension, chunk) {
             if rules::BombKind::of_block(&game.native_block(center)).is_some() {
-                // Its detonator goes with it, as when a bomb goes off in place.
-                game.native_with_mod_block_entity(center, |e| e.items.iter_mut().for_each(|s| *s = None));
-                if let Some(air) = game.pack.assets.registry.default_state("minecraft:air") {
-                    game.native_set_block(dimension, center, air, 3);
-                }
+                take_bomb(game, dimension, center);
             }
         }
         for pos in st.saved.bombs_in(dimension, chunk) {
@@ -528,6 +557,16 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     if st.saved.waves.finished() {
         log::info!("[big_nukes] every wave is over");
         save(st);
+    }
+    drop(guard);
+    tell_dimension(game, dimension, &news);
+}
+
+/// A bomb gone off where it stands: its detonator with it, as its blast takes it.
+fn take_bomb(game: &mut Game<'_>, dimension: &str, pos: [i32; 3]) {
+    game.native_with_mod_block_entity(pos, |e| e.items.iter_mut().for_each(|s| *s = None));
+    if let Some(air) = game.pack.assets.registry.default_state("minecraft:air") {
+        game.native_set_block(dimension, pos, air, 3);
     }
 }
 
@@ -596,6 +635,7 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
     *state = None;
     *lock(&LOADED) = None;
     lock(&HEARD).clear();
+    lock(&PLACED).clear();
 }
 
 // ---- the machines ---------------------------------------------------------------
@@ -1553,7 +1593,9 @@ pub(in crate::game) fn block_changed(
     new: BlockStateId,
 ) {
     let was = &*level.facts.get(old).name;
-    if rules::BombKind::of_block(was).is_none() || &*level.facts.get(new).name == was {
+    let now = &*level.facts.get(new).name;
+    let (taken, placed) = (rules::BombKind::of_block(was), rules::BombKind::of_block(now));
+    if now == was || (taken.is_none() && placed.is_none()) {
         return;
     }
     let dimension = match dimension {
@@ -1561,7 +1603,14 @@ pub(in crate::game) fn block_changed(
         LevelDimension::Nether => "minecraft:the_nether",
         LevelDimension::End => "minecraft:the_end",
     };
-    lock(&BROKEN).push((dimension.to_owned(), [pos.x, pos.y, pos.z]));
+    let at = [pos.x, pos.y, pos.z];
+    if taken.is_some() {
+        lock(&BROKEN).push((dimension.to_owned(), at));
+        lock(&PLACED).push((dimension.to_owned(), at, None));
+    }
+    if placed.is_some() {
+        lock(&PLACED).push((dimension.to_owned(), at, placed));
+    }
 }
 
 /// The remote's tooltip: the bomb it is linked to.
