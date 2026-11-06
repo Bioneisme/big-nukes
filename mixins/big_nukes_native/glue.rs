@@ -54,6 +54,9 @@ struct State {
     /// Dimensions a remote's blast went off in, to be opened at the end of the
     /// server's tick, where a command may run.
     wake: Vec<String>,
+    /// Each dimension's next pass over its mobs in the zones: its tick, and where
+    /// it starts in their list.
+    mobs: HashMap<String, (u64, usize)>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -66,6 +69,12 @@ static BROKEN: Mutex<Vec<(String, [i32; 3])>> = Mutex::new(Vec::new());
 /// Bombs placed (`Some`) and taken away (`None`), heard from the level the same
 /// way: the world's list of standing bombs takes them the next time it opens.
 static PLACED: Mutex<Vec<(String, [i32; 3], Option<rules::BombKind>)>> = Mutex::new(Vec::new());
+/// Players who died, heard while the state may be locked (a blast's damage or the
+/// sickness' kills them from a command): their doses go the next time it opens.
+static DIED: Mutex<Vec<u128>> = Mutex::new(Vec::new());
+/// Doses the anti-radiation drug took down, the player and the rad, taken the
+/// same way.
+static ANTI_RAD: Mutex<Vec<(u128, f64)>> = Mutex::new(Vec::new());
 
 fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -89,6 +98,7 @@ fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Option<State>>> {
             ash: None,
             dirty: false,
             wake: Vec::new(),
+            mobs: HashMap::new(),
         });
     }
     let broken = std::mem::take(&mut *lock(&BROKEN));
@@ -105,6 +115,12 @@ fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Option<State>>> {
     }
     if forgot {
         save(st);
+    }
+    for uuid in std::mem::take(&mut *lock(&DIED)) {
+        st.dirty |= st.saved.died(uuid);
+    }
+    for (uuid, amount) in std::mem::take(&mut *lock(&ANTI_RAD)) {
+        st.dirty |= st.saved.take_dose(uuid, amount);
     }
     Some(guard)
 }
@@ -461,11 +477,21 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     let Some(mut guard) = state(game) else { return };
     let st = guard.as_mut().expect("opened");
     st.saved.tick += 1;
+    let sick = if st.saved.tick % rules::SECOND == 0 {
+        st.dirty |= st.saved.prune_zones(st.saved.tick);
+        sick(game, st)
+    } else {
+        Vec::new()
+    };
     if st.dirty && st.saved.tick % SAVE_EVERY == 0 {
         save(st);
     }
     let wake = std::mem::take(&mut st.wake);
     drop(guard);
+    // The commands run with the state let go: a death they cause is heard at once.
+    for (name, stage, damage) in sick {
+        sicken(game, &name, stage, damage);
+    }
     // A level nobody has entered since the world opened isn't open, and its
     // forced chunks don't tick: a command run in it opens it, so a blast there
     // works at once in the chunks an operator keeps loaded. The rest of its
@@ -480,6 +506,7 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     if !game.native_on(rules::ID) {
         return;
     }
+    irradiate_mobs(game, dimension);
     let Some(mut guard) = state(game) else { return };
     let st = guard.as_mut().expect("opened");
     effects(game, st, dimension);
@@ -636,6 +663,8 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
     *lock(&LOADED) = None;
     lock(&HEARD).clear();
     lock(&PLACED).clear();
+    lock(&DIED).clear();
+    lock(&ANTI_RAD).clear();
 }
 
 // ---- the machines ---------------------------------------------------------------
@@ -1258,6 +1287,147 @@ fn install(game: &mut Game<'_>, pos: [i32; 3], bomb: &rules::Bomb, detonator: ru
     true
 }
 
+// ---- radiation -------------------------------------------------------------------
+//
+// The zones are rules (`rules::background`). A player's dose builds in their own
+// tick, where their armour is in place; the sickness is given by commands at the
+// end of the server's tick, where commands run; the mobs are hurt at the end of
+// their level's tick, a few at a time.
+
+/// A player's tick: once a second, the dose takes the background where they
+/// stand, less what their hazmat suit keeps out, and each worn piece wears while
+/// there is any to speak of. Creative players and spectators take none.
+pub(in crate::game) fn player_tick(game: &mut Game<'_>) {
+    if !game.native_on(rules::ID) {
+        return;
+    }
+    let Some(who) = game.native_acting_player() else { return };
+    if matches!(who.game_mode, 1 | 3) {
+        return;
+    }
+    let worn = [EquipmentSlot::Head, EquipmentSlot::Chest, EquipmentSlot::Legs, EquipmentSlot::Feet]
+        .map(|slot| game.native_equipment(slot));
+    let suit: [bool; 4] = std::array::from_fn(|i| worn[i].as_ref().is_some_and(|s| &*s.item == rules::HAZMAT[i]));
+    let Some(mut guard) = state(game) else { return };
+    let st = guard.as_mut().expect("opened");
+    let had = st.saved.doses.contains_key(&rules::dose_key(who.uuid));
+    let protection = rules::protection(suit[0], suit[1], suit[2], suit[3]);
+    let Some(background) = st.saved.expose(who.uuid, &who.dimension, who.position, protection) else {
+        return;
+    };
+    st.dirty |= had || background > 0.0;
+    if background >= rules::WEARS_FROM {
+        // Straight into the queue: `queue_held` would open the state again.
+        let now = st.saved.tick;
+        let mut held = lock(&HELD);
+        for (i, _) in suit.iter().enumerate().filter(|(_, on)| **on) {
+            held.push((who.uuid, Held::Armour { slot: 103 - i as i32 }, now));
+        }
+    }
+}
+
+/// A player died: their dose goes. Heard in a queue, as the state may be locked.
+pub(in crate::game) fn player_died(game: &Game<'_>, player: u128) {
+    if game.native_on(rules::ID) {
+        lock(&DIED).push(player);
+    }
+}
+
+/// The anti-radiation drug: `amount` rad off the player's dose, the next time the
+/// state opens. The drug's consume hook calls it; until it is in, nothing does.
+#[allow(dead_code)]
+pub(in crate::game) fn anti_radiation(uuid: u128, amount: f64) {
+    lock(&ANTI_RAD).push((uuid, amount));
+}
+
+/// The sick players on the server, once a second: their names, stages and the
+/// damage due now. Creative players, spectators and the dead are left alone.
+fn sick(game: &Game<'_>, st: &mut State) -> Vec<(String, u8, Option<u32>)> {
+    if st.saved.doses.is_empty() {
+        return Vec::new();
+    }
+    let mut sick = Vec::new();
+    for p in game.native_server_players() {
+        if matches!(p.game_mode, 1 | 3) || p.health <= 0.0 {
+            continue;
+        }
+        if let Some((stage, damage)) = st.saved.sicken(p.uuid) {
+            st.dirty |= damage.is_some();
+            sick.push((p.name, stage, damage));
+        }
+    }
+    sick
+}
+
+/// A sick player's effects, kept on for a few seconds at a time, and the damage due.
+/// The mod's own effect only marks the stage: without the assets half its command fails, and nothing else.
+fn sicken(game: &mut Game<'_>, name: &str, stage: u8, damage: Option<u32>) {
+    game.native_run_command(&format!("effect give {name} minecraft:weakness 3 0 true"));
+    game.native_run_command(&format!("effect give {name} minecraft:hunger 3 0 true"));
+    if stage >= 2 {
+        game.native_run_command(&format!("effect give {name} minecraft:nausea 5 0 true"));
+    }
+    game.native_run_command(&format!("effect give {name} {} 3 {} true", rules::RADIATION, stage - 1));
+    if let Some(amount) = damage {
+        hurt(game, "", name, amount);
+    }
+}
+
+/// Radiation damage to `target` (a name or a UUID), `prefix` going before the
+/// command (`execute in <dimension> run `). A `/damage` that fails did no damage,
+/// so when the mod's damage type is refused (the game has no
+/// `big_nukes:radiation` without the assets half, or its commands don't know it)
+/// the same damage goes as the world border's; when the target couldn't be hurt,
+/// that fails too.
+fn hurt(game: &mut Game<'_>, prefix: &str, target: &str, amount: u32) {
+    if !game.native_run_command(&format!("{prefix}damage {target} {amount} {}", rules::RADIATION)) {
+        game.native_run_command(&format!("{prefix}damage {target} {amount} minecraft:outside_border"));
+    }
+}
+
+/// The most mobs hurt in a dimension in a second; more take turns.
+const MOBS_PER_PASS: usize = 64;
+
+/// The mobs of `dimension` in its zones, once a second: each takes damage by the
+/// background where it stands, up to `MOBS_PER_PASS` of them, the next ones on
+/// the next pass.
+fn irradiate_mobs(game: &mut Game<'_>, dimension: &str) {
+    let hurt_now: Vec<(u32, u32)> = {
+        let Some(mut guard) = state(game) else { return };
+        let st = guard.as_mut().expect("opened");
+        if !st.saved.zones.iter().any(|z| z.dimension == dimension) {
+            return;
+        }
+        let now = st.saved.tick;
+        let (next, cursor) = st.mobs.entry(dimension.to_owned()).or_insert((0, 0));
+        if now < *next {
+            return;
+        }
+        *next = now + rules::SECOND;
+        let zones = &st.saved.zones;
+        let mut in_zone: Vec<(u32, u32)> = game
+            .native_mobs(dimension)
+            .iter()
+            .filter_map(|m| rules::mob_harm(rules::background(zones, dimension, m.pos, now)).map(|n| (m.id, n)))
+            .collect();
+        if in_zone.is_empty() {
+            return;
+        }
+        let from = *cursor % in_zone.len();
+        in_zone.rotate_left(from);
+        in_zone.truncate(MOBS_PER_PASS);
+        *cursor = from + in_zone.len();
+        in_zone
+    };
+    let prefix = format!("execute in {dimension} run ");
+    for (id, amount) in hurt_now {
+        let Some(uuid) = game.native_entity(id).and_then(|e| game.native_entity_uuid(e)) else {
+            continue;
+        };
+        hurt(game, &prefix, &rules::uuid_text(uuid), amount);
+    }
+}
+
 // ---- the held stack --------------------------------------------------------------
 //
 // A player's hook can't change the stack in hand: the host has no entity handle
@@ -1265,13 +1435,27 @@ fn install(game: &mut Game<'_>, pos: [i32; 3], bomb: &rules::Bomb, detonator: ru
 // server tick of that player's selected slot (`native_inventory_tick`, where
 // `native_carried_stack` changes a stack in place) makes it.
 
-/// A change to the stack in a player's main hand.
+/// A change to the stack in a player's main hand, or in an armour slot.
 #[derive(Clone, Debug)]
 enum Held {
     /// The flint and steel loses a use, or breaks on its last.
     Wear,
     /// The remote is linked to the bomb of `kind` at `pos` in `dimension`.
     Link { dimension: String, pos: [i32; 3], kind: rules::BombKind },
+    /// The hazmat piece in armour slot `slot` (100 feet to 103 head) loses a
+    /// point of durability, or breaks on its last.
+    Armour { slot: i32 },
+}
+
+impl Held {
+    /// Whether the stack in `slot` takes the change: the hand's changes go to the
+    /// selected slot, a piece's wear to its own slot.
+    fn fits(&self, slot: i32, selected: bool) -> bool {
+        match self {
+            Held::Wear | Held::Link { .. } => selected,
+            Held::Armour { slot: s } => *s == slot,
+        }
+    }
 }
 
 /// Queued changes: the player, the change and the tick it was asked at.
@@ -1292,7 +1476,7 @@ fn wear_flint(game: &mut Game<'_>, who: &NativeServerPlayer) {
 /// A server tick of a stack a player carries: the held one takes the player's
 /// queued changes.
 pub(in crate::game) fn inventory_tick(game: &mut Game<'_>, slot: i32, selected: bool) {
-    if !selected || lock(&HELD).is_empty() {
+    if !(selected || rules::hazmat_in(slot).is_some()) || lock(&HELD).is_empty() {
         return;
     }
     let (Some(who), Some((now, _))) = (game.native_acting_player(), clock(game)) else {
@@ -1301,7 +1485,8 @@ pub(in crate::game) fn inventory_tick(game: &mut Game<'_>, slot: i32, selected: 
     let mine: Vec<Held> = {
         let mut held = lock(&HELD);
         held.retain(|(_, _, at)| now.saturating_sub(*at) <= HELD_TICKS);
-        let (mine, rest): (Vec<_>, Vec<_>) = held.drain(..).partition(|(uuid, _, _)| *uuid == who.uuid);
+        let (mine, rest): (Vec<_>, Vec<_>) =
+            held.drain(..).partition(|(uuid, change, _)| *uuid == who.uuid && change.fits(slot, selected));
         *held = rest;
         mine.into_iter().map(|(_, change, _)| change).collect()
     };
@@ -1330,6 +1515,18 @@ pub(in crate::game) fn inventory_tick(game: &mut Game<'_>, slot: i32, selected: 
                 }
                 sound(game, pos, "minecraft:block.note_block.pling", 0.8, 2.0);
                 game.native_tell(who.uuid, Text::translate("big_nukes.remote.linked", &[block_name(kind.id()), place(pos)]));
+            }
+            Held::Armour { slot: s } if rules::hazmat_in(s) == Some(&*stack.item) => {
+                // The piece's own durability when the game knows it, as the assets half declares it.
+                let max = world_items!(game).get(&stack.item).map_or(0, |i| i.max_damage);
+                let max = if max > 0 { max } else { rules::HAZMAT_DURABILITY };
+                match rules::wear(stack.damage, max) {
+                    Some(damage) => stack.damage = damage,
+                    None => {
+                        stack.count = 0;
+                        game.native_level_play_sound("minecraft:entity.item.break", who.position, PLAYERS, 0.8, 1.0);
+                    }
+                }
             }
             _ => continue,
         }

@@ -132,3 +132,22 @@ which shows as a large share only at offscreen frame rates.
   Found in game: a remote never linked. The mod queues the change and makes it in `native_inventory_tick`
   (API 39) for the player's selected slot, where `native_carried_stack` changes the stack in place and the
   client gets it. The flint and steel's wear goes the same way.
+
+## Radiation
+
+Read in the source of 66f3981, not yet seen in the game:
+- A player's dose builds in `native_player_tick` (API 31), once for each living player each server tick, with that
+  player swapped in: `native_acting_player` gives the place, dimension and game mode, `native_equipment` the armour.
+  `native_run_command` answers false there, so the sickness' commands wait for the end of the server's tick.
+- `native_player_died` (API 40) runs inside the `/damage` that kills, which may be run while the mod's state is
+  locked (a blast's damage in a level's tick), so a death is queued and the dose goes the next time the state opens.
+- A hazmat piece's wear is queued as the flint and steel's is and made in `native_inventory_tick` for the armour slots
+  (100 feet to 103 head, `selected` false there). Its durability is the item's `max_damage` from the world's items,
+  600 when that is 0.
+- `/damage` that does no damage fails (vanilla throws when `hurtServer` answers false), so a failed
+  `big_nukes:radiation` did nothing and the same damage is tried as `minecraft:outside_border`: that covers a game
+  whose command registry doesn't know the mod's damage type (see "The blast's effects"), with the world border's death
+  message. Where the target couldn't be hurt at all, the second fails too.
+- `native_mobs` (API 37) only answers inside its level's tick: the mobs are hurt in `native_level_tick_post`, once a
+  second, at most 64 a dimension per pass, the rest on the next passes. A mob's `/damage` names it by its UUID
+  (`native_entity` and `native_entity_uuid`, API 373) in its own dimension (`execute in`).
