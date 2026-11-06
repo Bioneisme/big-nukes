@@ -1,0 +1,32 @@
+{
+  "blast.near": {
+    "subtitle": "subtitles.big_nukes.blast",
+    "sounds": [
+      {
+        "name": "big_nukes:blast_near",
+        "attenuation_distance": 64,
+        "stream": false
+      }
+    ]
+  },
+  "blast.far": {
+    "subtitle": "subtitles.big_nukes.blast",
+    "sounds": [
+      {
+        "name": "big_nukes:blast_far",
+        "attenuation_distance": 64,
+        "stream": false
+      }
+    ]
+  },
+  "wave.roar": {
+    "subtitle": "subtitles.big_nukes.wave",
+    "sounds": [
+      {
+        "name": "big_nukes:wave_roar",
+        "attenuation_distance": 32,
+        "stream": false
+      }
+    ]
+  }
+}

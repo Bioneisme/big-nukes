@@ -632,7 +632,7 @@ mod tests {
             "content/data/big_nukes/function/check.mcfunction",
         ]
         .iter()
-        .flat_map(|s| keys_in(&file(s)))
+        .flat_map(|s| keys_in(file(s).split("#[cfg(test)]").next().unwrap()))
         .collect();
         assert!(!used.is_empty());
         for key in &used {
@@ -642,7 +642,12 @@ mod tests {
             let theirs = ru.get(key).unwrap_or_else(|| panic!("{key} isn't in ru_ru"));
             assert_eq!(line.matches("%s").count(), theirs.matches("%s").count(), "{key}");
             assert!(
-                key.starts_with("block.") || key.starts_with("item.") || key == "big_nukes.mod.description" || used.contains(key),
+                key.starts_with("block.")
+                    || key.starts_with("item.")
+                    || key.starts_with("death.attack.big_nukes.")
+                    || key.starts_with("subtitles.big_nukes.")
+                    || key == "big_nukes.mod.description"
+                    || used.contains(key),
                 "{key} is used nowhere"
             );
         }
@@ -1134,5 +1139,34 @@ mod tests {
             assert!((0.8..=1.6).contains(&out), "{out}");
             assert!(block.starts_with("minecraft:"));
         }
+    }
+
+    // ---- assets of the effects (plan 2, Task 2) -----------------------------------
+
+    #[test]
+    fn every_sound_event_has_its_files() {
+        let sounds: serde_json::Value = serde_json::from_str(&file("content/assets/big_nukes/sounds.json")).unwrap();
+        for event in ["blast.near", "blast.far", "wave.roar"] {
+            let entry = &sounds[event];
+            assert!(entry.is_object(), "{event} isn't declared");
+            for s in entry["sounds"].as_array().unwrap() {
+                let name = s["name"].as_str().unwrap().strip_prefix("big_nukes:").unwrap();
+                assert!(std::path::Path::new(&format!("{}/content/assets/big_nukes/sounds/{name}.ogg", env!("CARGO_MANIFEST_DIR"))).exists(), "{name}");
+            }
+        }
+        for d in [10.0, 200.0, 2000.0] {
+            for s in sounds_for(d, 100, 0) {
+                assert!(sounds[s.event.strip_prefix("big_nukes:").unwrap()].is_object(), "{}", s.event);
+            }
+        }
+    }
+
+    #[test]
+    fn the_blast_damage_type_reads() {
+        let t: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/damage_type/blast.json")).unwrap();
+        assert_eq!(t["message_id"], "big_nukes.blast");
+        assert_eq!(t["scaling"], "never");
+        let en = language("en_us");
+        assert!(en.contains_key("death.attack.big_nukes.blast") && en.contains_key("death.attack.big_nukes.blast.player"));
     }
 }

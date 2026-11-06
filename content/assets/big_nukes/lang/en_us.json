@@ -3,5 +3,9 @@
   "big_nukes.missing.native": "Big Nukes: the native mod is missing, so there are no bombs. Install big_nukes_native too:",
   "big_nukes.blast.started": "A blast of radius %s: its wave is on the way.",
   "big_nukes.blast.usage": "Usage: /bignukes blast <radius %s to %s> [x y z]",
-  "big_nukes.blast.dimension": "Big Nukes can't blast in this dimension."
+  "big_nukes.blast.dimension": "Big Nukes can't blast in this dimension.",
+  "death.attack.big_nukes.blast": "%s was caught by a blast",
+  "death.attack.big_nukes.blast.player": "%s was caught by a blast set off by %s",
+  "subtitles.big_nukes.blast": "Blast rumbles",
+  "subtitles.big_nukes.wave": "Shockwave roars"
 }
