@@ -28,5 +28,15 @@
         "stream": false
       }
     ]
+  },
+  "geiger.click": {
+    "subtitle": "subtitles.big_nukes.geiger_click",
+    "sounds": [
+      {
+        "name": "big_nukes:geiger_click",
+        "attenuation_distance": 8,
+        "stream": false
+      }
+    ]
   }
 }

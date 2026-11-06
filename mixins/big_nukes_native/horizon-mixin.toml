@@ -386,7 +386,7 @@ bindings = [
   { name = "phase", ty = "horizon_client::mod_api::WorldPhase", value = "phase" },
 ]
 
-# News of a blast, in the window (API 40).
+# News of a blast and of the radiation, in the window (API 40).
 [[injection]]
 id = "net-from-server"
 kind = "HEAD"
@@ -396,6 +396,51 @@ bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
   { name = "channel", ty = "&str", value = "channel" },
   { name = "data", ty = "&[u8]", value = "data" },
+]
+
+# The window's tick: the Geiger counter's clicks.
+[[injection]]
+id = "tick"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_tick"
+helper = "tick.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+# The window drops a level: what it was told of the radiation goes (API 135).
+[[injection]]
+id = "client-level-unload"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_client_level_unload"
+helper = "level_unload.rs"
+bindings = [
+  { name = "dimension", ty = "&str", value = "dimension" },
+]
+
+# The Geiger counter's reading, over the hotbar's layer (API 139).
+[[injection]]
+id = "gui-layer-post"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_gui_layer_post"
+helper = "gui_layer_post.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "layer", ty = "&str", value = "layer" },
+  { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
+]
+
+# A zone's fog (API 117).
+[[injection]]
+id = "render-fog"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_render_fog"
+helper = "render_fog.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "camera", ty = "[f64; 3]", value = "camera" },
+  { name = "fog_type", ty = "horizon_client::fog::FogType", value = "fog_type" },
+  { name = "fog", ty = "&mut horizon_client::fog::FogData", value = "&mut *fog" },
 ]
 
 # The flash, over everything (API 410).

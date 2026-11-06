@@ -168,3 +168,20 @@ Read in the source of 66f3981, not yet seen in the game:
 - `native_mobs` (API 37) only answers inside its level's tick: the mobs are hurt in `native_level_tick_post`, once a
   second, at most 64 a dimension per pass, the rest on the next passes. A mob's `/damage` names it by its UUID
   (`native_entity` and `native_entity_uuid`, API 373) in its own dimension (`execute in`).
+
+## Radiation in the window
+
+Read in the source of 66f3981, not yet seen in the game:
+- The window knows nothing of the zones or the dose: the server sends `big_nukes:rad` (the dimension's 32 nearest
+  zones, the mod's clock and the dose, about 4 KB at most) once a second to each player with something to tell, and
+  once more when there is nothing, so the window lets go. Between messages the window counts on with
+  `native_clock().game_time`, which stands while single player is paused.
+- `native_tick` runs in every `Game`, the single player server's too: the counter acts only where `native_window()`.
+  `native_equipment(MainHand|OffHand)` reads the window's own player there.
+- `native_gui_layer_post`'s ids carry the namespace (`minecraft:hotbar`), though its doc lists `hotbar`. A layer F1
+  hides fires nothing, so the reading goes with the HUD.
+- `native_render_fog` (API 117) is `&self` and comes every frame: the zone's fog eases by the time between frames, kept
+  in a static. A change with a colour outside 0..=1, a distance that isn't finite or an end not past its start is
+  dropped whole. With Horizon's Fog option off the distances are 1e9 and 2e9, and the mod leaves them.
+- `native_world_lifecycle` is the server's: a LAN guest or a player on a server never hears it. The window's state goes
+  in `native_client_level_unload` (API 135), told on a dimension change and on leaving a world.
