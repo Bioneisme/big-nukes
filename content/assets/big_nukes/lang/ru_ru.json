@@ -55,5 +55,12 @@
   "item.big_nukes.fuse_detonator": "Фитильный детонатор",
   "item.big_nukes.keypad_detonator": "Кодовый детонатор",
   "item.big_nukes.receiver_detonator": "Детонатор-приёмник",
-  "item.big_nukes.remote": "Пульт подрыва"
+  "item.big_nukes.remote": "Пульт подрыва",
+  "item.big_nukes.hazmat_helmet": "Шлем химзащиты",
+  "item.big_nukes.hazmat_chestplate": "Куртка химзащиты",
+  "item.big_nukes.hazmat_leggings": "Штаны химзащиты",
+  "item.big_nukes.hazmat_boots": "Ботинки химзащиты",
+  "item.big_nukes.anti_rad": "Антирад",
+  "item.big_nukes.geiger_counter": "Счётчик Гейгера",
+  "effect.big_nukes.radiation": "Радиация"
 }

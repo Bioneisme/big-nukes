@@ -148,16 +148,43 @@ pub(in crate::game) fn blocks(blocks: &mut Vec<Block>) {
     }
 }
 
+/// The items, in code like the blocks: the suit on iron armour, the rest on
+/// paper, each with the rules' patch of its template's components.
 pub(in crate::game) fn items(items: &mut Vec<Item>) {
     for (id, stack, rare) in rules::ITEMS {
         items.push(Item {
             id: id.into(),
-            template: "minecraft:paper".into(),
+            template: rules::template(id).into(),
             max_stack_size: Some(stack),
             rarity: Some(if rare { Rarity::Rare } else { Rarity::Common }),
+            components: rules::components(id),
             ..Default::default()
         });
     }
+}
+
+// ---- the anti-rad ------------------------------------------------------------------
+
+/// A consume effect of the mod's own kind (API 74): a drink of anti-rad takes
+/// its amount off the drinker's dose.
+pub(in crate::game) fn consume_effect(game: &mut Game<'_>, kind: &str, data: &serde_json::Value) {
+    if kind != rules::ANTI_RADIATION {
+        return;
+    }
+    let Some(amount) = rules::anti_rad_amount(data) else {
+        log::warn!("[big_nukes] {kind} without a positive amount: {data}");
+        return;
+    };
+    let Some(who) = game.native_acting_player() else {
+        log::warn!("[big_nukes] {kind}: no drinker");
+        return;
+    };
+    anti_radiation(who.uuid, amount);
+}
+
+// Replaced by the dose's queue when the branches meet.
+pub(in crate::game) fn anti_radiation(uuid: u128, amount: f64) {
+    log::info!("[big_nukes] anti-rad: {amount} rad off {uuid:032x}");
 }
 
 // ---- joining ---------------------------------------------------------------------

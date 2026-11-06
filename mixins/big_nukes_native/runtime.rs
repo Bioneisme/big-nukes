@@ -63,8 +63,9 @@ impl BombKind {
     }
 }
 
-/// The items: id, how many stack, and whether they are rare.
-pub const ITEMS: [(&str, u8, bool); 8] = [
+/// The items: id, how many stack, and whether they are rare. Each copies its
+/// `template` with the `components` patch.
+pub const ITEMS: [(&str, u8, bool); 14] = [
     ("big_nukes:raw_uranium", 64, false),
     ("big_nukes:enriched_uranium", 64, true),
     ("big_nukes:nuclear_charge", 16, true),
@@ -73,7 +74,76 @@ pub const ITEMS: [(&str, u8, bool); 8] = [
     ("big_nukes:keypad_detonator", 16, false),
     ("big_nukes:receiver_detonator", 16, false),
     ("big_nukes:remote", 1, true),
+    (HAZMAT[0].0, 1, false),
+    (HAZMAT[1].0, 1, false),
+    (HAZMAT[2].0, 1, false),
+    (HAZMAT[3].0, 1, false),
+    (ANTI_RAD, 16, false),
+    (GEIGER_COUNTER, 1, false),
 ];
+
+/// The hazmat suit: each piece's id, the slot it is worn in, and the vanilla
+/// armour it copies.
+pub const HAZMAT: [(&str, &str, &str); 4] = [
+    ("big_nukes:hazmat_helmet", "head", "minecraft:iron_helmet"),
+    ("big_nukes:hazmat_chestplate", "chest", "minecraft:iron_chestplate"),
+    ("big_nukes:hazmat_leggings", "legs", "minecraft:iron_leggings"),
+    ("big_nukes:hazmat_boots", "feet", "minecraft:iron_boots"),
+];
+/// The suit's look on a player: `assets/big_nukes/equipment/hazmat.json`.
+pub const HAZMAT_ASSET: &str = "big_nukes:hazmat";
+pub const ANTI_RAD: &str = "big_nukes:anti_rad";
+/// The anti-rad's consume effect, which `native_consume_effect` hears.
+pub const ANTI_RADIATION: &str = "big_nukes:anti_radiation";
+pub const GEIGER_COUNTER: &str = "big_nukes:geiger_counter";
+
+/// How many rad a drink of anti-rad takes off.
+const ANTI_RAD_DOSE: f64 = 300.0;
+/// How much wear a piece of the suit takes.
+const HAZMAT_DURABILITY: u32 = 600;
+
+/// The vanilla item an item copies: a suit piece its iron armour, the rest paper.
+pub fn template(id: &str) -> &'static str {
+    HAZMAT.iter().find(|p| p.0 == id).map_or("minecraft:paper", |p| p.2)
+}
+
+/// An item's patch over its template's components; a patched component
+/// replaces the template's whole one.
+pub fn components(id: &str) -> BTreeMap<String, serde_json::Value> {
+    use serde_json::json;
+    let mut c = BTreeMap::new();
+    if let Some(&(id, slot, _)) = HAZMAT.iter().find(|p| p.0 == id) {
+        // `helmet`, `chestplate`...: vanilla names the armour's modifier after its piece.
+        let piece = id.rsplit('_').next().unwrap_or(id);
+        c.insert(
+            "minecraft:equippable".into(),
+            json!({"slot": slot, "asset_id": HAZMAT_ASSET, "equip_sound": "minecraft:item.armor.equip_leather"}),
+        );
+        c.insert("minecraft:max_damage".into(), json!(HAZMAT_DURABILITY));
+        // Iron mends iron armour; the suit is only made anew.
+        c.insert("!minecraft:repairable".into(), json!({}));
+        c.insert(
+            "minecraft:attribute_modifiers".into(),
+            json!([{"type": "minecraft:armor", "amount": 1.0, "operation": "add_value",
+                "id": format!("minecraft:armor.{piece}"), "slot": slot}]),
+        );
+    } else if id == ANTI_RAD {
+        c.insert(
+            "minecraft:consumable".into(),
+            json!({"consume_seconds": 1.6, "animation": "drink", "sound": "minecraft:entity.generic.drink",
+                "has_consume_particles": false,
+                "on_consume_effects": [{"type": ANTI_RADIATION, "amount": ANTI_RAD_DOSE}]}),
+        );
+        c.insert("minecraft:use_remainder".into(), json!({"id": "minecraft:glass_bottle", "count": 1}));
+    }
+    c
+}
+
+/// How many rad an anti-rad effect takes off, from the JSON its item declares:
+/// none unless it is a positive number.
+pub fn anti_rad_amount(effect: &serde_json::Value) -> Option<f64> {
+    effect["amount"].as_f64().filter(|a| a.is_finite() && *a > 0.0)
+}
 
 // ---- the centrifuge -------------------------------------------------------------
 
@@ -1459,6 +1529,7 @@ mod tests {
             assert!(
                 key.starts_with("block.")
                     || key.starts_with("item.")
+                    || key.starts_with("effect.big_nukes.")
                     || key.starts_with("death.attack.big_nukes.")
                     || key.starts_with("subtitles.big_nukes.")
                     || key == "big_nukes.mod.description"
@@ -2154,6 +2225,14 @@ mod tests {
         std::path::Path::new(&format!("{}/{path}", env!("CARGO_MANIFEST_DIR"))).exists()
     }
 
+    /// A PNG's width and height, from its header.
+    fn png_size(path: &str) -> (u32, u32) {
+        let b = std::fs::read(format!("{}/{path}", env!("CARGO_MANIFEST_DIR"))).unwrap_or_else(|e| panic!("{path}: {e}"));
+        assert_eq!(&b[1..4], b"PNG", "{path}");
+        let int = |at: usize| u32::from_be_bytes(b[at..at + 4].try_into().unwrap());
+        (int(16), int(20))
+    }
+
     #[test]
     fn every_block_and_item_is_declared_once_with_its_assets() {
         let code_blocks: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).collect();
@@ -2177,7 +2256,24 @@ mod tests {
         for i in &items {
             assert!(exists(&format!("{base}/items/{}.json", name(i))), "{i}");
             assert!(en.contains_key(&format!("item.big_nukes.{}", name(i))), "{i} has no name");
+            // The item's model file is the one its item model names.
+            let item: serde_json::Value = serde_json::from_str(&file(&format!("{base}/items/{}.json", name(i)))).unwrap();
+            let model = item["model"]["model"].as_str().unwrap().strip_prefix("big_nukes:").unwrap();
+            assert!(exists(&format!("{base}/models/{model}.json")), "{i}: {model}");
         }
+        // The suit, as the player wears it: one equipment asset with both layers, 64x32 each.
+        let equipment: serde_json::Value = serde_json::from_str(&file(&format!("{base}/equipment/hazmat.json"))).unwrap();
+        for layer in ["humanoid", "humanoid_leggings"] {
+            assert_eq!(equipment["layers"][layer], serde_json::json!([{"texture": HAZMAT_ASSET}]), "{layer}");
+            assert_eq!(png_size(&format!("{base}/textures/entity/equipment/{layer}/hazmat.png")), (64, 32), "{layer}");
+        }
+        // The radiation's mark: a harmful effect with a name and an 18x18 icon.
+        let effect: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/horizon/mob_effect/radiation.json")).unwrap();
+        assert_eq!(effect["category"], "harmful");
+        assert!(effect["color"].as_u64().unwrap() <= 0xFF_FFFF);
+        assert_eq!(effect.as_object().unwrap().len(), 2, "a mob effect takes a category and a colour only");
+        assert!(en.contains_key("effect.big_nukes.radiation"));
+        assert_eq!(png_size(&format!("{base}/textures/mob_effect/radiation.png")), (18, 18));
         let pickaxe: serde_json::Value = serde_json::from_str(&file("content/data/minecraft/tags/block/mineable/pickaxe.json")).unwrap();
         // Entries of blocks declared in code are optional: the assets half alone must still load.
         let mined: Vec<&str> = pickaxe["values"]
@@ -2231,15 +2327,25 @@ mod tests {
             let file_name = path.file_stem().unwrap().to_str().unwrap().to_owned();
             let recipe: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
                 .unwrap_or_else(|e| panic!("{file_name}: {e}"));
-            assert_eq!(recipe["type"], "minecraft:crafting_shaped", "{file_name}");
-            let pattern: Vec<&str> = recipe["pattern"].as_array().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
-            assert!((1..=3).contains(&pattern.len()), "{file_name}: {} rows", pattern.len());
-            assert!(pattern.iter().all(|r| r.len() == pattern[0].len() && r.len() <= 3), "{file_name}: uneven rows");
-            let key = recipe["key"].as_object().unwrap();
-            let used: BTreeSet<char> = pattern.iter().flat_map(|r| r.chars()).filter(|c| *c != ' ').collect();
-            let keyed: BTreeSet<char> = key.keys().map(|k| k.chars().next().unwrap()).collect();
-            assert_eq!(used, keyed, "{file_name}: the pattern and the key differ");
-            for id in key.values() {
+            let ingredients: Vec<&serde_json::Value> = match recipe["type"].as_str().unwrap() {
+                "minecraft:crafting_shaped" => {
+                    let pattern: Vec<&str> = recipe["pattern"].as_array().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
+                    assert!((1..=3).contains(&pattern.len()), "{file_name}: {} rows", pattern.len());
+                    assert!(pattern.iter().all(|r| r.len() == pattern[0].len() && r.len() <= 3), "{file_name}: uneven rows");
+                    let key = recipe["key"].as_object().unwrap();
+                    let used: BTreeSet<char> = pattern.iter().flat_map(|r| r.chars()).filter(|c| *c != ' ').collect();
+                    let keyed: BTreeSet<char> = key.keys().map(|k| k.chars().next().unwrap()).collect();
+                    assert_eq!(used, keyed, "{file_name}: the pattern and the key differ");
+                    key.values().collect()
+                }
+                "minecraft:crafting_shapeless" => {
+                    let list: Vec<&serde_json::Value> = recipe["ingredients"].as_array().unwrap().iter().collect();
+                    assert!((1..=9).contains(&list.len()), "{file_name}: {} ingredients", list.len());
+                    list
+                }
+                other => panic!("{file_name}: {other} isn't a crafting table recipe"),
+            };
+            for id in ingredients {
                 let id = id.as_str().unwrap_or_else(|| panic!("{file_name}: {id} isn't an item id"));
                 assert!(known_id(id), "{file_name}: {id} is unknown");
             }
@@ -2258,6 +2364,81 @@ mod tests {
         let not_crafted = ["big_nukes:raw_uranium", "big_nukes:enriched_uranium"];
         let crafted: BTreeSet<String> = known.iter().filter(|id| !not_crafted.contains(id)).map(|id| id.to_string()).collect();
         assert_eq!(made, crafted);
+    }
+
+    // ---- the radiation's items (plan 5, Task 3) ------------------------------------------
+
+    fn stack_of(id: &str) -> u8 {
+        ITEMS.iter().find(|i| i.0 == id).unwrap_or_else(|| panic!("{id} isn't declared")).1
+    }
+
+    #[test]
+    fn the_suit_is_four_wearable_pieces() {
+        let slots: Vec<&str> = HAZMAT.iter().map(|p| p.1).collect();
+        assert_eq!(slots, ["head", "chest", "legs", "feet"]);
+        for (id, slot, template) in HAZMAT {
+            let piece = name(id).strip_prefix("hazmat_").unwrap();
+            assert_eq!(template, format!("minecraft:iron_{piece}"));
+            assert_eq!(super::template(id), template);
+            assert_eq!(stack_of(id), 1, "{id}");
+            let c = components(id);
+            assert_eq!(
+                c["minecraft:equippable"],
+                serde_json::json!({"slot": slot, "asset_id": HAZMAT_ASSET, "equip_sound": "minecraft:item.armor.equip_leather"}),
+                "{id}"
+            );
+            assert_eq!(c["minecraft:max_damage"], 600, "{id}");
+            assert_eq!(c["!minecraft:repairable"], serde_json::json!({}), "{id}: it isn't mended with iron");
+            assert_eq!(
+                c["minecraft:attribute_modifiers"],
+                serde_json::json!([{"type": "minecraft:armor", "amount": 1.0, "operation": "add_value",
+                    "id": format!("minecraft:armor.{piece}"), "slot": slot}]),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_anti_rad_is_a_drink_with_our_effect() {
+        assert_eq!(super::template(ANTI_RAD), "minecraft:paper");
+        assert_eq!(stack_of(ANTI_RAD), 16);
+        let c = components(ANTI_RAD);
+        let drink = &c["minecraft:consumable"];
+        assert_eq!(drink["animation"], "drink");
+        assert_eq!(drink["consume_seconds"], 1.6);
+        assert_eq!(drink["sound"], "minecraft:entity.generic.drink");
+        assert_eq!(drink["has_consume_particles"], false);
+        let effects = drink["on_consume_effects"].as_array().unwrap();
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0]["type"], ANTI_RADIATION);
+        assert_eq!(anti_rad_amount(&effects[0]), Some(300.0));
+        assert_eq!(c["minecraft:use_remainder"], serde_json::json!({"id": "minecraft:glass_bottle", "count": 1}));
+        // The hook reads only a positive amount.
+        assert_eq!(anti_rad_amount(&serde_json::json!({"type": ANTI_RADIATION})), None);
+        assert_eq!(anti_rad_amount(&serde_json::json!({"type": ANTI_RADIATION, "amount": -5})), None);
+    }
+
+    #[test]
+    fn the_geiger_counter_is_one_to_a_hand() {
+        assert_eq!(super::template(GEIGER_COUNTER), "minecraft:paper");
+        assert_eq!(stack_of(GEIGER_COUNTER), 1);
+        assert!(components(GEIGER_COUNTER).is_empty());
+    }
+
+    /// What the game checks of an item's patch: namespaced types, removals as `{}`, and the
+    /// stack size and rarity as the item's own fields.
+    #[test]
+    fn every_item_patch_is_one_the_game_takes() {
+        for (id, _, _) in ITEMS {
+            for (key, value) in components(id) {
+                let kind = key.strip_prefix('!').unwrap_or(&key);
+                assert!(kind.split_once(':').is_some_and(|(ns, path)| !ns.is_empty() && !path.is_empty()), "{id}: {key}");
+                assert!(!["minecraft:max_stack_size", "minecraft:rarity"].contains(&kind), "{id}: {key}");
+                if key.starts_with('!') {
+                    assert_eq!(value, serde_json::json!({}), "{id}: {key}");
+                }
+            }
+        }
     }
 
     // ---- the assembly table -------------------------------------------------------------

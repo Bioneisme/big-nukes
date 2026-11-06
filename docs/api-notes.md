@@ -125,6 +125,23 @@ With the effects on (plan 2), radius 250: done in 7.8 s, the median frame 0.52 â
 server tick 16.2 ms on average and 32.0 ms at P99. The smoke and the flash cost about a third of a millisecond a frame,
 which shows as a large share only at offscreen frame rates.
 
+## The radiation's items
+
+Read in the source of 66f3981, not yet seen in the game:
+- An item's `components` is a 26.3 patch over its template's: a patched component replaces the template's whole one,
+  and `"!minecraft:<type>": {}` removes one. `minecraft:max_stack_size` and `minecraft:rarity` are refused there: they
+  are the item's own fields. The rules build each item's patch (`components` in runtime.rs), so the tests read it.
+- The suit copies the iron armour and patches `equippable` (the whole map: `slot`, `asset_id`, `equip_sound`),
+  `max_damage`, `attribute_modifiers` (armour 1, under vanilla's `minecraft:armor.<piece>` id for its slot) and removes
+  `repairable`. Its look is `assets/big_nukes/equipment/hazmat.json`: every namespace's `equipment/` is read
+  (`armor_stands.rs`), and the layer `big_nukes:hazmat` of kind `humanoid` is the sprite
+  `big_nukes:entity/equipment/humanoid/hazmat`, 64x32 in vanilla's armour layout (`humanoid_leggings` the same).
+- An `on_consume_effects` entry whose type is outside `minecraft:` is kept whole and handed to
+  `native_consume_effect(kind, data)` (API 74), `data` being the entry itself with its `type`; the drinker is
+  `native_acting_player`. The anti-rad is a paper with `consumable` and `use_remainder` (a glass bottle).
+- A mod's mob effect is `data/<ns>/horizon/mob_effect/<name>.json` (`category`, `color` only); its HUD icon is the
+  sprite `<ns>:mob_effect/<name>` and its name `effect.<ns>.<name>`.
+
 ## The held stack
 
 - In a player's hook the host has no entity handle: `native_acting_player().entity_id` is 0 for it

@@ -217,6 +217,18 @@ bindings = [
   { name = "claimed", ty = "&mut bool", value = "&mut *claimed" },
 ]
 
+# The anti-rad: its consume effect is of the mod's own kind, heard with the drinker as the acting player (API 74).
+[[injection]]
+id = "consume-effect"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_consume_effect"
+helper = "consume_effect.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "kind", ty = "&str", value = "kind" },
+  { name = "data", ty = "&serde_json::Value", value = "data" },
+]
+
 [[injection]]
 id = "tooltip"
 kind = "HEAD"
