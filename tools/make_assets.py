@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Writes the assets half's JSON for the blocks and items: block states, models, item models,
-loot tables, tags, the ore and ash declarations, and their names in both languages.
+loot tables, tags, the ore and ash declarations, the radiation's mob effect, the suit's equipment asset,
+and their names in both languages.
 
     python tools/make_assets.py
 
@@ -36,7 +37,15 @@ ITEMS = {
     "keypad_detonator": ("Keypad Detonator", "Кодовый детонатор"),
     "receiver_detonator": ("Receiver Detonator", "Детонатор-приёмник"),
     "remote": ("Remote Detonator", "Пульт подрыва"),
+    "hazmat_helmet": ("Hazmat Helmet", "Шлем химзащиты"),
+    "hazmat_chestplate": ("Hazmat Jacket", "Куртка химзащиты"),
+    "hazmat_leggings": ("Hazmat Pants", "Штаны химзащиты"),
+    "hazmat_boots": ("Hazmat Boots", "Ботинки химзащиты"),
+    "anti_rad": ("Anti-Rad", "Антирад"),
+    "geiger_counter": ("Geiger Counter", "Счётчик Гейгера"),
 }
+# Mob effects: id: (category, RGB, English, Russian)
+EFFECTS = {"radiation": ("harmful", 0x7FB238, "Radiation", "Радиация")}
 
 
 def write(path, data):
@@ -90,6 +99,15 @@ for name, (en, ru) in ITEMS.items():
     write(A / "models" / "item" / f"{name}.json", {"parent": "minecraft:item/generated", "textures": {"layer0": f"big_nukes:item/{name}"}})
     lang["en_us"][f"item.big_nukes.{name}"] = en
     lang["ru_ru"][f"item.big_nukes.{name}"] = ru
+
+for name, (category, color, en, ru) in EFFECTS.items():
+    write(D / "horizon" / "mob_effect" / f"{name}.json", {"category": category, "color": color})
+    lang["en_us"][f"effect.big_nukes.{name}"] = en
+    lang["ru_ru"][f"effect.big_nukes.{name}"] = ru
+# The suit on a player: its pieces' layers, drawn by make_textures.py.
+write(A / "equipment" / "hazmat.json", {"layers": {
+    "humanoid": [{"texture": "big_nukes:hazmat"}], "humanoid_leggings": [{"texture": "big_nukes:hazmat"}]}})
+
 
 # The blocks declared in code are there only with the native half: their entries are optional,
 # so the assets half alone still loads its tags (and with them its data).

@@ -3,8 +3,10 @@
 
     python tools/make_textures.py
 
-Writes content/assets/big_nukes/textures/{block,item}/*.png and gui/centrifuge.png.
+Writes content/assets/big_nukes/textures/{block,item}/*.png, gui/centrifuge.png, the hazmat suit's
+entity/equipment/{humanoid,humanoid_leggings}/hazmat.png and mob_effect/radiation.png.
 """
+import math
 import random
 from pathlib import Path
 
@@ -340,4 +342,237 @@ arrow(gui, 79, 34, False)
 flame(gui, 176, 0, True)
 arrow(gui, 176, 14, True)
 save(gui, "gui", "centrifuge")
+
+
+# ---- the radiation's items (plan 5) ----
+# Drawn last and with their own random, so everything above stays the same.
+suit_rng = random.Random(2605)
+SUIT = (226, 190, 40)
+SUIT_DARK = (170, 136, 22, 255)
+RUBBER = (40, 40, 44, 255)
+VISOR = (36, 62, 72, 255)
+SHINE = (150, 205, 215, 255)
+
+
+def sheet(pixels, palette):
+    for row in pixels:
+        assert len(row) == len(pixels[0]), row
+    return item(pixels, palette)
+
+
+SUIT_PALETTE = {"o": (64, 50, 10, 255), "y": (230, 196, 44, 255), "d": SUIT_DARK, "k": RUBBER,
+                "v": VISOR, "w": SHINE}
+HELMET = [
+    "................",
+    "................",
+    ".....oooooo.....",
+    "....oyyyyyyo....",
+    "...oyyyyyyyyo...",
+    "...oyooooooyo...",
+    "...oyovwvvoyo...",
+    "...oyovvvvoyo...",
+    "...oyovvvvoyo...",
+    "...oyooooooyo...",
+    "...oyyyyyyyyo...",
+    "...oyyyyyyyyo...",
+    "....oooooooo....",
+    "................",
+    "................",
+    "................",
+]
+JACKET = [
+    "................",
+    "................",
+    "..oooo....oooo..",
+    ".oyyyyooooyyyyo.",
+    "oyyyyyyddyyyyyyo",
+    "oyyyyyyddyyyyyyo",
+    "okkoyyyddyyyokko",
+    "ooooyyyddyyyoooo",
+    "...oyyyddyyyo...",
+    "...oyyyddyyyo...",
+    "...oyyyddyyyo...",
+    "...oyyyddyyyo...",
+    "...oyyyyyyyyo...",
+    "...oooooooooo...",
+    "................",
+    "................",
+]
+PANTS = [
+    "................",
+    "................",
+    "...oooooooooo...",
+    "...okkkkkkkko...",
+    "...oyyyyyyyyo...",
+    "...oyyyyyyyyo...",
+    "...oyyyooyyyo...",
+    "...oyyyooyyyo...",
+    "...oyyyooyyyo...",
+    "...oyyyooyyyo...",
+    "...oyyyooyyyo...",
+    "...oyyyooyyyo...",
+    "...oyyyooyyyo...",
+    "...oooooooooo...",
+    "................",
+    "................",
+]
+BOOTS = [
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "..oooo....oooo..",
+    "..oyyo....oyyo..",
+    "..oyyo....oyyo..",
+    "..oyyo....oyyo..",
+    ".oyyyo...oyyyo..",
+    ".oyyyo...oyyyo..",
+    ".okkko...okkko..",
+    ".ooooo...ooooo..",
+    "................",
+]
+for name, pixels in (("helmet", HELMET), ("chestplate", JACKET), ("leggings", PANTS), ("boots", BOOTS)):
+    save(sheet(pixels, SUIT_PALETTE), "item", f"hazmat_{name}")
+
+VIAL = [
+    "................",
+    "......cccc......",
+    "......cccc......",
+    "......gwwg......",
+    "......gwwg......",
+    ".....gwwwwg.....",
+    "....gwwwwwwg....",
+    "...gwwwwwwwwg...",
+    "...gllllllllg...",
+    "...glhllllllg...",
+    "...glhllllllg...",
+    "...gllllllllg...",
+    "...gllllllllg...",
+    "....gllllllg....",
+    ".....gggggg.....",
+    "................",
+]
+save(sheet(VIAL, {"c": (120, 82, 44, 255), "g": (160, 196, 208, 255), "w": (214, 234, 242, 120),
+                  "l": (236, 132, 36, 255), "h": (255, 204, 120, 255)}), "item", "anti_rad")
+
+GEIGER = [
+    "...........dd...",
+    "...........dd...",
+    "..aaaaaaaaaaaa..",
+    "..abbbbbbbbbba..",
+    "..abwkwkwkwkba..",
+    "..abwwwwwwrwba..",
+    "..abwwwwwrwwba..",
+    "..abwwwwrwwwba..",
+    "..abbbbbbbbbba..",
+    "..abbbbbbbgbba..",
+    "..abbbbbbbbbba..",
+    "..abkbkbkbkbba..",
+    "..abbbbbbbbbba..",
+    "..aaaaaaaaaaaa..",
+    "................",
+    "................",
+]
+save(sheet(GEIGER, {"a": (30, 30, 34, 255), "b": (196, 164, 48, 255), "w": (236, 236, 222, 255),
+                    "k": (30, 30, 34, 255), "r": (220, 40, 40, 255), "g": (90, 230, 80, 255),
+                    "d": (120, 120, 130, 255)}), "item", "geiger_counter")
+
+
+# The suit on a player: 64x32 sheets in vanilla's armour layout. `humanoid` is the
+# helmet, the jacket with its sleeves, and the boots on the legs' boxes;
+# `humanoid_leggings` the legs and the waist.
+def box(im, u, v, w, h, d, paint):
+    """Paints a model box's six faces at (u, v): `paint(face, x, y, fw, fh)` gives a
+    pixel's colour, or None to leave it clear."""
+    faces = {
+        "top": (u + d, v, w, d), "bottom": (u + d + w, v, w, d),
+        "right": (u, v + d, d, h), "front": (u + d, v + d, w, h),
+        "left": (u + d + w, v + d, d, h), "back": (u + 2 * d + w, v + d, w, h),
+    }
+    for face, (fx, fy, fw, fh) in faces.items():
+        for y in range(fh):
+            for x in range(fw):
+                c = paint(face, x, y, fw, fh)
+                if c is not None:
+                    im.putpixel((fx + x, fy + y), c)
+
+
+def cloth(x, y, fw, fh):
+    """The suit's fabric, a shade darker at a face's edges, its seams."""
+    edge = x in (0, fw - 1) or y in (0, fh - 1)
+    return shade(SUIT, (0.86 if edge else 1.0) + suit_rng.uniform(-0.06, 0.06))
+
+
+def head(face, x, y, fw, fh):
+    if face == "front" and 1 <= x <= 6 and 2 <= y <= 5:
+        return SHINE if (x, y) == (2, 2) else VISOR
+    return cloth(x, y, fw, fh)
+
+
+def jacket(face, x, y, fw, fh):
+    if face == "front" and x in (3, 4):
+        return SUIT_DARK
+    return cloth(x, y, fw, fh)
+
+
+def sleeve(face, x, y, fw, fh):
+    if face == "bottom" or (face not in ("top", "bottom") and y >= fh - 3):
+        return RUBBER
+    return cloth(x, y, fw, fh)
+
+
+def boot(face, x, y, fw, fh):
+    if face == "top":
+        return None
+    if face == "bottom" or (face != "top" and y == fh - 1):
+        return RUBBER
+    return cloth(x, y, fw, fh) if y >= fh - 6 else None
+
+
+def waist(face, x, y, fw, fh):
+    if face == "top":
+        return None
+    if face == "bottom":
+        return cloth(x, y, fw, fh)
+    if y == fh - 5:
+        return RUBBER
+    return cloth(x, y, fw, fh) if y > fh - 5 else None
+
+
+def leg(face, x, y, fw, fh):
+    return cloth(x, y, fw, fh)
+
+
+layer = Image.new("RGBA", (64, 32), CLEAR)
+box(layer, 0, 0, 8, 8, 8, head)
+box(layer, 16, 16, 8, 12, 4, jacket)
+box(layer, 40, 16, 4, 12, 4, sleeve)
+box(layer, 0, 16, 4, 12, 4, boot)
+save(layer, "entity/equipment/humanoid", "hazmat")
+layer = Image.new("RGBA", (64, 32), CLEAR)
+box(layer, 0, 16, 4, 12, 4, leg)
+box(layer, 16, 16, 8, 12, 4, waist)
+save(layer, "entity/equipment/humanoid_leggings", "hazmat")
+
+# The radiation's effect icon, 18x18: a green trefoil with a dark rim.
+icon = Image.new("RGBA", (18, 18), CLEAR)
+
+
+def blade(x, y):
+    dx, dy = x - 9 + 0.5, y - 9 + 0.5
+    r = math.hypot(dx, dy)
+    a = (math.degrees(math.atan2(dy, dx)) + 360 + 30) % 120
+    return r < 1.8 or (2.8 < r < 7.6 and 30 < a < 90)
+
+
+for y in range(18):
+    for x in range(18):
+        if blade(x, y):
+            icon.putpixel((x, y), (127, 178, 56, 255) if blade(x, y - 1) else (196, 236, 120, 255))
+        elif any(blade(x + dx, y + dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+            icon.putpixel((x, y), (28, 44, 18, 255))
+save(icon, "mob_effect", "radiation")
 print("textures written")

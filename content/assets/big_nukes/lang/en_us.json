@@ -53,5 +53,12 @@
   "item.big_nukes.fuse_detonator": "Fuse Detonator",
   "item.big_nukes.keypad_detonator": "Keypad Detonator",
   "item.big_nukes.receiver_detonator": "Receiver Detonator",
-  "item.big_nukes.remote": "Remote Detonator"
+  "item.big_nukes.remote": "Remote Detonator",
+  "item.big_nukes.hazmat_helmet": "Hazmat Helmet",
+  "item.big_nukes.hazmat_chestplate": "Hazmat Jacket",
+  "item.big_nukes.hazmat_leggings": "Hazmat Pants",
+  "item.big_nukes.hazmat_boots": "Hazmat Boots",
+  "item.big_nukes.anti_rad": "Anti-Rad",
+  "item.big_nukes.geiger_counter": "Geiger Counter",
+  "effect.big_nukes.radiation": "Radiation"
 }
