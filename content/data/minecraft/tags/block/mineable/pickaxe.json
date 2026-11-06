@@ -1,0 +1,26 @@
+{
+  "values": [
+    {
+      "id": "big_nukes:centrifuge",
+      "required": false
+    },
+    {
+      "id": "big_nukes:demolition_charge",
+      "required": false
+    },
+    {
+      "id": "big_nukes:tactical_warhead",
+      "required": false
+    },
+    {
+      "id": "big_nukes:atomic_bomb",
+      "required": false
+    },
+    {
+      "id": "big_nukes:assembly_table",
+      "required": false
+    },
+    "big_nukes:uranium_ore",
+    "big_nukes:deepslate_uranium_ore"
+  ]
+}

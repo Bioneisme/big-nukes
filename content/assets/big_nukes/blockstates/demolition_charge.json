@@ -1,0 +1,19 @@
+{
+  "variants": {
+    "facing=north": {
+      "model": "big_nukes:block/demolition_charge"
+    },
+    "facing=east": {
+      "model": "big_nukes:block/demolition_charge",
+      "y": 90
+    },
+    "facing=south": {
+      "model": "big_nukes:block/demolition_charge",
+      "y": 180
+    },
+    "facing=west": {
+      "model": "big_nukes:block/demolition_charge",
+      "y": 270
+    }
+  }
+}

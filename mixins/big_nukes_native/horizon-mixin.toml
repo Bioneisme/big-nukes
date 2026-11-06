@@ -31,6 +31,25 @@ file = "crates/horizon-client/src/game.rs"
 name = "big_nukes_glue"
 source = "glue.rs"
 
+# The machines and the bombs, declared in code; the ores and the ash are the assets half's files.
+[[injection]]
+id = "blocks"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_blocks"
+helper = "blocks.rs"
+bindings = [
+  { name = "blocks", ty = "&mut Vec<horizon_mods::content::Block>", value = "&mut *blocks" },
+]
+
+[[injection]]
+id = "items"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_items"
+helper = "items.rs"
+bindings = [
+  { name = "items", ty = "&mut Vec<horizon_mods::content::Item>", value = "&mut *items" },
+]
+
 # A player joining: the warning when the assets half is missing (API 1).
 [[injection]]
 id = "logged-in"

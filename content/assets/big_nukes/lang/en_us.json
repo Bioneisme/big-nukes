@@ -5,5 +5,21 @@
   "big_nukes.blast.usage": "Usage: /bignukes blast <radius %s to %s> [x y z]",
   "big_nukes.blast.dimension": "Big Nukes can't blast in this dimension.",
   "subtitles.big_nukes.blast": "Blast rumbles",
-  "subtitles.big_nukes.wave": "Shockwave roars"
+  "subtitles.big_nukes.wave": "Shockwave roars",
+  "block.big_nukes.centrifuge": "Centrifuge",
+  "block.big_nukes.demolition_charge": "Demolition Charge",
+  "block.big_nukes.tactical_warhead": "Tactical Warhead",
+  "block.big_nukes.atomic_bomb": "Atomic Bomb",
+  "block.big_nukes.assembly_table": "Assembly Table",
+  "block.big_nukes.uranium_ore": "Uranium Ore",
+  "block.big_nukes.deepslate_uranium_ore": "Deepslate Uranium Ore",
+  "block.big_nukes.ash": "Ash",
+  "item.big_nukes.raw_uranium": "Raw Uranium",
+  "item.big_nukes.enriched_uranium": "Enriched Uranium",
+  "item.big_nukes.nuclear_charge": "Nuclear Charge",
+  "item.big_nukes.bomb_casing": "Bomb Casing",
+  "item.big_nukes.fuse_detonator": "Fuse Detonator",
+  "item.big_nukes.keypad_detonator": "Keypad Detonator",
+  "item.big_nukes.receiver_detonator": "Receiver Detonator",
+  "item.big_nukes.remote": "Remote Detonator"
 }

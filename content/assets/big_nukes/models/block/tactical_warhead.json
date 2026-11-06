@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "big_nukes:block/tactical_warhead_side",
+    "down": "big_nukes:block/tactical_warhead_top",
+    "up": "big_nukes:block/tactical_warhead_top",
+    "north": "big_nukes:block/tactical_warhead_front",
+    "south": "big_nukes:block/tactical_warhead_side",
+    "west": "big_nukes:block/tactical_warhead_side",
+    "east": "big_nukes:block/tactical_warhead_side"
+  }
+}

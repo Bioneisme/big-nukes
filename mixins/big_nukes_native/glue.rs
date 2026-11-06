@@ -12,6 +12,7 @@ use horizon_client::{
     mod_api::{NativeCommand, NativeServerPlayer, ServerTickPhase, WorldPhase},
     text::{self, ClickEvent, Style, Text},
 };
+use horizon_mods::content::{Block, BlockProperties, Item, Rarity};
 use std::{
     collections::{BTreeSet, HashMap},
     fs,
@@ -75,6 +76,43 @@ fn save(st: &mut State) {
     }
 }
 
+// ---- declarations -------------------------------------------------------------------
+
+/// The machines and the bombs. The centrifuge and the bombs are furnaces as a
+/// template: they open a menu and face the player who placed them. The table is
+/// a crafting table.
+pub(in crate::game) fn blocks(blocks: &mut Vec<Block>) {
+    let block = |id: &str, template: &str, hardness: f32| Block {
+        id: id.into(),
+        template: template.into(),
+        properties: BlockProperties {
+            hardness: Some(hardness),
+            explosion_resistance: Some(6.0),
+            requires_tool: Some(true),
+            ..Default::default()
+        },
+        item: true,
+        ..Default::default()
+    };
+    blocks.push(block(rules::CENTRIFUGE, "minecraft:furnace", 3.5));
+    blocks.push(block(rules::ASSEMBLY_TABLE, "minecraft:crafting_table", 2.5));
+    for kind in rules::BombKind::ALL {
+        blocks.push(block(kind.id(), "minecraft:furnace", 2.0));
+    }
+}
+
+pub(in crate::game) fn items(items: &mut Vec<Item>) {
+    for (id, stack, rare) in rules::ITEMS {
+        items.push(Item {
+            id: id.into(),
+            template: "minecraft:paper".into(),
+            max_stack_size: Some(stack),
+            rarity: Some(if rare { Rarity::Rare } else { Rarity::Common }),
+            ..Default::default()
+        });
+    }
+}
+
 // ---- joining ---------------------------------------------------------------------
 
 /// A player joins. The assets half, if it's there, reads the tag to know this
@@ -116,8 +154,8 @@ pub(in crate::game) fn logged_in(game: &mut Game<'_>, player: u128, name: &str) 
 // ---- the command -----------------------------------------------------------------
 
 pub(in crate::game) fn commands(commands: &mut Vec<NativeCommand>) {
-    commands.push(NativeCommand::op("bignukes blast <radius:text>", 2));
-    commands.push(NativeCommand::op("bignukes blast <radius:text> <x:text> <y:text> <z:text>", 2));
+    // One text argument, last: the radius and the optional place are read from it.
+    commands.push(NativeCommand::op("bignukes blast <args:text>", 2));
 }
 
 pub(in crate::game) fn perform(game: &mut Game<'_>, player: &NativeServerPlayer, line: &str, ran: &mut bool) {

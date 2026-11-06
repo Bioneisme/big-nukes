@@ -13,7 +13,44 @@ pub const VERSION: &str = "0.1.0";
 /// The mod's folder in a world's folder.
 pub const DIR: &str = "horizon-big-nukes";
 /// A loot table only the assets half brings: the sign that it's installed.
-pub const ASSETS_MARKER: &str = "big_nukes:marker";
+pub const ASSETS_MARKER: &str = "big_nukes:blocks/atomic_bomb";
+
+// ---- what the mod adds ----------------------------------------------------------
+
+pub const CENTRIFUGE: &str = "big_nukes:centrifuge";
+pub const ASSEMBLY_TABLE: &str = "big_nukes:assembly_table";
+
+/// The bombs, smallest first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BombKind {
+    Demolition,
+    Tactical,
+    Atomic,
+}
+
+impl BombKind {
+    pub const ALL: [BombKind; 3] = [BombKind::Demolition, BombKind::Tactical, BombKind::Atomic];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            BombKind::Demolition => "big_nukes:demolition_charge",
+            BombKind::Tactical => "big_nukes:tactical_warhead",
+            BombKind::Atomic => "big_nukes:atomic_bomb",
+        }
+    }
+}
+
+/// The items: id, how many stack, and whether they are rare.
+pub const ITEMS: [(&str, u8, bool); 8] = [
+    ("big_nukes:raw_uranium", 64, false),
+    ("big_nukes:enriched_uranium", 64, true),
+    ("big_nukes:nuclear_charge", 16, true),
+    ("big_nukes:bomb_casing", 16, false),
+    ("big_nukes:fuse_detonator", 16, false),
+    ("big_nukes:keypad_detonator", 16, false),
+    ("big_nukes:receiver_detonator", 16, false),
+    ("big_nukes:remote", 1, true),
+];
 
 // ---- blast geometry ----------------------------------------------------------
 //
@@ -755,8 +792,7 @@ mod tests {
     #[test]
     fn the_assets_bring_the_marker() {
         let (namespace, name) = super::ASSETS_MARKER.split_once(':').unwrap();
-        let table: serde_json::Value = serde_json::from_str(&file(&format!("content/data/{namespace}/loot_table/{name}.json"))).unwrap();
-        assert_eq!(table["pools"], serde_json::json!([]));
+        assert!(exists(&format!("content/data/{namespace}/loot_table/{name}.json")), "{name}");
     }
 
     // ---- blast geometry (Task 2) -------------------------------------------
@@ -1394,5 +1430,77 @@ mod tests {
         newest_first(&mut felt);
         let ids: Vec<u64> = felt.iter().take(4).map(|f| f.2.id).collect();
         assert_eq!(ids, vec![5, 4, 3, 2]);
+    }
+
+    // ---- what the mod adds (plan 4, Task 1) ---------------------------------------------
+
+    /// Blocks the content half declares in files: the ores and the ash.
+    const FILE_BLOCKS: [&str; 3] = ["big_nukes:uranium_ore", "big_nukes:deepslate_uranium_ore", "big_nukes:ash"];
+
+    fn name(id: &str) -> &str {
+        id.strip_prefix("big_nukes:").unwrap()
+    }
+
+    fn exists(path: &str) -> bool {
+        std::path::Path::new(&format!("{}/{path}", env!("CARGO_MANIFEST_DIR"))).exists()
+    }
+
+    #[test]
+    fn every_block_and_item_is_declared_once_with_its_assets() {
+        let code_blocks: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).collect();
+        let blocks: Vec<&str> = code_blocks.iter().copied().chain(FILE_BLOCKS).collect();
+        let items: Vec<&str> = ITEMS.iter().map(|i| i.0).collect();
+        let all: BTreeSet<&str> = blocks.iter().chain(&items).copied().collect();
+        assert_eq!(all.len(), blocks.len() + items.len(), "an id is declared twice");
+        let en = language("en_us");
+        let base = "content/assets/big_nukes";
+        for b in &blocks {
+            let n = name(b);
+            for f in [format!("{base}/blockstates/{n}.json"), format!("{base}/items/{n}.json"), format!("content/data/big_nukes/loot_table/blocks/{n}.json")] {
+                assert!(exists(&f), "{f}");
+            }
+            assert!(en.contains_key(&format!("block.big_nukes.{n}")), "{b} has no name");
+        }
+        for b in FILE_BLOCKS {
+            let decl: serde_json::Value = serde_json::from_str(&file(&format!("content/data/big_nukes/horizon/block/{}.json", name(b)))).unwrap();
+            assert!(decl["template"].as_str().unwrap().starts_with("minecraft:"), "{b}");
+        }
+        for i in &items {
+            assert!(exists(&format!("{base}/items/{}.json", name(i))), "{i}");
+            assert!(en.contains_key(&format!("item.big_nukes.{}", name(i))), "{i} has no name");
+        }
+        let pickaxe: serde_json::Value = serde_json::from_str(&file("content/data/minecraft/tags/block/mineable/pickaxe.json")).unwrap();
+        // Entries of blocks declared in code are optional: the assets half alone must still load.
+        let mined: Vec<&str> = pickaxe["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap_or_else(|| {
+                assert_eq!(v["required"], false, "{v}");
+                v["id"].as_str().unwrap()
+            }))
+            .collect();
+        for v in pickaxe["values"].as_array().unwrap() {
+            let id = v.as_str().or(v["id"].as_str()).unwrap();
+            if code_blocks.contains(&id) {
+                assert_eq!(v["required"], false, "{id} must be optional");
+            }
+        }
+        for b in blocks.iter().filter(|b| **b != "big_nukes:ash") {
+            assert!(mined.contains(b), "{b} isn't mined with a pickaxe");
+        }
+        let shovel: serde_json::Value = serde_json::from_str(&file("content/data/minecraft/tags/block/mineable/shovel.json")).unwrap();
+        assert_eq!(shovel["values"], serde_json::json!(["big_nukes:ash"]));
+        // Every texture a model names is drawn.
+        for dir in ["block", "item"] {
+            for e in std::fs::read_dir(format!("{}/{base}/models/{dir}", env!("CARGO_MANIFEST_DIR"))).unwrap() {
+                let model: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(e.unwrap().path()).unwrap()).unwrap();
+                for t in model["textures"].as_object().unwrap().values() {
+                    if let Some(t) = t.as_str().and_then(|t| t.strip_prefix("big_nukes:")) {
+                        assert!(exists(&format!("{base}/textures/{t}.png")), "{t}.png");
+                    }
+                }
+            }
+        }
     }
 }

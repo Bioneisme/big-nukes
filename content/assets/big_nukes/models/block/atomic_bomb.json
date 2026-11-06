@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "big_nukes:block/atomic_bomb_side",
+    "down": "big_nukes:block/atomic_bomb_top",
+    "up": "big_nukes:block/atomic_bomb_top",
+    "north": "big_nukes:block/atomic_bomb_front",
+    "south": "big_nukes:block/atomic_bomb_side",
+    "west": "big_nukes:block/atomic_bomb_side",
+    "east": "big_nukes:block/atomic_bomb_side"
+  }
+}

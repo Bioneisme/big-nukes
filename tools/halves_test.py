@@ -33,6 +33,8 @@ def run(version, world, setting):
 
     with open(LIST, "w", encoding="utf-8", newline="\n") as f:
         f.write(setting)
+    # A fresh world: the warning comes once a player, so an old world would stay quiet.
+    shutil.rmtree(os.path.join(GAME, "saves", world), ignore_errors=True)
     r = ctl("launch", "--world", world, "--seed", "12345", "--creative", "--wait", "--offscreen")
     print(" launch:", str(r)[:70])
     ctl("wait", 60)

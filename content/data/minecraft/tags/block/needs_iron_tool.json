@@ -1,0 +1,10 @@
+{
+  "values": [
+    "big_nukes:uranium_ore",
+    "big_nukes:deepslate_uranium_ore",
+    {
+      "id": "big_nukes:centrifuge",
+      "required": false
+    }
+  ]
+}

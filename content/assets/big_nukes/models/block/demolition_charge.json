@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "big_nukes:block/demolition_charge_side",
+    "down": "big_nukes:block/demolition_charge_top",
+    "up": "big_nukes:block/demolition_charge_top",
+    "north": "big_nukes:block/demolition_charge_front",
+    "south": "big_nukes:block/demolition_charge_side",
+    "west": "big_nukes:block/demolition_charge_side",
+    "east": "big_nukes:block/demolition_charge_side"
+  }
+}

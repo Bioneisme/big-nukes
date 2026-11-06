@@ -5,5 +5,21 @@
   "big_nukes.blast.usage": "Использование: /bignukes blast <радиус от %s до %s> [x y z]",
   "big_nukes.blast.dimension": "Big Nukes не умеет взрывать в этом измерении.",
   "subtitles.big_nukes.blast": "Грохот взрыва",
-  "subtitles.big_nukes.wave": "Рёв ударной волны"
+  "subtitles.big_nukes.wave": "Рёв ударной волны",
+  "block.big_nukes.centrifuge": "Центрифуга",
+  "block.big_nukes.demolition_charge": "Подрывной заряд",
+  "block.big_nukes.tactical_warhead": "Тактическая боеголовка",
+  "block.big_nukes.atomic_bomb": "Атомная бомба",
+  "block.big_nukes.assembly_table": "Сборочный стол",
+  "block.big_nukes.uranium_ore": "Урановая руда",
+  "block.big_nukes.deepslate_uranium_ore": "Глубинная урановая руда",
+  "block.big_nukes.ash": "Пепел",
+  "item.big_nukes.raw_uranium": "Рудный уран",
+  "item.big_nukes.enriched_uranium": "Обогащённый уран",
+  "item.big_nukes.nuclear_charge": "Ядерный заряд",
+  "item.big_nukes.bomb_casing": "Корпус бомбы",
+  "item.big_nukes.fuse_detonator": "Фитильный детонатор",
+  "item.big_nukes.keypad_detonator": "Кодовый детонатор",
+  "item.big_nukes.receiver_detonator": "Детонатор-приёмник",
+  "item.big_nukes.remote": "Пульт подрыва"
 }
