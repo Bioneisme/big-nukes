@@ -50,8 +50,11 @@ ITEMS = {
 }
 
 
-# The 3D models the flying displays show, along z with the nose at +z: (from, to, region of the 16x16 sheet).
+# The 3D models the flying displays show, drawn here along z with the nose at +z: (from, to, region of the 16x16
+# sheet). They are written turned round (nose at -z): an item display draws its item half a turn about y, so the
+# nose comes out along the display's look.
 def cube(frm, to, region):
+    frm, to = [frm[0], frm[1], 16 - to[2]], [to[0], to[1], 16 - frm[2]]
     return {"from": frm, "to": to, "faces": {f: {"uv": region, "texture": "#t"} for f in ("north", "south", "east", "west", "up", "down")}}
 
 

@@ -5,7 +5,7 @@
 // by their ids.
 
 use crate::game::{
-    Game,
+    Game, NativeHeightmap,
     big_nukes as rules,
     big_nukes_glue::{self as glue, lock},
 };
@@ -19,7 +19,9 @@ use horizon_client::{
 };
 use horizon_core::geometry::Direction;
 use horizon_mods::content::{Block, Item, Rarity};
+use horizon_world::nbt::{Compound, JavaString, Tag};
 use std::{
+    collections::BTreeMap,
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -156,6 +158,7 @@ pub(in crate::game) fn pad_draw(game: &Game<'_>, batch: &mut HudBatch, origin: [
 /// Only here do the helpers reach the level, the displays and the commands.
 pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     launches(game, dimension);
+    flights(game, dimension);
 }
 
 /// The silo's block entities' ticks.
@@ -190,6 +193,9 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
 /// The world closing: what waits for a tick goes.
 pub(in crate::game) fn forget() {
     lock(&LAUNCHES).clear();
+    lock(&DISPLAYS).clear();
+    lock(&SWEEPS).clear();
+    *lock(&SESSION) = None;
 }
 
 fn text(line: &rules::Reply) -> Text {
@@ -664,3 +670,316 @@ pub(in crate::game) fn console_draw(game: &Game<'_>, data: &[i32], batch: &mut H
 
 /// When the window started drawing, for the caret's blink.
 static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+// ---- the missile's flight -----------------------------------------------------------
+//
+// The rules say where a missile is at each tick of the world's clock; here, at the
+// end of its level's tick, its display is made or moved, its trail drawn and its
+// sounds played, the hatch opened and shut, its target's chunk forced and read, and
+// its blast set off. The displays live in memory only: one missing (a chunk that
+// went, a world opened again) is made anew when the flight next shows.
+
+/// Each flight's displays this session: (flight, part) to the entity.
+static DISPLAYS: Mutex<BTreeMap<(u64, u8), u32>> = Mutex::new(BTreeMap::new());
+/// Each dimension's next sweep for displays no flight owns.
+static SWEEPS: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
+/// This session's mark on its displays: a world opened again finds the last session's and takes them away.
+static SESSION: Mutex<Option<u64>> = Mutex::new(None);
+const MISSILE_PART: u8 = 0;
+/// Ticks between sweeps.
+const SWEEP_EVERY: u64 = 200;
+/// The ticks a display glides between two places: moved every tick, it never stops.
+const GLIDE: i32 = 2;
+/// Vanilla's `/playsound` reaches 16 blocks for each of volume: the launch's roar about 300.
+const ROAR_VOLUME: f32 = 19.0;
+
+/// A command in `dimension`, from a level's tick, where commands run. Its answer isn't an error: false is also
+/// smoke no player is near enough to see.
+fn run_in(game: &mut Game<'_>, dimension: &str, command: &str) {
+    game.native_run_command(&format!("execute in {dimension} run {command}"));
+}
+
+fn particle(id: &str, at: [f64; 3], spread: f64, speed: f64, count: u32) -> String {
+    format!("particle {id} {:.2} {:.2} {:.2} {spread:.2} {spread:.2} {spread:.2} {speed:.2} {count} force", at[0], at[1], at[2])
+}
+
+fn play(game: &mut Game<'_>, dimension: &str, sound: &str, at: [f64; 3], volume: f32, pitch: f32) {
+    run_in(game, dimension, &format!("playsound {sound} block @a {:.1} {:.1} {:.1} {volume:.1} {pitch:.2}", at[0], at[1], at[2]));
+}
+
+fn session_tag() -> String {
+    let session = *lock(&SESSION).get_or_insert_with(|| {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64 % 1_000_000_000)
+    });
+    format!("{}_s{session}", rules::FLIGHT_TAG)
+}
+
+fn flight_tag(id: u64) -> String {
+    format!("{}_{id}", rules::FLIGHT_TAG)
+}
+
+/// An item display of `item`, tagged as the flight's, lit as by day, seen from afar and gliding between its
+/// places. Its model lies along z: `scale` makes it its size and `lift` moves it forward along its look.
+fn display_nbt(item: &str, scale: f32, lift: f32, yaw: f32, pitch: f32, flight: u64) -> Compound {
+    let float = |v: f32| Tag::Float(v.to_bits());
+    let floats = |v: [f32; 4]| Tag::List(v.into_iter().map(float).collect());
+    let three = |v: [f32; 3]| Tag::List(v.into_iter().map(float).collect());
+    let tags = [rules::FLIGHT_TAG.to_owned(), flight_tag(flight), session_tag()];
+    [
+        ("item", Tag::compound([("id", Tag::String(JavaString::from(item))), ("count", Tag::Int(1))])),
+        ("item_display", Tag::String(JavaString::from("none"))),
+        ("view_range", float(12.0)),
+        ("teleport_duration", Tag::Int(GLIDE)),
+        ("brightness", Tag::compound([("sky", Tag::Int(15)), ("block", Tag::Int(15))])),
+        ("Tags", Tag::List(tags.iter().map(|t| Tag::String(JavaString::from(t.as_str()))).collect())),
+        ("Rotation", Tag::List(vec![float(yaw), float(pitch)])),
+        (
+            "transformation",
+            Tag::compound([
+                ("left_rotation", floats([0.0, 0.0, 0.0, 1.0])),
+                ("right_rotation", floats([0.0, 0.0, 0.0, 1.0])),
+                ("translation", three([0.0, 0.0, lift])),
+                ("scale", three([scale; 3])),
+            ]),
+        ),
+    ]
+    .into_iter()
+    .map(|(k, v)| (JavaString::from(k), v))
+    .collect()
+}
+
+/// A flight's display at `pos`, made when it is missing.
+fn show(game: &mut Game<'_>, dimension: &str, key: (u64, u8), item: &str, scale: f32, lift: f32, pos: [f64; 3], yaw: f32, pitch: f32) {
+    let known = lock(&DISPLAYS).get(&key).copied();
+    if let Some(id) = known {
+        if game.native_move_entity(dimension, id, pos, yaw, pitch) {
+            return;
+        }
+        lock(&DISPLAYS).remove(&key);
+    }
+    // None in a chunk that isn't loaded: it is tried again the next tick.
+    if let Some(id) = game.native_summon(dimension, "minecraft:item_display", pos, display_nbt(item, scale, lift, yaw, pitch, key.0)) {
+        game.native_move_entity(dimension, id, pos, yaw, pitch);
+        lock(&DISPLAYS).insert(key, id);
+    }
+}
+
+fn hide(game: &mut Game<'_>, dimension: &str, key: (u64, u8)) {
+    let id = lock(&DISPLAYS).remove(&key);
+    if let Some(id) = id {
+        game.native_remove_entity(dimension, id);
+    }
+}
+
+/// The displays no flight owns: on a dimension's first tick this session every tagged one (a closed world's),
+/// then now and again those of another session or of a flight that is over.
+fn sweep(game: &mut Game<'_>, dimension: &str, now: u64, live: &[u64]) {
+    let first = {
+        let mut sweeps = lock(&SWEEPS);
+        match sweeps.get(dimension) {
+            Some(next) if now < *next => return,
+            seen => {
+                let first = seen.is_none();
+                sweeps.insert(dimension.to_owned(), now + SWEEP_EVERY);
+                first
+            }
+        }
+    };
+    let tag = rules::FLIGHT_TAG;
+    if first {
+        run_in(game, dimension, &format!("kill @e[type=minecraft:item_display,tag={tag}]"));
+        return;
+    }
+    run_in(game, dimension, &format!("kill @e[type=minecraft:item_display,tag={tag},tag=!{}]", session_tag()));
+    let keep: String = live.iter().map(|id| format!(",tag=!{}", flight_tag(*id))).collect();
+    run_in(game, dimension, &format!("kill @e[type=minecraft:item_display,tag={tag}{keep}]"));
+}
+
+/// What a tick of the flights changes in the world's record, made with the state held once.
+enum Change {
+    Surface(u64, i32),
+    HatchShut(u64),
+    Force(u64, [i32; 2]),
+    Impact(u64, [i32; 3], rules::BombKind),
+}
+
+fn flights(game: &mut Game<'_>, dimension: &str) {
+    let (now, mine, live) = {
+        let Some(guard) = glue::state(game) else { return };
+        let st = guard.as_ref().expect("opened");
+        let mine: Vec<rules::Flight> = st.saved.flights.iter().filter(|f| f.dimension == dimension).cloned().collect();
+        let live: Vec<u64> = st.saved.flights.iter().chain(&st.saved.beacons).map(|f| f.id).collect();
+        (st.saved.tick, mine, live)
+    };
+    sweep(game, dimension, now, &live);
+    let mut changes = Vec::new();
+    for f in &mine {
+        missile(game, dimension, f, now, &mut changes);
+    }
+    settle(game, dimension, changes);
+}
+
+/// The world's record takes a tick's changes; the blasts go off, and the chunks no flight keeps are let go.
+fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
+    let mut fired = Vec::new();
+    for c in &changes {
+        if let Change::Impact(id, at, kind) = *c {
+            // The blast's own record and news, with the state let go.
+            let center = match glue::start_blast(game, dimension, at, kind.radius()) {
+                Ok(blast) => {
+                    log::info!("[big_nukes] flight {id} went off at {at:?} in {dimension}: blast {blast}");
+                    Some(at)
+                }
+                Err(why) => {
+                    log::info!("[big_nukes] flight {id} at {at:?} in {dimension} didn't go off: {why:?}");
+                    glue::tell_near(game, dimension, at, &glue::refused(why));
+                    None
+                }
+            };
+            fired.push((id, center));
+        }
+    }
+    let (force, free) = {
+        let Some(mut guard) = glue::state(game) else { return };
+        let st = guard.as_mut().expect("opened");
+        let mut force = Vec::new();
+        for c in changes {
+            match c {
+                Change::Surface(id, y) => {
+                    if let Some(f) = st.saved.flights.iter_mut().chain(&mut st.saved.beacons).find(|f| f.id == id) {
+                        f.surface = Some(y);
+                    }
+                }
+                Change::HatchShut(id) => {
+                    if let Some(f) = st.saved.flights.iter_mut().find(|f| f.id == id) {
+                        f.hatch = None;
+                    }
+                }
+                Change::Force(id, chunk) => {
+                    if st.saved.force(id, dimension, chunk) {
+                        force.push(chunk);
+                    }
+                }
+                Change::Impact(..) => {}
+            }
+        }
+        for (id, center) in &fired {
+            st.saved.flights.retain(|f| f.id != *id);
+            st.saved.beacons.retain(|f| f.id != *id);
+            st.saved.landed(*id, *center);
+        }
+        let free = st.saved.unforce();
+        glue::save(st);
+        (force, free)
+    };
+    for chunk in force {
+        run_in(game, dimension, &format!("forceload add {} {}", chunk[0] * 16, chunk[1] * 16));
+    }
+    for (d, chunk) in free {
+        run_in(game, &d, &format!("forceload remove {} {}", chunk[0] * 16, chunk[1] * 16));
+    }
+    for (id, _) in fired {
+        for part in 0..3 {
+            hide(game, dimension, (id, part));
+        }
+        run_in(game, dimension, &format!("kill @e[type=minecraft:item_display,tag={}]", flight_tag(id)));
+    }
+}
+
+/// The ground's height at a column of a loaded chunk of the ticking level: one over its highest block.
+fn ground_at(game: &Game<'_>, dimension: &str, x: i32, z: i32) -> Option<i32> {
+    game.native_surface_heights(dimension, &[(x, z)], NativeHeightmap::WorldSurface).ok()?.first().copied().flatten()
+}
+
+/// A missile's tick, by its leg.
+fn missile(game: &mut Game<'_>, dimension: &str, f: &rules::Flight, now: u64, changes: &mut Vec<Change>) {
+    let pad = [f64::from(f.from[0]) + 0.5, f64::from(f.from[1]), f64::from(f.from[2]) + 0.5];
+    hatch(game, dimension, f, now, changes);
+    let key = (f.id, MISSILE_PART);
+    let leg = f.leg(now);
+    if now >= f.liftoff() {
+        // The target is forced from the liftoff, so its chunk is in by the time it is wanted.
+        changes.push(Change::Force(f.id, f.chunk_to()));
+    }
+    match leg {
+        rules::Leg::Countdown { left } => {
+            if left % rules::SECOND == 0 {
+                let pitch = 1.0 + (rules::LAUNCH_COUNTDOWN.saturating_sub(left) as f32) / 200.0;
+                play(game, dimension, "minecraft:block.note_block.pling", pad, 3.0, pitch);
+            }
+            if left <= rules::SECOND && left % 2 == 0 {
+                run_in(game, dimension, &particle("minecraft:large_smoke", [pad[0], pad[1] + 0.5, pad[2]], 0.6, 0.05, 8));
+            }
+        }
+        rules::Leg::Ascent { pos, yaw, pitch } => {
+            show(game, dimension, key, rules::MISSILE_MODEL, rules::MISSILE_SCALE, rules::MISSILE_LIFT, pos, yaw, pitch);
+            let t = now - f.liftoff();
+            if t == 0 {
+                play(game, dimension, rules::MISSILE_LAUNCH, pad, ROAR_VOLUME, 1.0);
+            }
+            if t < rules::SECOND {
+                // Smoke boils out of the shaft as it goes.
+                run_in(game, dimension, &particle("minecraft:campfire_signal_smoke", [pad[0], pad[1] + 1.0, pad[2]], 0.8, 0.08, 6));
+            }
+            if t % 2 == 0 {
+                trail(game, dimension, pos, true);
+            }
+        }
+        rules::Leg::Cruise => {
+            hide(game, dimension, key);
+            if f.surface.is_none() {
+                if let Some(y) = ground_at(game, dimension, f.to[0], f.to[1]) {
+                    changes.push(Change::Surface(f.id, y));
+                } else if f.surface_overdue(now) {
+                    log::info!("[big_nukes] flight {}: the target's ground never loaded; it lands at {}", f.id, rules::SURFACE_GUESS);
+                    changes.push(Change::Surface(f.id, rules::SURFACE_GUESS));
+                }
+            }
+        }
+        rules::Leg::Descent { pos, yaw, pitch } => {
+            show(game, dimension, key, rules::MISSILE_MODEL, rules::MISSILE_SCALE, rules::MISSILE_LIFT, pos, yaw, pitch);
+            if now % 2 == 0 {
+                trail(game, dimension, pos, false);
+            }
+            if now + 40 == f.lands_at() {
+                // Its fall's whistle, from where it will land.
+                let target = [f64::from(f.to[0]) + 0.5, pos[1].min(f64::from(f.surface.unwrap_or(64)) + 20.0), f64::from(f.to[1]) + 0.5];
+                play(game, dimension, "minecraft:entity.phantom.swoop", target, 12.0, 0.5);
+            }
+        }
+        rules::Leg::Impact { at } => {
+            hide(game, dimension, key);
+            changes.push(Change::Impact(f.id, at, f.kind));
+        }
+    }
+}
+
+/// The smoke and fire a missile leaves behind its tail.
+fn trail(game: &mut Game<'_>, dimension: &str, tail: [f64; 3], climbing: bool) {
+    let (smoke, fire) = if climbing { (5, 6) } else { (3, 3) };
+    run_in(game, dimension, &particle("minecraft:campfire_signal_smoke", tail, 0.35, 0.02, smoke));
+    run_in(game, dimension, &particle("minecraft:flame", tail, 0.2, 0.04, fire));
+}
+
+/// The hatch: taken away while it should stand open, put back after; once back, the flight forgets it.
+fn hatch(game: &mut Game<'_>, dimension: &str, f: &rules::Flight, now: u64, changes: &mut Vec<Change>) {
+    let Some(y) = f.hatch else { return };
+    let at = [f.from[0], y, f.from[2]];
+    let registry = &game.pack.assets.registry;
+    let (Some(air), Some(shut)) = (registry.default_state("minecraft:air"), registry.default_state(rules::SILO_HATCH)) else {
+        return;
+    };
+    let here = game.native_block(at);
+    if f.hatch_open(now) {
+        if here == rules::SILO_HATCH {
+            game.native_set_block(dimension, at, air, 3);
+            play(game, dimension, "minecraft:block.iron_trapdoor.open", glue::middle(at), 2.0, 0.6);
+        }
+    } else if now > f.liftoff() {
+        if here == "minecraft:air" {
+            game.native_set_block(dimension, at, shut, 3);
+            play(game, dimension, "minecraft:block.iron_trapdoor.close", glue::middle(at), 2.0, 0.6);
+        }
+        changes.push(Change::HatchShut(f.id));
+    }
+}

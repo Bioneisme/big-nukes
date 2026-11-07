@@ -1137,6 +1137,9 @@ pub struct Saved {
     /// The charged strike beacons, their bombers not yet come and gone.
     #[serde(default)]
     pub beacons: Vec<Flight>,
+    /// The chunks the flights keep loaded with `/forceload`.
+    #[serde(default)]
+    pub forced: Vec<Forced>,
 }
 
 fn largest_radius() -> u32 {
@@ -1157,6 +1160,7 @@ impl Default for Saved {
             flights: Vec::new(),
             consoles: BTreeMap::new(),
             beacons: Vec::new(),
+            forced: Vec::new(),
         }
     }
 }
@@ -1402,19 +1406,15 @@ pub const CONSOLE_MENU: &str = "big_nukes:console";
 pub const MISSILE_MODEL: &str = "big_nukes:missile_model";
 pub const BOMBER_MODEL: &str = "big_nukes:bomber_model";
 pub const MODEL_ITEMS: [&str; 2] = [MISSILE_MODEL, BOMBER_MODEL];
-#[allow(dead_code)] // plan 7: until the glue uses it
 pub const MISSILE_SCALE: f32 = 2.0;
-#[allow(dead_code)] // plan 7: until the glue uses it
 pub const MISSILE_LIFT: f32 = 3.0;
 #[allow(dead_code)] // plan 7: until the glue uses it
 pub const BOMBER_SCALE: f32 = 4.0;
 /// The launch's roar and the bomber's drone: the assets half's sounds.
-#[allow(dead_code)] // plan 7: until the glue uses it
 pub const MISSILE_LAUNCH: &str = "big_nukes:missile_launch";
 #[allow(dead_code)] // plan 7: until the glue uses it
 pub const BOMBER_FLYBY: &str = "big_nukes:bomber_flyby";
 /// The tag of every display a flight shows, so the ones a closed world left are found.
-#[allow(dead_code)] // plan 7: until the glue uses it
 pub const FLIGHT_TAG: &str = "big_nukes_flight";
 /// The farthest place from the world's middle, as `/summon` and `/forceload` take it.
 const WORLD_EDGE: i64 = 29_999_984;
@@ -1462,7 +1462,6 @@ fn yaw_of(dx: f64, dz: f64) -> f32 {
     (-dx).atan2(dz).to_degrees() as f32
 }
 
-#[allow(dead_code)] // plan 7: until the glue uses it
 impl Flight {
     /// The tick the missile leaves its pad.
     pub fn liftoff(&self) -> u64 {
@@ -2065,6 +2064,90 @@ impl Saved {
 
     pub fn pad_busy(&self, dimension: &str, from: [i32; 3], now: u64) -> bool {
         self.launching(dimension, from, now).is_some()
+    }
+}
+
+// ---- the target's chunk ------------------------------------------------------------
+//
+// A missile's target is kept loaded with `/forceload` from its liftoff, so its
+// ground can be read and its blast's center worked; the world keeps the forced
+// chunks (`Saved.forced`), and each is let go once its wave has changed its
+// center's chunk, or at once for a flight that never went off.
+
+/// Ticks past its descent a missile waits for its target's ground before it lands on a guess.
+pub const SURFACE_WAIT: u64 = 200;
+/// The guess: about the sea's height.
+pub const SURFACE_GUESS: i32 = 64;
+
+impl Flight {
+    /// Whether the target's ground is still unread long after the missile should have come down.
+    pub fn surface_overdue(&self, now: u64) -> bool {
+        self.surface.is_none() && now >= self.descends_at() + SURFACE_WAIT
+    }
+
+    pub fn chunk_to(&self) -> [i32; 2] {
+        chunk_of(self.to[0], self.to[1])
+    }
+}
+
+/// A chunk a flight keeps loaded, and the blast's center once it went off.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Forced {
+    pub id: u64,
+    pub dimension: String,
+    pub chunk: [i32; 2],
+    #[serde(default)]
+    pub landed: bool,
+    #[serde(default)]
+    pub center: Option<[i32; 3]>,
+}
+
+impl Waves {
+    /// Whether the wave of the blast at `center` has changed its center's chunk; true when there is none.
+    pub fn center_worked(&self, dimension: &str, center: [i32; 3]) -> bool {
+        let chunk = chunk_of(center[0], center[2]);
+        self.waves
+            .iter()
+            .filter(|w| w.blast.dimension == dimension && w.blast.center == center)
+            .all(|w| w.reached > 0 && !w.ready.contains(&chunk) && !w.deferred.contains(&chunk))
+    }
+}
+
+impl Saved {
+    /// Flight `id` keeps `chunk` loaded: true when no flight did yet, so the glue forces it.
+    pub fn force(&mut self, id: u64, dimension: &str, chunk: [i32; 2]) -> bool {
+        if self.forced.iter().any(|f| f.id == id) {
+            return false;
+        }
+        let new = !self.forced.iter().any(|f| f.dimension == dimension && f.chunk == chunk);
+        self.forced.push(Forced { id, dimension: dimension.to_owned(), chunk, landed: false, center: None });
+        new
+    }
+
+    /// Flight `id` went off at `center`, or never will.
+    pub fn landed(&mut self, id: u64, center: Option<[i32; 3]>) {
+        if let Some(f) = self.forced.iter_mut().find(|f| f.id == id) {
+            f.landed = true;
+            f.center = center;
+        }
+    }
+
+    /// The chunks to let go now: their flights' waves have changed their centers' chunks. A chunk another flight
+    /// still keeps stays forced.
+    pub fn unforce(&mut self) -> Vec<(String, [i32; 2])> {
+        let waves = &self.waves;
+        let (done, kept): (Vec<Forced>, Vec<Forced>) = std::mem::take(&mut self.forced)
+            .into_iter()
+            .partition(|f| f.landed && f.center.is_none_or(|c| waves.center_worked(&f.dimension, c)));
+        self.forced = kept;
+        let mut free: Vec<(String, [i32; 2])> = Vec::new();
+        for f in done {
+            let held = self.forced.iter().any(|k| k.dimension == f.dimension && k.chunk == f.chunk);
+            if !held && !free.iter().any(|(d, c)| *d == f.dimension && *c == f.chunk) {
+                free.push((f.dimension, f.chunk));
+            }
+        }
+        free
     }
 }
 
@@ -5029,15 +5112,19 @@ mod flight_tests {
                     assert_eq!(face["texture"], "#t", "{id}");
                 }
             }
-            // Along z, nose forward, as long and wide as the plan has it at the display's scale.
+            // Along z, as long and wide as the plan has it at the display's scale.
             let blocks = |i: usize| (hi[i] - lo[i]) * f64::from(scale) / 16.0;
             assert!((blocks(2) - long).abs() <= 0.5, "{id}: {} long", blocks(2));
             assert!((blocks(0) - wide).abs() <= 0.5 || id == MISSILE_MODEL && blocks(0) <= 2.0, "{id}: {} wide", blocks(0));
             let t = model["textures"]["t"].as_str().unwrap().strip_prefix("big_nukes:").unwrap();
             assert!(std::path::Path::new(&format!("{}/{base}/textures/{t}.png", env!("CARGO_MANIFEST_DIR"))).exists(), "{t}");
             if id == MISSILE_MODEL {
-                // Its tail at the display's place, shifted forward by the transformation's translation.
-                assert!(((lo[2] - 8.0) / 16.0 * f64::from(scale) + f64::from(MISSILE_LIFT)).abs() < 0.01, "{}", lo[2]);
+                // The display draws its item half a turn about y: the nose, at -z in the model, comes out along its
+                // look, and the tail, at +z, at its place once the translation moves it forward.
+                assert!(((8.0 - hi[2]) / 16.0 * f64::from(scale) + f64::from(MISSILE_LIFT)).abs() < 0.01, "{}", hi[2]);
+                let nose = elements.iter().map(|e| e["from"][2].as_f64().unwrap()).fold(f64::MAX, f64::min);
+                let tip = elements.iter().find(|e| e["from"][2].as_f64() == Some(nose)).unwrap();
+                assert_eq!(tip["faces"]["north"]["uv"], serde_json::json!([8, 0, 16, 8]), "the red tip leads");
             }
         }
     }
@@ -5178,5 +5265,53 @@ mod flight_tests {
         assert!(!saved.pad_busy(OVERWORLD, [0, 65, 0], 500 + LAUNCH_COUNTDOWN + ASCENT_TICKS));
         assert!(!saved.pad_busy("minecraft:the_nether", [0, 65, 0], 500));
         assert_eq!(saved.launching(OVERWORLD, [0, 65, 0], 510).map(|f| f.id), Some(f.id));
+    }
+
+    // ---- the flight in the world (Task 4) ---------------------------------------------------
+
+    #[test]
+    fn a_target_stays_loaded_until_its_wave_works_its_center() {
+        let mut saved = Saved::default();
+        assert!(saved.force(1, OVERWORLD, [62, 0]), "asked for once");
+        assert!(!saved.force(1, OVERWORLD, [62, 0]));
+        assert!(saved.unforce().is_empty(), "still on its way");
+        saved.fire(OVERWORLD, [1000, 70, 0], 250).unwrap();
+        saved.landed(1, Some([1000, 70, 0]));
+        assert!(saved.unforce().is_empty(), "the front hasn't reached the center's chunk");
+        saved.waves.advance(OVERWORLD, saved.tick, &|_| true);
+        assert!(saved.unforce().is_empty(), "the center's chunk waits for its turn");
+        let (_, chunk) = saved.waves.next_job(OVERWORLD).unwrap();
+        assert_eq!(chunk, [62, 0]);
+        assert_eq!(saved.unforce(), vec![(OVERWORLD.to_owned(), [62, 0])]);
+        assert!(saved.forced.is_empty() && saved.unforce().is_empty());
+        // A center deferred for its load keeps the chunk forced.
+        saved.force(4, OVERWORLD, [-10, -10]);
+        saved.fire(OVERWORLD, [-155, 64, -155], 50).unwrap();
+        saved.landed(4, Some([-155, 64, -155]));
+        saved.waves.advance(OVERWORLD, saved.tick, &|_| false);
+        assert!(saved.unforce().is_empty());
+        // Two flights on one chunk: it goes with the last of them, and a flight that never went off lets go at once.
+        saved.force(2, OVERWORLD, [5, 5]);
+        saved.force(3, OVERWORLD, [5, 5]);
+        saved.landed(2, None);
+        assert!(saved.unforce().is_empty());
+        assert_eq!(saved.forced.iter().filter(|f| f.chunk == [5, 5]).count(), 1);
+        saved.landed(3, None);
+        assert_eq!(saved.unforce(), vec![(OVERWORLD.to_owned(), [5, 5])]);
+        // Kept with the world.
+        let back: Saved = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(back.forced, saved.forced);
+        assert_eq!(saved.forced.len(), 1);
+    }
+
+    #[test]
+    fn a_flight_whose_target_never_loads_lands_on_a_guess() {
+        let f = Flight { surface: None, ..missile() };
+        assert!(!f.surface_overdue(f.descends_at() + SURFACE_WAIT - 1));
+        assert!(f.surface_overdue(f.descends_at() + SURFACE_WAIT));
+        let guessed = Flight { surface: Some(SURFACE_GUESS), ..f.clone() };
+        assert_eq!(guessed.leg(guessed.descends_at() + SURFACE_WAIT), Leg::Impact { at: [1000, SURFACE_GUESS, 0] });
+        // The chunk the target is in.
+        assert_eq!(f.chunk_to(), [62, 0]);
     }
 }
