@@ -1835,11 +1835,11 @@ fn irradiate_mobs(game: &mut Game<'_>, dimension: &str) {
             return;
         }
         *next = now + rules::SECOND;
-        let zones = &st.saved.zones;
+        let (zones, cleans) = (&st.saved.zones, &st.saved.cleans);
         let mut in_zone: Vec<(u32, u32)> = game
             .native_mobs(dimension)
             .iter()
-            .filter_map(|m| rules::mob_harm(rules::background(zones, dimension, m.pos, now)).map(|n| (m.id, n)))
+            .filter_map(|m| rules::mob_harm(rules::background(zones, cleans, dimension, m.pos, now)).map(|n| (m.id, n)))
             .collect();
         if in_zone.is_empty() {
             return;

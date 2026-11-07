@@ -211,6 +211,13 @@ pub fn components(id: &str) -> BTreeMap<String, serde_json::Value> {
                 "on_consume_effects": [{"type": ANTI_RADIATION, "amount": ANTI_RAD_DOSE}]}),
         );
         c.insert("minecraft:use_remainder".into(), json!({"id": "minecraft:glass_bottle", "count": 1}));
+    } else if id == IODINE {
+        // Eaten as fast as dried kelp, hungry or not.
+        c.insert(
+            "minecraft:consumable".into(),
+            json!({"consume_seconds": 0.8, "animation": "eat", "sound": "minecraft:entity.generic.eat",
+                "on_consume_effects": [{"type": IODINE_EFFECT}]}),
+        );
     } else if id == GUIDE {
         // A book goes on the enchanting table; the guide stays the guide.
         c.insert("!minecraft:enchantable".into(), json!({}));
@@ -1317,6 +1324,9 @@ pub struct Saved {
     /// The chunks the flights keep loaded with `/forceload`.
     #[serde(default)]
     pub forced: Vec<Forced>,
+    /// The circles the decontaminators cleaned, theirs still where they were broken.
+    #[serde(default)]
+    pub cleans: Vec<Clean>,
 }
 
 fn largest_radius() -> u32 {
@@ -1338,6 +1348,7 @@ impl Default for Saved {
             consoles: BTreeMap::new(),
             beacons: Vec::new(),
             forced: Vec::new(),
+            cleans: Vec::new(),
         }
     }
 }
@@ -2575,9 +2586,17 @@ pub fn zone_of(blast: &Blast, now: u64) -> Option<Zone> {
     })
 }
 
-/// The background at `pos` in `dimension`: every zone's share added up.
-pub fn background(zones: &[Zone], dimension: &str, pos: [f64; 3], now: u64) -> f64 {
-    zones.iter().filter(|z| z.dimension == dimension).map(|z| z.at(pos, now)).sum()
+/// The background at `pos` in `dimension`: every zone's share added up, each less what the decontaminators'
+/// circles (`cleans`) cleaned of it.
+pub fn background(zones: &[Zone], cleans: &[Clean], dimension: &str, pos: [f64; 3], now: u64) -> f64 {
+    zones
+        .iter()
+        .filter(|z| z.dimension == dimension)
+        .map(|z| {
+            let bg = z.at(pos, now);
+            if bg > 0.0 { bg * clean_factor(cleans, z, dimension, pos) } else { 0.0 }
+        })
+        .sum()
 }
 
 /// Ticks in a second: a dose is reckoned once a second.
@@ -2683,7 +2702,7 @@ impl Saved {
             None if now % SECOND != 0 => return None,
             _ => {}
         }
-        let bg = background(&self.zones, dimension, pos, now);
+        let bg = background(&self.zones, &self.cleans, dimension, pos, now);
         let dose = self.doses.entry(key.clone()).or_default();
         dose.rad = dose_step(dose.rad, bg, protection);
         dose.stepped = now;
@@ -2742,6 +2761,7 @@ impl Saved {
         zones.truncate(RAD_ZONES);
         Rad {
             zones: zones.into_iter().cloned().collect(),
+            cleans: self.cleans_near(dimension, pos),
             now,
             dose: self.doses.get(&dose_key(uuid)).map_or(0.0, |d| d.rad),
         }
@@ -2767,6 +2787,8 @@ pub const GEIGER_CLICK: &str = "big_nukes:geiger.click";
 #[serde(default)]
 pub struct Rad {
     pub zones: Vec<Zone>,
+    /// The decontaminators' circles of the dimension nearest to the player, at most `RAD_ZONES`.
+    pub cleans: Vec<Clean>,
     pub now: u64,
     pub dose: f64,
 }
@@ -2790,7 +2812,7 @@ impl Told {
     /// `clock`: the mod's clock counts on from the message. A clock behind the
     /// message's counts as no time passed.
     pub fn background(&self, dimension: &str, pos: [f64; 3], clock: u64) -> f64 {
-        background(&self.rad.zones, dimension, pos, self.rad.now + clock.saturating_sub(self.at))
+        background(&self.rad.zones, &self.rad.cleans, dimension, pos, self.rad.now + clock.saturating_sub(self.at))
     }
 }
 
@@ -2875,6 +2897,265 @@ pub fn tint_fog(strength: f64, color: [f32; 4], start: f32, end: f32) -> Option<
     let start = start + (start.min(0.0) - start) * s;
     let end = end + (end.min(FOG_END) - end) * s;
     (end > start).then_some((tinted, start, end))
+}
+
+// ---- iodine and the decontaminator (plan 9) -------------------------------------
+//
+// Iodine tablets give an effect of the mod's own: while it is on, the dose takes half
+// of what the suit lets in. The decontaminator burns fuel and grows a circle round it,
+// kept in `Saved.cleans`: inside it the zones older than the circle give no background,
+// and its passes turn the ash on the open ground back to grass.
+
+pub const IODINE: &str = "big_nukes:iodine_tablets";
+/// The tablets' consume effect, which `native_consume_effect` hears, and the mob effect
+/// it gives: the assets half's `horizon/mob_effect/iodine.json`.
+pub const IODINE_EFFECT: &str = "big_nukes:iodine";
+/// How long a tablet's effect lasts: another tablet makes it this long again, never longer.
+pub const IODINE_TICKS: u64 = 6000;
+/// The share of the background the effect keeps out.
+pub const IODINE_PROTECTION: f64 = 0.5;
+
+/// The share of the background kept out by a suit that keeps out `suit`, with the iodine's
+/// effect on or not: each lets in its share of what the other lets in.
+pub fn shielded(suit: f64, iodine: bool) -> f64 {
+    let suit = suit.clamp(0.0, 1.0);
+    if iodine { 1.0 - (1.0 - suit) * (1.0 - IODINE_PROTECTION) } else { suit }
+}
+
+/// The command a tablet runs: the effect on `target` for `IODINE_TICKS`, without its
+/// particles. Without the assets half the effect isn't there and the command fails.
+pub fn iodine_command(target: &str) -> String {
+    format!("effect give {target} {IODINE_EFFECT} {} 0 true", IODINE_TICKS / SECOND)
+}
+
+pub const DECONTAMINATOR: &str = "big_nukes:decontaminator";
+/// Its one slot, the fuel's. Its menu type is
+/// content/data/big_nukes/horizon/menu/decontaminator.json, named as the block.
+pub const DECON_FUEL_SLOT: usize = 0;
+pub const DECON_SLOTS: usize = 1;
+/// The circle's largest radius, in blocks.
+pub const CLEAN_RADIUS: u32 = 48;
+/// The ticks of burning that grow the circle a block.
+pub const CLEAN_GROW_TICKS: u32 = 40;
+/// It burns its fuel this many times as fast as a furnace.
+pub const CLEAN_FUEL_RATE: u32 = 4;
+/// Past the circle the background comes back over this many blocks.
+pub const CLEAN_EDGE: f64 = 8.0;
+/// The columns a pass looks at, once a second.
+pub const CLEAN_BLOCKS_PER_PASS: usize = 64;
+/// The screen's radius bar is this wide, in GUI pixels.
+pub const RADIUS_BAR: i32 = 108;
+
+/// A decontaminator's circle: the columns within `radius` of `center` (the block's
+/// place) are cleaned of every zone no newer than `start`, from bedrock to the sky.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Clean {
+    pub dimension: String,
+    pub center: [i32; 3],
+    pub radius: u32,
+    pub start: u64,
+}
+
+impl Clean {
+    /// How far `pos` is from the middle of the center's column, across only.
+    fn across(&self, pos: [f64; 3]) -> f64 {
+        (pos[0] - (self.center[0] as f64 + 0.5)).hypot(pos[2] - (self.center[2] as f64 + 0.5))
+    }
+
+    /// The share of a zone's background it leaves at `pos`: none within its radius, all
+    /// `CLEAN_EDGE` blocks past it, eased between. A circle of radius 0 cleans nothing.
+    fn left(&self, pos: [f64; 3]) -> f64 {
+        if self.radius == 0 {
+            return 1.0;
+        }
+        let t = ((self.across(pos) - self.radius as f64) / CLEAN_EDGE).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    /// Whether `zone` reaches into the circle or its edge.
+    fn meets(&self, zone: &Zone) -> bool {
+        let centers = f64::from(zone.center[0] - self.center[0]).hypot(f64::from(zone.center[2] - self.center[2]));
+        zone.dimension == self.dimension && centers < zone.radius + self.radius as f64 + CLEAN_EDGE
+    }
+}
+
+/// The share of `zone`'s background left at `pos` in `dimension` by the circles: the
+/// lowest any one leaves, so overlapping circles clean their union. A circle cleans only
+/// the zones no newer than itself: a later blast's zone is whole over it.
+pub fn clean_factor(cleans: &[Clean], zone: &Zone, dimension: &str, pos: [f64; 3]) -> f64 {
+    cleans
+        .iter()
+        .filter(|c| c.dimension == dimension && c.dimension == zone.dimension && zone.start <= c.start)
+        .map(|c| c.left(pos))
+        .fold(1.0, f64::min)
+}
+
+impl Saved {
+    /// The decontaminator at `center` has cleaned out to `radius`: its circle is made or
+    /// grown, and the radius the circle has is answered. One placed where a circle is takes
+    /// that circle on. A zone newer than the circle that reaches it starts a new circle from
+    /// nothing (0 is answered): the old one still cleans the zones older than it, and goes
+    /// once the new one is as large. Nothing is kept of a circle of radius 0.
+    pub fn cleaned(&mut self, dimension: &str, center: [i32; 3], radius: u32) -> u32 {
+        let now = self.tick;
+        let here = |c: &Clean| c.dimension == dimension && c.center == center;
+        let Some(i) = self.cleans.iter().rposition(here) else {
+            if radius > 0 {
+                self.cleans.push(Clean { dimension: dimension.to_owned(), center, radius, start: now });
+            }
+            return radius;
+        };
+        if self.zones.iter().any(|z| z.start > self.cleans[i].start && self.cleans[i].meets(z)) {
+            self.cleans.push(Clean { dimension: dimension.to_owned(), center, radius: 0, start: now });
+            return 0;
+        }
+        let c = &mut self.cleans[i];
+        c.radius = c.radius.max(radius);
+        let (radius, start) = (c.radius, c.start);
+        self.cleans.retain(|c| !(here(c) && c.start < start && c.radius <= radius));
+        radius
+    }
+
+    /// The circles of `dimension` nearest to `pos`, at most `RAD_ZONES`, for the window.
+    fn cleans_near(&self, dimension: &str, pos: [f64; 3]) -> Vec<Clean> {
+        let outside = |c: &Clean| (c.across(pos) - c.radius as f64).max(0.0);
+        let mut near: Vec<&Clean> = self.cleans.iter().filter(|c| c.dimension == dimension && c.radius > 0).collect();
+        near.sort_by(|a, b| outside(a).total_cmp(&outside(b)));
+        near.truncate(RAD_ZONES);
+        near.into_iter().cloned().collect()
+    }
+}
+
+/// A decontaminator's state, kept in its block entity: the ticks left of the fuel it
+/// burns and that fuel's whole burn, the ticks toward the next block, its circle's
+/// radius, and how far its passes have gone along `spiral(0, radius)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Decontaminator {
+    pub burn: u32,
+    pub burn_max: u32,
+    pub grow: u32,
+    pub radius: u32,
+    pub next_column: u32,
+}
+
+impl Decontaminator {
+    /// One tick. `fuel` is the burn ticks of the fuel in its slot, in a furnace (none, or 0,
+    /// when nothing there burns). While it burns the circle grows a block each
+    /// `CLEAN_GROW_TICKS` (`Step::made`); a full circle burns nothing more. Without fuel it
+    /// stands, keeping what it cleaned.
+    pub fn step(&mut self, fuel: Option<u32>) -> Step {
+        if self.radius >= CLEAN_RADIUS {
+            return Step::IDLE;
+        }
+        let mut step = Step::IDLE;
+        if self.burn == 0 {
+            match fuel {
+                Some(ticks) if ticks > 0 => {
+                    self.burn = (ticks / CLEAN_FUEL_RATE).max(1);
+                    self.burn_max = self.burn;
+                    step.took_fuel = true;
+                }
+                _ => return Step::IDLE,
+            }
+        }
+        self.burn -= 1;
+        self.grow += 1;
+        if self.grow >= CLEAN_GROW_TICKS {
+            self.grow = 0;
+            self.radius += 1;
+            step.made = true;
+        }
+        step
+    }
+
+    /// The circle the world keeps for it (`Saved::cleaned`): a larger one is taken on, a
+    /// smaller one is a new start, and its passes start again from the center.
+    pub fn keep_circle(&mut self, radius: u32) {
+        if radius < self.radius {
+            self.grow = 0;
+            self.next_column = 0;
+        }
+        self.radius = radius;
+    }
+
+    /// The next pass's columns, as offsets from the center: the next
+    /// `CLEAN_BLOCKS_PER_PASS` of its circle, none once it has been through it all until
+    /// it grows.
+    pub fn regrow_pass(&mut self) -> Vec<[i32; 2]> {
+        let pass: Vec<[i32; 2]> = spiral(0, self.radius).skip(self.next_column as usize).take(CLEAN_BLOCKS_PER_PASS).collect();
+        self.next_column += pass.len() as u32;
+        pass
+    }
+
+    /// The menu's data slots: `[burn, burn_max, radius, the background at the block in
+    /// tenths of a rad a second]`, within the 16 bits a data slot has on the wire.
+    pub fn data(&self, background: f64) -> [i32; 4] {
+        let short = |v: u32| v.min(i16::MAX as u32) as i32;
+        let tenths = (background.max(0.0) * 10.0).round().min(f64::from(i16::MAX)) as i32;
+        [short(self.burn), short(self.burn_max), short(self.radius), tenths]
+    }
+}
+
+/// The filled part of the screen's radius bar, from the left: at least 1 once it has grown.
+pub fn radius_bar(radius: i32) -> i32 {
+    if radius <= 0 {
+        return 0;
+    }
+    (radius.min(CLEAN_RADIUS as i32) * RADIUS_BAR / CLEAN_RADIUS as i32).max(1)
+}
+
+/// The columns of rings `radius_from` to `radius_to` round a center, as offsets, ring by
+/// ring outward and round each ring: column (x, z) is in ring k when k − 1 < √(x² + z²) ≤ k,
+/// ring 0 being the center alone. So `spiral(0, r)` is every column within r of the center.
+pub fn spiral(radius_from: u32, radius_to: u32) -> impl Iterator<Item = [i32; 2]> {
+    (radius_from..=radius_to).flat_map(ring_columns)
+}
+
+fn ring_columns(k: u32) -> Vec<[i32; 2]> {
+    if k == 0 {
+        return vec![[0, 0]];
+    }
+    let k = i64::from(k);
+    let (inner, outer) = ((k - 1) * (k - 1), k * k);
+    let mut columns = Vec::new();
+    for x in -k..=k {
+        let most = (outer - x * x).isqrt();
+        let rest = inner - x * x;
+        let least = if rest < 0 { 0 } else { rest.isqrt() + 1 };
+        for z in least..=most {
+            columns.push([x as i32, z as i32]);
+            if z != 0 {
+                columns.push([x as i32, -z as i32]);
+            }
+        }
+    }
+    let angle = |c: &[i32; 2]| f64::from(c[1]).atan2(f64::from(c[0])).rem_euclid(std::f64::consts::TAU);
+    columns.sort_by(|a, b| angle(a).total_cmp(&angle(b)).then(a.cmp(b)));
+    columns
+}
+
+/// The ground a pass turns back to grass: the blast's ash, and the coarse dirt that
+/// stands in for it without the assets half (so natural coarse dirt too).
+pub fn regrows(surface: &str) -> bool {
+    surface == ASH || surface == ASH_STAND_IN
+}
+
+/// A pass's edit for `columns` (absolute x and z): each column's top block by the world's
+/// surface, which water and any block over the ground are, made grass where it regrows.
+/// `ash` is whether the game has the ash block: an edit naming a block the game lacks is
+/// refused whole.
+pub fn regrow_edit(columns: &[[i32; 2]], ash: bool) -> ChunkEdit {
+    let filters: Vec<String> =
+        [ASH, ASH_STAND_IN].into_iter().filter(|b| (ash || *b != ASH) && regrows(b)).map(str::to_owned).collect();
+    let n = filters.len() as u32;
+    let runs = columns
+        .iter()
+        .flat_map(|&[x, z]| {
+            (0..n).map(move |f| Run { x, z, y: -1, height: 1, surface: Some(Surface::WorldSurface), block: 0, only: Some(f) })
+        })
+        .collect();
+    ChunkEdit { palette: vec!["minecraft:grass_block".to_owned()], filters, runs }
 }
 
 // ---- the blast's effects ------------------------------------------------------
@@ -6106,7 +6387,7 @@ mod tests {
         assert_eq!((z.dimension.as_str(), z.center, z.start, z.half_life), (OW, [0, 64, 0], 1000, 12_000));
         assert!(close(z.radius, 144.0) && close(z.peak, 10.0) && close(z.floor, 0.0), "{z:?}");
         let zones = [z];
-        let at = |pos: [f64; 3], now: u64| background(&zones, OW, pos, now);
+        let at = |pos: [f64; 3], now: u64| background(&zones, &[], OW, pos, now);
         let mid = [0.5, 64.5, 0.5];
         assert!(close(at(mid, 1000), 10.0));
         // Half way out a quarter is gone; up and down count as across.
@@ -6115,14 +6396,14 @@ mod tests {
         assert!(at([60.5, 64.5, 60.5], 1000) < at([30.5, 64.5, 30.5], 1000));
         assert_eq!(at([144.5, 64.5, 0.5], 1000), 0.0);
         assert_eq!(at([500.5, 64.5, 0.5], 1000), 0.0);
-        assert_eq!(background(&zones, "minecraft:the_nether", mid, 1000), 0.0);
+        assert_eq!(background(&zones, &[], "minecraft:the_nether", mid, 1000), 0.0);
         // Halved every half-life, as strong as new before it starts.
         assert!(close(at(mid, 13_000), 5.0));
         assert!(close(at(mid, 25_000), 2.5));
         assert!(close(at(mid, 0), 10.0));
         // Two zones add up.
         let two = [zones[0].clone(), zone_of(&blast([100, 64, 0], 120, 2, World::OVERWORLD), 1000).unwrap()];
-        assert!(close(background(&two, OW, [50.5, 64.5, 0.5], 1000), 2.0 * 10.0 * (1.0 - (50.0f64 / 144.0).powi(2))));
+        assert!(close(background(&two, &[], OW, [50.5, 64.5, 0.5], 1000), 2.0 * 10.0 * (1.0 - (50.0f64 / 144.0).powi(2))));
         // Old zones go.
         let mut saved = Saved { zones: zones.to_vec(), ..Saved::default() };
         assert!(!saved.prune_zones(1000 + 5 * 12_000));
@@ -6306,14 +6587,14 @@ mod tests {
         // The window's clock is its own: it only counts on from the message.
         let told = Told { rad, at: 123_456 };
         for (pos, later) in [([10.5, 65.6, 0.5], 0), ([40.5, 70.0, -20.5], 300), ([150.5, 64.0, 0.5], 12_000)] {
-            let server = background(&saved.zones, OW, pos, saved.tick + later);
+            let server = background(&saved.zones, &[], OW, pos, saved.tick + later);
             let client = told.background(OW, pos, 123_456 + later);
             assert!(close(server, client), "{pos:?} {later}: {server} {client}");
             assert!(server > 0.0);
         }
         assert_eq!(told.background("minecraft:the_nether", [0.5, 64.0, 0.5], 123_456), 0.0);
         // A clock behind the message's (another world) counts as no time passed.
-        assert!(close(told.background(OW, [0.5, 64.0, 0.5], 0), background(&saved.zones, OW, [0.5, 64.0, 0.5], 9_000)));
+        assert!(close(told.background(OW, [0.5, 64.0, 0.5], 0), background(&saved.zones, &[], OW, [0.5, 64.0, 0.5], 9_000)));
     }
 
     #[test]
@@ -7487,5 +7768,351 @@ mod flight_tests {
         // Its blast keeps within the limit too, should the operator lower it on the way.
         saved.maxpower = 16;
         assert_eq!(saved.fire(OVERWORLD, b, BombKind::Tactical.radius()), Err(Refused::Maxpower { radius: 50, maxpower: 16 }));
+    }
+}
+
+// ---- iodine and the decontaminator (plan 9) -------------------------------------------
+
+#[cfg(test)]
+mod decon_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    const OW: &str = "minecraft:overworld";
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    /// A zone of peak 10 rad a second, 300 blocks across, from `start`, that doesn't fade.
+    fn zone(center: [i32; 3], start: u64) -> Zone {
+        Zone { dimension: OW.into(), center, radius: 300.0, peak: 10.0, start, half_life: u64::MAX, floor: 1.0 }
+    }
+
+    fn clean(center: [i32; 3], radius: u32, start: u64) -> Clean {
+        Clean { dimension: OW.into(), center, radius, start }
+    }
+
+    // ---- iodine ----
+
+    #[test]
+    fn iodine_halves_the_dose() {
+        assert!(close(shielded(0.0, true), IODINE_PROTECTION) && close(IODINE_PROTECTION, 0.5));
+        let bare = dose_step(0.0, 10.0, shielded(0.0, false));
+        let iodine = dose_step(0.0, 10.0, shielded(0.0, true));
+        // The healing comes off after the background: what the background adds is halved.
+        assert!(close(iodine + HEAL, (bare + HEAL) / 2.0), "{bare} {iodine}");
+        assert_eq!(IODINE_TICKS, 6000);
+        assert_eq!(iodine_command("Steve"), format!("effect give Steve {IODINE_EFFECT} 300 0 true"));
+    }
+
+    #[test]
+    fn iodine_and_the_suit_combine() {
+        let suit = protection(true, true, true, true);
+        assert!(close(shielded(suit, true), 1.0 - (1.0 - suit) * (1.0 - IODINE_PROTECTION)));
+        assert!(close(shielded(suit, true), 0.975));
+        for s in [0.0, 0.15, 0.5, suit, 1.0, 1.5, -0.5] {
+            for i in [false, true] {
+                let p = shielded(s, i);
+                assert!((0.0..=1.0).contains(&p), "{s} {i}: {p}");
+                assert!(p >= s.clamp(0.0, 1.0), "{s} {i}: iodine never lets more in");
+            }
+        }
+        assert_eq!(shielded(1.0, true), 1.0);
+        assert_eq!(shielded(2.0, true), 1.0);
+    }
+
+    #[test]
+    fn iodine_without_its_effect_does_nothing() {
+        // The protection comes from the effect on the player, not from the tablet: a tablet eaten without the
+        // assets half gives no effect (its command fails), and then the suit alone counts.
+        for s in [0.0, 0.25, 0.95, 1.0] {
+            assert_eq!(shielded(s, false), s);
+        }
+        assert_eq!(dose_step(50.0, 10.0, shielded(0.0, false)), dose_step(50.0, 10.0, 0.0));
+        // The tablets' consume effect is the kind the hook hears, the effect's own id.
+        let c = components(IODINE);
+        let effects = c["minecraft:consumable"]["on_consume_effects"].as_array().unwrap().clone();
+        assert_eq!(effects, [serde_json::json!({"type": IODINE_EFFECT})]);
+    }
+
+    // ---- the cleaned circles ----
+
+    #[test]
+    fn a_clean_takes_the_background_to_nothing_inside() {
+        let z = zone([0, 64, 0], 100);
+        let c = [clean([0, 64, 0], CLEAN_RADIUS, 200)];
+        let bg = |pos: [f64; 3]| background(std::slice::from_ref(&z), &c, OW, pos, 1000);
+        // Inside the circle, up and down too: a circle of columns.
+        for pos in [[0.5, 64.5, 0.5], [30.5, 64.5, 0.5], [0.5, 200.0, 48.5], [-33.0, -10.0, -33.0]] {
+            assert_eq!(bg(pos), 0.0, "{pos:?}");
+            assert_eq!(clean_factor(&c, &z, OW, pos), 0.0, "{pos:?}");
+        }
+        // Past the edge the zone is whole.
+        let far = [0.5, 64.5, 60.5];
+        assert!(close(bg(far), z.at(far, 1000)) && bg(far) > 0.0);
+        assert_eq!(clean_factor(&c, &z, OW, far), 1.0);
+        // Another dimension's circle cleans nothing here, and a circle of radius 0 nothing at all.
+        let nether = [Clean { dimension: "minecraft:the_nether".into(), ..c[0].clone() }];
+        assert_eq!(clean_factor(&nether, &z, OW, [0.5, 64.5, 0.5]), 1.0);
+        assert_eq!(clean_factor(&[clean([0, 64, 0], 0, 200)], &z, OW, [0.5, 64.5, 0.5]), 1.0);
+        // Without circles the background is the zones' as before.
+        assert!(close(background(std::slice::from_ref(&z), &[], OW, [0.5, 64.5, 0.5], 1000), 10.0));
+    }
+
+    #[test]
+    fn its_edge_is_smooth() {
+        let z = zone([0, 64, 0], 100);
+        let c = [clean([0, 64, 0], 20, 200)];
+        let f = |d: f64| clean_factor(&c, &z, OW, [0.5 + d, 64.5, 0.5]);
+        assert_eq!(f(20.0), 0.0);
+        assert_eq!(f(20.0 + CLEAN_EDGE), 1.0);
+        assert!(f(24.0) > 0.0 && f(24.0) < 1.0);
+        let mut last = 0.0;
+        for i in 0..=160 {
+            let d = 18.0 + i as f64 * 0.1;
+            let v = f(d);
+            assert!(v >= last, "{d}: {v} < {last}");
+            assert!(v - last <= 0.025, "{d}: a step of {}", v - last);
+            last = v;
+        }
+        // Block to block across the edge the background never jumps by more than a fifth.
+        for d in 18..32 {
+            assert!(f(d as f64 + 1.0) - f(d as f64) <= 0.2, "{d}");
+        }
+    }
+
+    #[test]
+    fn overlapping_cleans_take_the_lower_background() {
+        let z = zone([0, 64, 0], 100);
+        let c = [clean([0, 64, 0], 20, 200), clean([30, 64, 0], 20, 200)];
+        // Each point counts the circle that cleans it most: the union, not the product.
+        for x in [-30.0, -21.0, 0.0, 15.0, 24.0, 26.0, 30.0, 45.0, 52.0] {
+            let pos = [x + 0.5, 64.5, 0.5];
+            let a = clean_factor(&c[..1], &z, OW, pos);
+            let b = clean_factor(&c[1..], &z, OW, pos);
+            assert!(close(clean_factor(&c, &z, OW, pos), a.min(b)), "{x}");
+        }
+        // Between them, where the edges overlap, the lower of the two.
+        let pos = [24.5, 64.5, 0.5];
+        assert!(clean_factor(&c[..1], &z, OW, pos) > 0.0 && clean_factor(&c[1..], &z, OW, pos) == 0.0);
+        assert_eq!(clean_factor(&c, &z, OW, pos), 0.0);
+        let mid = [26.5, 64.5, 10.5];
+        let both = background(std::slice::from_ref(&z), &c, OW, mid, 1000);
+        let one = background(std::slice::from_ref(&z), &c[..1], OW, mid, 1000)
+            .min(background(std::slice::from_ref(&z), &c[1..], OW, mid, 1000));
+        assert!(close(both, one));
+        // Two edges over each other are not cleaner than either.
+        let edges = [clean([0, 64, 0], 20, 200), clean([0, 64, 56], 20, 200)];
+        let between = [0.5, 64.5, 28.5];
+        let each = clean_factor(&edges[..1], &z, OW, between);
+        assert!(each > 0.0 && close(clean_factor(&edges, &z, OW, between), each));
+    }
+
+    #[test]
+    fn a_clean_does_not_cover_a_later_blast() {
+        let old = zone([0, 64, 0], 100);
+        let new = zone([50, 64, 0], 5000);
+        let c = [clean([0, 64, 0], CLEAN_RADIUS, 1000)];
+        let zones = [old.clone(), new.clone()];
+        let pos = [0.5, 64.5, 0.5];
+        assert_eq!(clean_factor(&c, &old, OW, pos), 0.0);
+        assert_eq!(clean_factor(&c, &new, OW, pos), 1.0);
+        assert!(close(background(&zones, &c, OW, pos, 6000), new.at(pos, 6000)) && new.at(pos, 6000) > 0.0);
+        // A zone as old as the circle is cleaned: the circle started with it there.
+        assert_eq!(clean_factor(&c, &zone([0, 64, 0], 1000), OW, pos), 0.0);
+        // The decontaminator starts again once a newer zone reaches its circle: its old circle stays for the old
+        // zone, and the new one grows from nothing for both.
+        let mut saved = Saved { tick: 1000, zones: vec![old.clone()], ..Saved::default() };
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 30), 30);
+        assert_eq!(saved.cleans, [clean([0, 64, 0], 30, 1000)]);
+        saved.tick = 2000;
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 31), 31, "the same circle grows");
+        assert_eq!(saved.cleans, [clean([0, 64, 0], 31, 1000)]);
+        // A zone far from it changes nothing.
+        saved.zones.push(Zone { radius: 10.0, ..zone([500, 64, 0], 2500) });
+        saved.tick = 3000;
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 31), 31);
+        saved.zones.push(new.clone());
+        saved.tick = 6000;
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 32), 0, "a new blast over it: from nothing again");
+        assert_eq!(saved.cleans, [clean([0, 64, 0], 31, 1000), clean([0, 64, 0], 0, 6000)]);
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 1), 1);
+        assert_eq!(saved.cleans[1], clean([0, 64, 0], 1, 6000));
+        // Once the new circle is as large, the old one says nothing more and goes.
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 31), 31);
+        assert_eq!(saved.cleans, [clean([0, 64, 0], 31, 6000)]);
+        // A decontaminator placed again where one stood takes its circle on; elsewhere it starts its own.
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 0), 31);
+        assert_eq!(saved.cleaned(OW, [5, 64, 0], 0), 0);
+        assert_eq!(saved.cleans.len(), 1, "nothing is cleaned before it grows");
+        assert_eq!(saved.cleaned("minecraft:the_nether", [0, 64, 0], 2), 2);
+        assert_eq!(saved.cleans.len(), 2);
+        // The block takes the world's circle on: a larger one as it is, a smaller one as a new start.
+        let mut d = Decontaminator { radius: 20, grow: 7, next_column: 300, ..Decontaminator::default() };
+        d.keep_circle(31);
+        assert_eq!((d.radius, d.grow, d.next_column), (31, 7, 300));
+        d.keep_circle(0);
+        assert_eq!((d.radius, d.grow, d.next_column), (0, 0, 0));
+    }
+
+    // ---- the decontaminator ----
+
+    #[test]
+    fn a_decontaminator_grows_a_block_every_forty_ticks_while_it_burns() {
+        let coal = 1600;
+        let mut d = Decontaminator::default();
+        let first = d.step(Some(coal));
+        assert!(first.took_fuel && !first.made);
+        assert_eq!((d.burn_max, d.burn), (coal / CLEAN_FUEL_RATE, coal / CLEAN_FUEL_RATE - 1));
+        let mut grew = 0;
+        for t in 2..=400 {
+            let s = d.step(Some(coal));
+            assert!(!s.took_fuel, "{t}");
+            if s.made {
+                grew += 1;
+                assert_eq!(t % CLEAN_GROW_TICKS, 0, "{t}");
+            }
+        }
+        // One coal burns 400 ticks, four times as fast as in a furnace: 10 blocks.
+        assert_eq!((grew, d.radius, d.burn), (10, 10, 0));
+        assert!(d.step(Some(coal)).took_fuel);
+        // Its screen: the fire, its radius and the background in tenths.
+        assert_eq!(d.data(1.26), [d.burn as i32, d.burn_max as i32, 10, 13]);
+        assert_eq!(d.data(1e9)[3], i16::MAX as i32);
+        assert_eq!(d.data(-1.0)[3], 0);
+        assert_eq!(radius_bar(0), 0);
+        assert_eq!(radius_bar(CLEAN_RADIUS as i32), RADIUS_BAR);
+        assert_eq!(radius_bar(99), RADIUS_BAR);
+        assert!(radius_bar(1) >= 1);
+    }
+
+    #[test]
+    fn it_stops_growing_at_forty_eight() {
+        let mut d = Decontaminator::default();
+        for _ in 0..100_000 {
+            d.step(Some(1600));
+        }
+        assert_eq!(d.radius, CLEAN_RADIUS);
+        assert_eq!(CLEAN_RADIUS, 48);
+        // Full, it burns no more fuel.
+        let burning = d.burn;
+        assert_eq!(d.step(Some(1600)), Step::IDLE);
+        assert_eq!(d.burn, burning);
+    }
+
+    #[test]
+    fn without_fuel_it_keeps_what_it_cleaned() {
+        let mut d = Decontaminator::default();
+        for _ in 0..(5 * CLEAN_GROW_TICKS) {
+            d.step(Some(1600));
+        }
+        d.burn = 0;
+        let r = d.radius;
+        assert_eq!(r, 5);
+        for _ in 0..10_000 {
+            assert_eq!(d.step(None), Step::IDLE);
+            assert_eq!(d.step(Some(0)), Step::IDLE);
+        }
+        assert_eq!(d.radius, r);
+        // A saved decontaminator reads back; one saved by an older version too.
+        let back: Decontaminator = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        assert_eq!(back, d);
+        assert_eq!(serde_json::from_str::<Decontaminator>("{}").unwrap(), Decontaminator::default());
+    }
+
+    #[test]
+    fn the_spiral_covers_each_column_of_a_ring_once() {
+        for k in 0..=50u32 {
+            let ring: Vec<[i32; 2]> = spiral(k, k).collect();
+            let set: BTreeSet<[i32; 2]> = ring.iter().copied().collect();
+            assert_eq!(set.len(), ring.len(), "{k}: a column twice");
+            let k = k as i32;
+            let want: BTreeSet<[i32; 2]> = (-k..=k)
+                .flat_map(|x| (-k..=k).map(move |z| [x, z]))
+                .filter(|&[x, z]| x * x + z * z <= k * k && (k == 0 || x * x + z * z > (k - 1) * (k - 1)))
+                .collect();
+            assert_eq!(set, want, "{k}");
+        }
+        // Outward, ring by ring: the disc of 48 is every column within 48 of the center.
+        let disc: Vec<[i32; 2]> = spiral(0, CLEAN_RADIUS).collect();
+        assert_eq!(disc[0], [0, 0]);
+        let d2 = |c: &[i32; 2]| c[0] * c[0] + c[1] * c[1];
+        let ring = |c: &[i32; 2]| (d2(c) as f64).sqrt().ceil() as i32;
+        assert!(disc.windows(2).all(|w| ring(&w[0]) <= ring(&w[1])));
+        let r = CLEAN_RADIUS as i32;
+        assert_eq!(disc.len(), (-r..=r).flat_map(|x| (-r..=r).map(move |z| [x, z])).filter(|c| d2(c) <= r * r).count());
+        assert_eq!(spiral(3, 5).collect::<Vec<_>>(), spiral(0, 5).skip(spiral(0, 2).count()).collect::<Vec<_>>());
+        assert_eq!(spiral(5, 3).count(), 0);
+        // The passes go through the circle, CLEAN_BLOCKS_PER_PASS columns at a time, and no column twice until it grows.
+        let mut d = Decontaminator { radius: 10, ..Decontaminator::default() };
+        let mut seen = Vec::new();
+        loop {
+            let pass = d.regrow_pass();
+            assert!(pass.len() <= CLEAN_BLOCKS_PER_PASS);
+            if pass.is_empty() {
+                break;
+            }
+            seen.extend(pass);
+        }
+        assert_eq!(seen, spiral(0, 10).collect::<Vec<_>>());
+        assert!(d.regrow_pass().is_empty());
+        d.radius = 11;
+        assert_eq!(d.regrow_pass(), spiral(11, 11).take(CLEAN_BLOCKS_PER_PASS).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn ash_and_coarse_dirt_regrow_grass() {
+        assert!(regrows(ASH) && regrows("minecraft:coarse_dirt"));
+        for other in ["minecraft:grass_block", "minecraft:dirt", "minecraft:water", "minecraft:stone", "minecraft:air", DECONTAMINATOR] {
+            assert!(!regrows(other), "{other}");
+        }
+        // The edit: the top block of each column by the world's surface (water and any block over the ash count),
+        // made grass only where it is ash or coarse dirt.
+        let cols = [[3, -4], [10, 7]];
+        for ash in [true, false] {
+            let e = regrow_edit(&cols, ash);
+            assert_eq!(e.palette, ["minecraft:grass_block"]);
+            assert!(e.filters.iter().all(|f| regrows(f)));
+            assert_eq!(e.filters.contains(&ASH.to_owned()), ash, "no ash without the assets half: the edit would be refused");
+            assert_eq!(e.runs.len(), cols.len() * e.filters.len());
+            for r in &e.runs {
+                assert!(cols.contains(&[r.x, r.z]));
+                assert_eq!((r.y, r.height, r.surface, r.block), (-1, 1, Some(Surface::WorldSurface), 0));
+                assert!(r.only.is_some_and(|f| (f as usize) < e.filters.len()));
+            }
+        }
+        assert!(regrow_edit(&[], true).runs.is_empty());
+    }
+
+    #[test]
+    fn cleans_survive_a_save_and_load() {
+        let mut saved = Saved { tick: 77, ..Saved::default() };
+        saved.cleaned(OW, [3, 70, -9], 12);
+        saved.cleaned("minecraft:the_nether", [0, 40, 0], 48);
+        let back: Saved = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(back.cleans, saved.cleans);
+        assert_eq!(back.cleans.len(), 2);
+        // A world saved before the decontaminator has none.
+        let mut old = serde_json::to_value(Saved::default()).unwrap();
+        old.as_object_mut().unwrap().remove("cleans");
+        let old: Saved = serde_json::from_value(old).unwrap();
+        assert!(old.cleans.is_empty());
+        // The window is told the circles of its dimension with the zones, and reckons the same background.
+        saved.blast(OW, [0, 64, 0], 120).unwrap();
+        saved.tick = 500;
+        saved.cleaned(OW, [0, 64, 0], 48);
+        let rad = saved.rad_for(1, OW, [0.0, 64.0, 0.0]);
+        assert!(rad.cleans.iter().all(|c| c.dimension == OW) && rad.cleans.len() == 2);
+        let back: Rad = serde_json::from_slice(&serde_json::to_vec(&rad).unwrap()).unwrap();
+        assert_eq!(back, rad);
+        let told = Told { rad, at: 0 };
+        for pos in [[0.5, 64.5, 0.5], [40.5, 64.5, 30.5], [60.5, 64.5, 0.5]] {
+            assert!(close(told.background(OW, pos, 0), background(&saved.zones, &saved.cleans, OW, pos, 500)), "{pos:?}");
+        }
+        assert_eq!(told.background(OW, [0.5, 64.5, 0.5], 0), 0.0);
+        // An older server's message without circles still reads.
+        let old: Rad = serde_json::from_str(r#"{"zones": [], "now": 3, "dose": 1.0}"#).unwrap();
+        assert!(old.cleans.is_empty());
     }
 }
