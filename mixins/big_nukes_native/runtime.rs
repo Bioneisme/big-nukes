@@ -66,7 +66,7 @@ impl BombKind {
 
 /// The items: id, how many stack, and whether they are rare. Each copies its
 /// `template` with the `components` patch.
-pub const ITEMS: [(&str, u8, bool); 14] = [
+pub const ITEMS: [(&str, u8, bool); 15] = [
     ("big_nukes:raw_uranium", 64, false),
     ("big_nukes:enriched_uranium", 64, true),
     ("big_nukes:nuclear_charge", 16, true),
@@ -81,6 +81,7 @@ pub const ITEMS: [(&str, u8, bool); 14] = [
     (HAZMAT[3].0, 1, false),
     (ANTI_RAD, 16, false),
     (GEIGER_COUNTER, 1, false),
+    (MISSILE, 1, true),
 ];
 
 /// The guide's pages, lang keys of the assets half: the book reads in the player's language.
@@ -109,7 +110,7 @@ pub fn guide_give(name: &str) -> String {
 }
 
 /// What each block and item says under its name about how to use it: lang keys, one line each.
-const TIPS: [(&str, &[&str]); 21] = [
+const TIPS: [(&str, &[&str]); 26] = [
     ("big_nukes:demolition_charge", &["big_nukes.tip.demolition_charge", "big_nukes.tip.demolition_charge.2"]),
     ("big_nukes:tactical_warhead", &["big_nukes.tip.tactical_warhead", "big_nukes.tip.tactical_warhead.2"]),
     ("big_nukes:atomic_bomb", &["big_nukes.tip.atomic_bomb", "big_nukes.tip.atomic_bomb.2"]),
@@ -131,6 +132,11 @@ const TIPS: [(&str, &[&str]); 21] = [
     ("big_nukes:hazmat_leggings", &["big_nukes.tip.hazmat"]),
     ("big_nukes:hazmat_boots", &["big_nukes.tip.hazmat"]),
     ("big_nukes:anti_rad", &["big_nukes.tip.anti_rad"]),
+    (MISSILE, &["big_nukes.tip.missile"]),
+    (LAUNCH_PAD, &["big_nukes.tip.launch_pad", "big_nukes.tip.launch_pad.2"]),
+    (SILO_HATCH, &["big_nukes.tip.silo_hatch"]),
+    (LAUNCH_CONSOLE, &["big_nukes.tip.launch_console", "big_nukes.tip.launch_console.2"]),
+    (STRIKE_BEACON, &["big_nukes.tip.strike_beacon", "big_nukes.tip.strike_beacon.2"]),
 ];
 
 /// The tip lines of `id`, empty for anything else.
@@ -319,7 +325,7 @@ pub struct Assembly {
     pub parts: &'static [(&'static str, u32)],
 }
 
-pub const ASSEMBLIES: [Assembly; 5] = [
+pub const ASSEMBLIES: [Assembly; 7] = [
     Assembly { result: "big_nukes:nuclear_charge", parts: &[(ENRICHED_URANIUM, 1), ("minecraft:tnt", 4)] },
     Assembly { result: "big_nukes:bomb_casing", parts: &[("minecraft:iron_block", 4), ("minecraft:redstone", 4)] },
     Assembly {
@@ -338,6 +344,14 @@ pub const ASSEMBLIES: [Assembly; 5] = [
     Assembly {
         result: "big_nukes:atomic_bomb",
         parts: &[("big_nukes:nuclear_charge", 4), ("big_nukes:bomb_casing", 4), ("minecraft:redstone_block", 1)],
+    },
+    Assembly {
+        result: MISSILE,
+        parts: &[("big_nukes:bomb_casing", 2), ("minecraft:iron_block", 3), ("minecraft:blaze_powder", 4)],
+    },
+    Assembly {
+        result: STRIKE_BEACON,
+        parts: &[("minecraft:iron_ingot", 4), ("minecraft:redstone", 4), ("minecraft:compass", 1)],
     },
 ];
 
@@ -402,10 +416,10 @@ pub fn assembly_of_data(data: i32) -> Option<&'static Assembly> {
     usize::try_from(data).ok()?.checked_sub(1).and_then(|i| ASSEMBLIES.get(i))
 }
 
-/// The language key of a block's or an item's name: the bombs are blocks.
+/// The language key of a block's or an item's name: the bombs and the silo's blocks are blocks.
 pub fn name_key(id: &str) -> String {
     let (namespace, name) = id.split_once(':').unwrap_or(("minecraft", id));
-    let kind = if BombKind::ALL.iter().any(|k| k.id() == id) { "block" } else { "item" };
+    let kind = if BombKind::ALL.iter().any(|k| k.id() == id) || SILO_BLOCKS.contains(&id) { "block" } else { "item" };
     format!("{kind}.{namespace}.{name}")
 }
 
@@ -1371,6 +1385,35 @@ pub const PLANE_START: f64 = 150.0;
 /// A dropped bomb: its speed kept a tick, and the speed down it gains a tick.
 pub const BOMB_DRAG: f64 = 0.9;
 pub const BOMB_GRAVITY: f64 = 0.08;
+/// The silo's blocks and the bomber's beacon, declared in code like the machines.
+pub const LAUNCH_PAD: &str = "big_nukes:launch_pad";
+pub const LAUNCH_CONSOLE: &str = "big_nukes:launch_console";
+pub const STRIKE_BEACON: &str = "big_nukes:strike_beacon";
+pub const SILO_BLOCKS: [&str; 4] = [LAUNCH_PAD, SILO_HATCH, LAUNCH_CONSOLE, STRIKE_BEACON];
+/// The pad's slots: the missile and its warhead. Its menu type is
+/// content/data/big_nukes/horizon/menu/launch_pad.json, named as the block.
+pub const PAD_MISSILE_SLOT: usize = 0;
+pub const PAD_WARHEAD_SLOT: usize = 1;
+pub const PAD_SLOTS: usize = 2;
+/// The console's menu type, content/data/big_nukes/horizon/menu/console.json: one hidden slot, as a keypad's.
+pub const CONSOLE_MENU: &str = "big_nukes:console";
+/// What the flying displays show: items of their own, out of the creative tab, whose 3D models lie along z,
+/// nose forward. The display scales them up; the missile's goes forward by `MISSILE_LIFT` so its tail is
+/// the display's place.
+pub const MISSILE_MODEL: &str = "big_nukes:missile_model";
+pub const BOMBER_MODEL: &str = "big_nukes:bomber_model";
+pub const MODEL_ITEMS: [&str; 2] = [MISSILE_MODEL, BOMBER_MODEL];
+#[allow(dead_code)] // plan 7: until the glue uses it
+pub const MISSILE_SCALE: f32 = 2.0;
+#[allow(dead_code)] // plan 7: until the glue uses it
+pub const MISSILE_LIFT: f32 = 3.0;
+#[allow(dead_code)] // plan 7: until the glue uses it
+pub const BOMBER_SCALE: f32 = 4.0;
+/// The launch's roar and the bomber's drone: the assets half's sounds.
+#[allow(dead_code)] // plan 7: until the glue uses it
+pub const MISSILE_LAUNCH: &str = "big_nukes:missile_launch";
+#[allow(dead_code)] // plan 7: until the glue uses it
+pub const BOMBER_FLYBY: &str = "big_nukes:bomber_flyby";
 /// The tag of every display a flight shows, so the ones a closed world left are found.
 #[allow(dead_code)] // plan 7: until the glue uses it
 pub const FLIGHT_TAG: &str = "big_nukes_flight";
@@ -1563,6 +1606,15 @@ impl BombKind {
     /// Whether it goes on a missile or a bomber: the demolition charge is too small for either.
     pub fn flies(self) -> bool {
         self != BombKind::Demolition
+    }
+}
+
+/// What a pad's slot takes: the missile in its slot, a warhead that flies in the other.
+pub fn pad_takes(slot: usize, item: &str) -> bool {
+    match slot {
+        PAD_MISSILE_SLOT => item == MISSILE,
+        PAD_WARHEAD_SLOT => BombKind::of_block(item).is_some_and(BombKind::flies),
+        _ => false,
     }
 }
 
@@ -2411,6 +2463,7 @@ mod tests {
         let used: BTreeSet<String> = [
             "mixins/big_nukes_native/runtime.rs",
             "mixins/big_nukes_native/glue.rs",
+            "mixins/big_nukes_native/silo.rs",
             "content/data/big_nukes/function/check.mcfunction",
         ]
         .iter()
@@ -2960,7 +3013,8 @@ mod tests {
     fn every_sound_event_has_its_files() {
         let sounds: serde_json::Value = serde_json::from_str(&file("content/assets/big_nukes/sounds.json")).unwrap();
         let click = GEIGER_CLICK.strip_prefix("big_nukes:").unwrap();
-        for event in ["blast.near", "blast.far", "wave.roar", click] {
+        let silo = [MISSILE_LAUNCH, BOMBER_FLYBY].map(|e| e.strip_prefix("big_nukes:").unwrap());
+        for event in ["blast.near", "blast.far", "wave.roar", click].into_iter().chain(silo) {
             let entry = &sounds[event];
             assert!(entry.is_object(), "{event} isn't declared");
             for s in entry["sounds"].as_array().unwrap() {
@@ -3160,7 +3214,7 @@ mod tests {
 
     #[test]
     fn every_block_and_item_says_how_to_use_it() {
-        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(FILE_BLOCKS).collect();
+        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SILO_BLOCKS).chain(FILE_BLOCKS).collect();
         all.extend(ITEMS.iter().map(|i| i.0));
         let (en, ru) = (language("en_us"), language("ru_ru"));
         for id in all.into_iter().filter(|id| *id != "big_nukes:ash") {
@@ -3177,7 +3231,7 @@ mod tests {
     fn every_block_and_item_is_in_the_creative_tab() {
         let tab: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/horizon/creative_tab/big_nukes.json")).unwrap();
         let listed: Vec<&str> = tab["items"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(FILE_BLOCKS).collect();
+        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SILO_BLOCKS).chain(FILE_BLOCKS).collect();
         all.extend(ITEMS.iter().map(|i| i.0));
         let (listed_set, all_set): (BTreeSet<&str>, BTreeSet<&str>) = (listed.iter().copied().collect(), all.iter().copied().collect());
         assert_eq!(listed.len(), listed_set.len(), "an id is listed twice");
@@ -3189,7 +3243,7 @@ mod tests {
 
     #[test]
     fn every_block_and_item_is_declared_once_with_its_assets() {
-        let code_blocks: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).collect();
+        let code_blocks: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SILO_BLOCKS).collect();
         let blocks: Vec<&str> = code_blocks.iter().copied().chain(FILE_BLOCKS).collect();
         let items: Vec<&str> = ITEMS.iter().map(|i| i.0).collect();
         let all: BTreeSet<&str> = blocks.iter().chain(&items).copied().collect();
@@ -3272,6 +3326,7 @@ mod tests {
             .map(|i| i.0)
             .chain(BombKind::ALL.map(BombKind::id))
             .chain([CENTRIFUGE, ASSEMBLY_TABLE])
+            .chain(SILO_BLOCKS)
             .collect();
         let known_id = |id: &str| id.starts_with("minecraft:") || known.contains(id);
         let dir = format!("{}/content/data/big_nukes/recipe", env!("CARGO_MANIFEST_DIR"));
@@ -3418,7 +3473,8 @@ mod tests {
     fn assembly_recipes_name_known_items() {
         let known: BTreeSet<&str> = ITEMS.iter().map(|i| i.0).chain(BombKind::ALL.map(BombKind::id)).collect();
         let results: BTreeSet<&str> = ASSEMBLIES.iter().map(|a| a.result).collect();
-        let wanted: BTreeSet<&str> = [CHARGE, "big_nukes:bomb_casing"].into_iter().chain(BombKind::ALL.map(BombKind::id)).collect();
+        let wanted: BTreeSet<&str> =
+            [CHARGE, "big_nukes:bomb_casing", MISSILE, STRIKE_BEACON].into_iter().chain(BombKind::ALL.map(BombKind::id)).collect();
         assert_eq!(results, wanted);
         assert_eq!(results.len(), ASSEMBLIES.len(), "a result is made twice");
         let en = language("en_us");
@@ -4602,6 +4658,122 @@ mod flight_tests {
             assert!((start[0] - 0.5) * (end[0] - 0.5) + (start[2] - 0.5) * (end[2] - 0.5) < 0.0);
             assert!(flat(end, beacon) < 150.0 && flat(end, beacon) > 140.0, "{end:?}");
             assert!(p.plane(last + 1).is_none() && p.plane(last + 1000).is_none());
+        }
+    }
+
+    // ---- the silo's blocks and items (Task 2) -------------------------------------------
+
+    fn read(path: &str) -> String {
+        std::fs::read_to_string(format!("{}/{path}", env!("CARGO_MANIFEST_DIR"))).unwrap_or_else(|e| panic!("{path}: {e}"))
+    }
+
+    fn json(path: &str) -> serde_json::Value {
+        serde_json::from_str(&read(path)).unwrap_or_else(|e| panic!("{path}: {e}"))
+    }
+
+    fn grid_of(stacks: &[(&'static str, u32)]) -> Vec<Option<(&'static str, u32)>> {
+        let mut g: Vec<Option<(&str, u32)>> = stacks.iter().map(|s| Some(*s)).collect();
+        g.resize(GRID_SLOTS, None);
+        g
+    }
+
+    fn one(_: &str) -> u32 {
+        1
+    }
+
+    #[test]
+    fn the_missile_is_assembled_from_two_casings_three_iron_blocks_and_four_blaze_powder() {
+        let parts = [("big_nukes:bomb_casing", 2), ("minecraft:iron_block", 3), ("minecraft:blaze_powder", 4)];
+        let grid = grid_of(&parts);
+        assert_eq!(assembly_in(&grid).map(|i| ASSEMBLIES[i].result), Some(MISSILE));
+        let made = assemble(&grid, None, &one).unwrap();
+        assert_eq!(made.result, MISSILE);
+        assert_eq!(made.take, vec![(0, 2), (1, 3), (2, 4)]);
+        // Spread over the grid, the same.
+        let spread = grid_of(&[("minecraft:blaze_powder", 2), ("big_nukes:bomb_casing", 1), ("minecraft:iron_block", 3), ("minecraft:blaze_powder", 2), ("big_nukes:bomb_casing", 1)]);
+        assert_eq!(assemble(&spread, None, &one).map(|a| a.result), Some(MISSILE));
+        // One short, or a missile already in the output (they don't stack): nothing.
+        assert!(assemble(&grid_of(&[parts[0], parts[1], ("minecraft:blaze_powder", 3)]), None, &one).is_none());
+        assert!(assemble(&grid, Some((MISSILE, 1)), &one).is_none());
+        assert_eq!(ITEMS.iter().find(|i| i.0 == MISSILE).map(|i| i.1), Some(1));
+        assert_eq!(name_key(MISSILE), "item.big_nukes.missile");
+    }
+
+    #[test]
+    fn the_beacon_is_assembled_from_iron_redstone_and_a_compass() {
+        let grid = grid_of(&[("minecraft:iron_ingot", 4), ("minecraft:redstone", 4), ("minecraft:compass", 1)]);
+        assert_eq!(assemble(&grid, None, &|_| 64).map(|a| a.result), Some(STRIKE_BEACON));
+        assert!(assemble(&grid_of(&[("minecraft:iron_ingot", 4), ("minecraft:redstone", 4)]), None, &|_| 64).is_none());
+        // A block: its name is a block's.
+        assert_eq!(name_key(STRIKE_BEACON), "block.big_nukes.strike_beacon");
+        for b in SILO_BLOCKS {
+            assert!(name_key(b).starts_with("block."), "{b}");
+        }
+    }
+
+    #[test]
+    fn a_pad_takes_a_missile_and_a_tactical_or_atomic_warhead_only() {
+        let (atomic, tactical, demolition) = (BombKind::Atomic.id(), BombKind::Tactical.id(), BombKind::Demolition.id());
+        assert!(pad_takes(PAD_MISSILE_SLOT, MISSILE));
+        assert!(pad_takes(PAD_WARHEAD_SLOT, atomic) && pad_takes(PAD_WARHEAD_SLOT, tactical));
+        for item in [atomic, tactical, demolition, "minecraft:stone"] {
+            assert!(!pad_takes(PAD_MISSILE_SLOT, item), "{item}");
+        }
+        for item in [MISSILE, demolition, "minecraft:tnt"] {
+            assert!(!pad_takes(PAD_WARHEAD_SLOT, item), "{item}");
+        }
+        assert!(!pad_takes(PAD_SLOTS, MISSILE));
+        // What it takes is what it launches.
+        for missile in [MISSILE, "minecraft:stone"] {
+            for warhead in [atomic, tactical, demolition, "minecraft:stone"] {
+                let takes = pad_takes(PAD_MISSILE_SLOT, missile) && pad_takes(PAD_WARHEAD_SLOT, warhead);
+                assert_eq!(pad_load(Some(missile), Some(warhead)).is_ok(), takes, "{missile} {warhead}");
+            }
+        }
+        // Its menu, named as the block, and the window's slot rules, which can't reach the rules and name them.
+        let menu = json(&format!("content/data/big_nukes/horizon/menu/{}.json", LAUNCH_PAD.strip_prefix("big_nukes:").unwrap()));
+        assert_eq!(menu["slots"], PAD_SLOTS);
+        let slot_rules = read("mixins/big_nukes_native/slot_rules.rs");
+        for id in [LAUNCH_PAD, MISSILE, atomic, tactical] {
+            assert!(slot_rules.contains(&format!("\"{id}\"")), "slot_rules.rs doesn't name {id}");
+        }
+    }
+
+    #[test]
+    fn the_flying_models_are_items_of_their_own_out_of_the_tab() {
+        let base = "content/assets/big_nukes";
+        let tab = read("content/data/big_nukes/horizon/creative_tab/big_nukes.json");
+        let en = json(&format!("{base}/lang/en_us.json"));
+        for (id, scale, long, wide) in [(MISSILE_MODEL, MISSILE_SCALE, 6.0, 1.0), (BOMBER_MODEL, BOMBER_SCALE, 12.0, 12.0)] {
+            let n = id.strip_prefix("big_nukes:").unwrap();
+            assert!(!tab.contains(&format!("\"{id}\"")), "{id} is in the tab");
+            assert!(!ITEMS.iter().any(|i| i.0 == id) && MODEL_ITEMS.contains(&id));
+            assert!(en[format!("item.big_nukes.{n}")].is_string(), "{id} has no name");
+            let item = json(&format!("{base}/items/{n}.json"));
+            let model = json(&format!("{base}/models/{}.json", item["model"]["model"].as_str().unwrap().strip_prefix("big_nukes:").unwrap()));
+            let elements = model["elements"].as_array().unwrap_or_else(|| panic!("{id} has no elements"));
+            let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+            for e in elements {
+                for i in 0..3 {
+                    let (a, b) = (e["from"][i].as_f64().unwrap(), e["to"][i].as_f64().unwrap());
+                    assert!((-16.0..=32.0).contains(&a) && (-16.0..=32.0).contains(&b) && a < b, "{id}: {e}");
+                    lo[i] = lo[i].min(a);
+                    hi[i] = hi[i].max(b);
+                }
+                for face in e["faces"].as_object().unwrap().values() {
+                    assert_eq!(face["texture"], "#t", "{id}");
+                }
+            }
+            // Along z, nose forward, as long and wide as the plan has it at the display's scale.
+            let blocks = |i: usize| (hi[i] - lo[i]) * f64::from(scale) / 16.0;
+            assert!((blocks(2) - long).abs() <= 0.5, "{id}: {} long", blocks(2));
+            assert!((blocks(0) - wide).abs() <= 0.5 || id == MISSILE_MODEL && blocks(0) <= 2.0, "{id}: {} wide", blocks(0));
+            let t = model["textures"]["t"].as_str().unwrap().strip_prefix("big_nukes:").unwrap();
+            assert!(std::path::Path::new(&format!("{}/{base}/textures/{t}.png", env!("CARGO_MANIFEST_DIR"))).exists(), "{t}");
+            if id == MISSILE_MODEL {
+                // Its tail at the display's place, shifted forward by the transformation's translation.
+                assert!(((lo[2] - 8.0) / 16.0 * f64::from(scale) + f64::from(MISSILE_LIFT)).abs() < 0.01, "{}", lo[2]);
+            }
         }
     }
 }

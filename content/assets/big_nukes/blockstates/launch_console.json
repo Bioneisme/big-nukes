@@ -1,0 +1,19 @@
+{
+  "variants": {
+    "facing=north": {
+      "model": "big_nukes:block/launch_console"
+    },
+    "facing=east": {
+      "model": "big_nukes:block/launch_console",
+      "y": 90
+    },
+    "facing=south": {
+      "model": "big_nukes:block/launch_console",
+      "y": 180
+    },
+    "facing=west": {
+      "model": "big_nukes:block/launch_console",
+      "y": 270
+    }
+  }
+}

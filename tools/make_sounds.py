@@ -106,6 +106,38 @@ def geiger_click():
     return normalize(tick + body, 0.7)
 
 
+def missile_launch():
+    """A rocket motor's roar, 6 s, with its own seed: a deep rumble and a mid-range tearing crackle that
+    swell as it lights, hold, and fade as it climbs away."""
+    own = np.random.default_rng(26_7)
+    n = seconds(6.0)
+    t = np.arange(n) / RATE
+    swell = np.clip(t / 0.8, 0, 1) ** 1.5 * np.clip((6.0 - t) / 2.5, 0, 1)
+    rumble_ = lowpass(own.standard_normal(n), 220) * 6.0
+    body = lowpass(own.standard_normal(n), 900) * 2.5
+    crackle = own.standard_normal(n) * (own.random(n) < 0.02) * 6.0
+    crackle = lowpass(crackle, 3500) - lowpass(crackle, 700)
+    sub = np.sin(2 * np.pi * np.cumsum(48 + 6 * np.sin(2 * np.pi * 0.7 * t)) / RATE) * 0.6
+    flutter = 1 + 0.15 * np.sin(2 * np.pi * 11 * t + own.uniform(0, 6.3))
+    return loud((rumble_ + body + crackle * 2.0 + sub) * flutter * swell, 2.8, 0.88)
+
+
+def bomber_flyby():
+    """Propellers going over, 5 s, with their own seed: a buzz at the blades' rate with its harmonics and an
+    engine's noise, rising, passing and falling in pitch as it goes."""
+    own = np.random.default_rng(26_8)
+    n = seconds(5.0)
+    t = np.arange(n) / RATE
+    # It passes overhead at 2.2 s: loudest there, a little higher before and lower after.
+    near = 1 / (1 + ((t - 2.2) / 0.9) ** 2)
+    pitch = 1 + 0.08 * np.tanh((2.2 - t) / 0.6)
+    phase = 2 * np.pi * np.cumsum(68 * pitch) / RATE
+    buzz = sum(np.sign(np.sin(k * phase)) / k ** 1.3 for k in (1, 2, 3, 4))
+    buzz = lowpass(buzz, 1500)
+    engine = lowpass(own.standard_normal(n), 500) * (1 + 0.3 * np.sin(phase / 2))
+    return loud((buzz * 1.5 + engine * 2.0) * near, 2.2, 0.85)
+
+
 def write(name, x):
     os.makedirs(OUT, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -125,6 +157,8 @@ SOUNDS = {
     "blast_far": far,
     "wave_roar": wave_roar,
     "geiger_click": geiger_click,
+    "missile_launch": missile_launch,
+    "bomber_flyby": bomber_flyby,
 }
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@
 use crate::game::{
     Game, GameLevel, LevelDimension, NativeBlockEdit, NativeBlockRun, NativeFalling, NativeHeightmap, NativeShake,
     big_nukes as rules,
+    // The silo and the bomber (plan 7): their glue is a module of its own, silo.rs.
+    big_nukes_silo as silo,
 };
 use horizon_client::{
     containers::{ModBlockEntity, ModContainer},
@@ -169,6 +171,7 @@ pub(in crate::game) fn blocks(blocks: &mut Vec<Block>) {
     for kind in rules::BombKind::ALL {
         blocks.push(block(kind.id(), "minecraft:furnace", 2.0));
     }
+    silo::blocks(blocks, block);
 }
 
 /// The items, in code like the blocks: the suit on iron armour, the rest on
@@ -184,6 +187,7 @@ pub(in crate::game) fn items(items: &mut Vec<Item>) {
             ..Default::default()
         });
     }
+    silo::model_items(items);
 }
 
 // ---- the anti-rad ------------------------------------------------------------------
@@ -880,7 +884,9 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
 
 /// The blocks with a block entity: the machines and the bombs. Its id is its block's.
 fn has_entity(block: &str) -> bool {
-    matches!(block, rules::CENTRIFUGE | rules::ASSEMBLY_TABLE) || rules::BombKind::of_block(block).is_some()
+    matches!(block, rules::CENTRIFUGE | rules::ASSEMBLY_TABLE)
+        || rules::BombKind::of_block(block).is_some()
+        || silo::has_entity(block)
 }
 
 pub(in crate::game) fn block_entity(block: &str, entity: &mut Option<(String, Compound)>) {
@@ -899,6 +905,7 @@ pub(in crate::game) fn container(block: &str, container: &mut Option<ModContaine
     match block {
         rules::CENTRIFUGE => *container = Some(centrifuge_container()),
         rules::ASSEMBLY_TABLE => *container = Some(assembly_container()),
+        block if silo::has_entity(block) => *container = Some(silo::container(block)),
         _ => {
             if let Some(kind) = rules::BombKind::of_block(block) {
                 *container = Some(bomb_container(kind));
@@ -935,6 +942,7 @@ pub(in crate::game) fn screen(block: &str, screen: &mut Option<NativeScreen>) {
         rules::CENTRIFUGE => *screen = Some(centrifuge_screen()),
         rules::ASSEMBLY_TABLE => *screen = Some(assembly_screen()),
         block if keypad_bomb(block) => *screen = Some(keypad_screen()),
+        rules::LAUNCH_PAD => *screen = Some(silo::pad_screen()),
         _ => {}
     }
 }
@@ -944,6 +952,7 @@ pub(in crate::game) fn screen_draw(game: &Game<'_>, block: &str, data: &[i32], b
         rules::CENTRIFUGE => centrifuge_screen_draw(game, data, batch, origin),
         rules::ASSEMBLY_TABLE => assembly_screen_draw(game, data, batch, origin),
         block if keypad_bomb(block) => keypad_draw(game, block, data, batch, origin),
+        rules::LAUNCH_PAD => silo::pad_draw(game, batch, origin),
         _ => {}
     }
 }
@@ -982,6 +991,10 @@ fn centrifuge_container() -> ModContainer {
 
 /// What a hopper may put in: raw uranium in its slot, fuel in the other.
 pub(in crate::game) fn accepts(game: &Game<'_>, entity: &ModBlockEntity, slot: usize, stack: &ItemStack, cancel: &mut bool) {
+    if entity.id == rules::LAUNCH_PAD && !*cancel {
+        *cancel = !rules::pad_takes(slot, &stack.item);
+        return;
+    }
     if entity.id != rules::CENTRIFUGE || *cancel {
         return;
     }
@@ -1086,9 +1099,13 @@ fn centrifuge_tick(game: &mut Game<'_>, entity: &mut ModBlockEntity) {
 /// A shift-click from the inventory: raw uranium to its slot, fuel to its slot,
 /// nothing else. One from the centrifuge goes the game's way, to the inventory.
 pub(in crate::game) fn quick_move(game: &Game<'_>, entity: &mut ModBlockEntity, container_slots: usize, slot: usize, stack: &mut ItemStack, handled: &mut bool) {
-    // Nothing moves into or out of a bomb's hidden slot.
-    if rules::BombKind::of_block(&entity.id).is_some() {
+    // Nothing moves into or out of a bomb's hidden slot, nor a console's or a beacon's.
+    if rules::BombKind::of_block(&entity.id).is_some() || matches!(entity.id.as_str(), rules::LAUNCH_CONSOLE | rules::STRIKE_BEACON) {
         *handled = true;
+        return;
+    }
+    if entity.id == rules::LAUNCH_PAD {
+        silo::pad_quick_move(game, entity, container_slots, slot, stack, handled);
         return;
     }
     if entity.id != rules::CENTRIFUGE || slot < container_slots {

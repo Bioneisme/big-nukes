@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "IOI",
+    "ORO",
+    "IOI"
+  ],
+  "key": {
+    "I": "minecraft:iron_block",
+    "O": "minecraft:obsidian",
+    "R": "minecraft:redstone_block"
+  },
+  "result": {
+    "id": "big_nukes:launch_pad",
+    "count": 1
+  }
+}

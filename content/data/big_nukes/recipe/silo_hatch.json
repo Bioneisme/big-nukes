@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "TTT",
+    "TRT",
+    "TTT"
+  ],
+  "key": {
+    "T": "minecraft:iron_trapdoor",
+    "R": "minecraft:redstone"
+  },
+  "result": {
+    "id": "big_nukes:silo_hatch",
+    "count": 1
+  }
+}

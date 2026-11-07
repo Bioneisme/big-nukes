@@ -20,8 +20,11 @@ FACING = {
     "demolition_charge": ("Demolition Charge", "Подрывной заряд"),
     "tactical_warhead": ("Tactical Warhead", "Тактическая боеголовка"),
     "atomic_bomb": ("Atomic Bomb", "Атомная бомба"),
+    "launch_pad": ("Launch Pad", "Пусковой стол"),
+    "launch_console": ("Launch Console", "Пульт запуска"),
+    "strike_beacon": ("Strike Beacon", "Маяк авиаудара"),
 }
-TABLE = {"assembly_table": ("Assembly Table", "Сборочный стол")}
+TABLE = {"assembly_table": ("Assembly Table", "Сборочный стол"), "silo_hatch": ("Silo Hatch", "Люк шахты")}
 # Declared in files: id: (template, English, Russian, drop)
 FILES = {
     "uranium_ore": ("minecraft:iron_ore", "Uranium Ore", "Урановая руда", "big_nukes:raw_uranium"),
@@ -43,6 +46,41 @@ ITEMS = {
     "hazmat_boots": ("Hazmat Boots", "Ботинки химзащиты"),
     "anti_rad": ("Anti-Rad", "Антирад"),
     "geiger_counter": ("Geiger Counter", "Счётчик Гейгера"),
+    "missile": ("Missile", "Ракета"),
+}
+
+
+# The 3D models the flying displays show, along z with the nose at +z: (from, to, region of the 16x16 sheet).
+def cube(frm, to, region):
+    return {"from": frm, "to": to, "faces": {f: {"uv": region, "texture": "#t"} for f in ("north", "south", "east", "west", "up", "down")}}
+
+
+WHITE, RED, DARK, BLACK = [0, 0, 8, 8], [8, 0, 16, 8], [0, 8, 8, 16], [8, 8, 16, 16]
+# 1 x 6 blocks at the display's scale of 2: a white body, a red band, nose and fins, a dark nozzle.
+MISSILE_MODEL = [
+    cube([4, 4, -12], [12, 12, 22], WHITE),
+    cube([3.8, 3.8, 14], [12.2, 12.2, 16], RED),
+    cube([5, 5, 22], [11, 11, 27], RED),
+    cube([6.5, 6.5, 27], [9.5, 9.5, 31], RED),
+    cube([5, 5, -16], [11, 11, -12], DARK),
+    cube([7.25, 12, -16], [8.75, 16, -7], RED),
+    cube([7.25, 0, -16], [8.75, 4, -7], RED),
+    cube([0, 7.25, -16], [4, 8.75, -7], RED),
+    cube([12, 7.25, -16], [16, 8.75, -7], RED),
+]
+METAL, LIGHT, GLASS, PROP = [0, 0, 8, 8], [8, 0, 16, 8], [0, 8, 8, 16], [8, 8, 16, 16]
+# 12 blocks of wing at the display's scale of 4: a dark fuselage, four engines, a glazed nose and a tail.
+BOMBER_MODEL = [
+    cube([6, 5, -14], [10, 9, 30], METAL),
+    cube([6.5, 5.5, 30], [9.5, 8.5, 32], GLASS),
+    cube([6.5, 9, 23], [9.5, 10.5, 29], GLASS),
+    cube([-16, 6.5, 6], [32, 7.5, 14], LIGHT),
+    cube([1, 7, -14], [15, 8, -9], LIGHT),
+    cube([7.5, 9, -14], [8.5, 14, -8], METAL),
+] + [cube([x, 5, 8], [x + 3, 8, 16], METAL) for x in (-11, -3, 16, 24)]   + [cube([x - 1, 4, 16], [x + 4, 9, 16.5], PROP) for x in (-11, -3, 16, 24)]
+MODELS = {
+    "missile_model": (MISSILE_MODEL, "Missile in Flight", "Ракета в полёте"),
+    "bomber_model": (BOMBER_MODEL, "Bomber", "Бомбардировщик"),
 }
 # Mob effects: id: (category, RGB, English, Russian)
 EFFECTS = {"radiation": ("harmful", 0x7FB238, "Radiation", "Радиация")}
@@ -97,6 +135,13 @@ for name, (template, en, ru, drop) in FILES.items():
 for name, (en, ru) in ITEMS.items():
     write(A / "items" / f"{name}.json", {"model": {"type": "minecraft:model", "model": f"big_nukes:item/{name}"}})
     write(A / "models" / "item" / f"{name}.json", {"parent": "minecraft:item/generated", "textures": {"layer0": f"big_nukes:item/{name}"}})
+    lang["en_us"][f"item.big_nukes.{name}"] = en
+    lang["ru_ru"][f"item.big_nukes.{name}"] = ru
+
+for name, (elements, en, ru) in MODELS.items():
+    write(A / "items" / f"{name}.json", {"model": {"type": "minecraft:model", "model": f"big_nukes:item/{name}"}})
+    write(A / "models" / "item" / f"{name}.json", {
+        "textures": {"t": f"big_nukes:item/{name}", "particle": f"big_nukes:item/{name}"}, "elements": elements})
     lang["en_us"][f"item.big_nukes.{name}"] = en
     lang["ru_ru"][f"item.big_nukes.{name}"] = ru
 

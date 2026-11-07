@@ -1,0 +1,19 @@
+{
+  "variants": {
+    "facing=north": {
+      "model": "big_nukes:block/strike_beacon"
+    },
+    "facing=east": {
+      "model": "big_nukes:block/strike_beacon",
+      "y": 90
+    },
+    "facing=south": {
+      "model": "big_nukes:block/strike_beacon",
+      "y": 180
+    },
+    "facing=west": {
+      "model": "big_nukes:block/strike_beacon",
+      "y": 270
+    }
+  }
+}

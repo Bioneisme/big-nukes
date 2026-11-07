@@ -23,6 +23,11 @@
     "big_nukes:hazmat_leggings",
     "big_nukes:hazmat_boots",
     "big_nukes:anti_rad",
+    "big_nukes:launch_pad",
+    "big_nukes:silo_hatch",
+    "big_nukes:launch_console",
+    "big_nukes:missile",
+    "big_nukes:strike_beacon",
     "big_nukes:ash"
   ]
 }

@@ -17,7 +17,23 @@
       "required": false
     },
     {
+      "id": "big_nukes:launch_pad",
+      "required": false
+    },
+    {
+      "id": "big_nukes:launch_console",
+      "required": false
+    },
+    {
+      "id": "big_nukes:strike_beacon",
+      "required": false
+    },
+    {
       "id": "big_nukes:assembly_table",
+      "required": false
+    },
+    {
+      "id": "big_nukes:silo_hatch",
       "required": false
     },
     "big_nukes:uranium_ore",

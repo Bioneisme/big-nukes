@@ -1,0 +1,8 @@
+{
+  "parent": "minecraft:block/cube_bottom_top",
+  "textures": {
+    "top": "big_nukes:block/silo_hatch_top",
+    "bottom": "big_nukes:block/silo_hatch_bottom",
+    "side": "big_nukes:block/silo_hatch_side"
+  }
+}

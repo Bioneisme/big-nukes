@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "big_nukes:block/strike_beacon_side",
+    "down": "big_nukes:block/strike_beacon_top",
+    "up": "big_nukes:block/strike_beacon_top",
+    "north": "big_nukes:block/strike_beacon_front",
+    "south": "big_nukes:block/strike_beacon_side",
+    "west": "big_nukes:block/strike_beacon_side",
+    "east": "big_nukes:block/strike_beacon_side"
+  }
+}

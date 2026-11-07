@@ -38,5 +38,25 @@
         "stream": false
       }
     ]
+  },
+  "missile_launch": {
+    "subtitle": "subtitles.big_nukes.missile_launch",
+    "sounds": [
+      {
+        "name": "big_nukes:missile_launch",
+        "attenuation_distance": 16,
+        "stream": false
+      }
+    ]
+  },
+  "bomber_flyby": {
+    "subtitle": "subtitles.big_nukes.bomber_flyby",
+    "sounds": [
+      {
+        "name": "big_nukes:bomber_flyby",
+        "attenuation_distance": 16,
+        "stream": false
+      }
+    ]
   }
 }

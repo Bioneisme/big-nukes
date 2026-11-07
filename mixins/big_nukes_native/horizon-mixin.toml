@@ -31,6 +31,13 @@ file = "crates/horizon-client/src/game.rs"
 name = "big_nukes_glue"
 source = "glue.rs"
 
+# The silo and the bomber (plan 7): their glue, beside the rest.
+[[module]]
+id = "silo"
+file = "crates/horizon-client/src/game.rs"
+name = "big_nukes_silo"
+source = "silo.rs"
+
 # The machines and the bombs, declared in code; the ores and the ash are the assets half's files.
 [[injection]]
 id = "blocks"

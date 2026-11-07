@@ -575,4 +575,151 @@ for y in range(18):
         elif any(blade(x + dx, y + dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
             icon.putpixel((x, y), (28, 44, 18, 255))
 save(icon, "mob_effect", "radiation")
+
+
+# ---- the silo and the bomber (plan 7) ----
+# Drawn last and with their own random, so everything above stays the same.
+silo_rng = random.Random(2607)
+HAZARD = (230, 196, 40, 255)
+NIGHT = (24, 24, 26, 255)
+RIVET = (170, 176, 186, 255)
+
+
+def plate(base, spread=0.06, edge=EDGE):
+    im = Image.new("RGBA", (16, 16))
+    for y in range(16):
+        for x in range(16):
+            im.putpixel((x, y), shade(base, 1 + silo_rng.uniform(-spread, spread)))
+    return frame(im, edge)
+
+
+def rivets(im, points, colour=RIVET):
+    for p in points:
+        im.putpixel(p, colour)
+    return im
+
+
+def ring(im, inner, outer, a, b):
+    """A hazard band round the middle: yellow and black wedges between two radii."""
+    for y in range(16):
+        for x in range(16):
+            dx, dy = x - 7.5, y - 7.5
+            if inner <= math.hypot(dx, dy) < outer:
+                wedge = int((math.degrees(math.atan2(dy, dx)) + 360) // 30) % 2
+                im.putpixel((x, y), a if wedge else b)
+    return im
+
+
+# The launch pad: a blast plate with a grate in a hazard ring on top, ribbed steel on the sides.
+top = plate((96, 100, 108))
+ring(top, 4.5, 7.0, HAZARD, NIGHT)
+for y in range(5, 11):
+    for x in range(5, 11):
+        top.putpixel((x, y), (40, 42, 46, 255) if (x + y) % 2 else (70, 74, 80, 255))
+save(rivets(top, [(1, 1), (14, 1), (1, 14), (14, 14)]), "block", "launch_pad_top")
+side = plate((84, 88, 96))
+stripes(side, HAZARD, NIGHT, [1, 2])
+for x in (4, 8, 12):
+    for y in range(4, 15):
+        side.putpixel((x, y), shade((84, 88, 96), 0.7))
+save(side, "block", "launch_pad_side")
+front = side.copy()
+for y in range(6, 13):
+    for x in range(5, 12):
+        front.putpixel((x, y), (54, 58, 64, 255) if 5 < x < 11 and 6 < y < 12 else EDGE)
+front.putpixel((8, 9), (220, 60, 40, 255))
+save(front, "block", "launch_pad_front")
+
+# The hatch: two doors with a seam down the middle, hazard edges and bolts.
+hatch = plate((120, 124, 112), 0.05)
+for x in range(1, 15):
+    for y in (1, 14):
+        hatch.putpixel((x, y), HAZARD if (x // 2) % 2 else NIGHT)
+for y in range(1, 15):
+    hatch.putpixel((7, y), NIGHT)
+    hatch.putpixel((8, y), (60, 62, 58, 255))
+for y in (4, 11):
+    for x in (3, 4, 11, 12):
+        hatch.putpixel((x, y), (150, 154, 140, 255))
+save(rivets(hatch, [(2, 7), (13, 7), (2, 8), (13, 8)]), "block", "silo_hatch_top")
+hatch_side = plate((100, 104, 94), 0.05)
+stripes(hatch_side, HAZARD, NIGHT, [13, 14])
+save(rivets(hatch_side, [(2, 4), (7, 4), (13, 4)]), "block", "silo_hatch_side")
+save(plate((58, 60, 56), 0.05), "block", "silo_hatch_bottom")
+
+# The console: a green screen, a red launch key under a flap, and a row of switches.
+cons = plate((70, 76, 84))
+for y in range(2, 8):
+    for x in range(2, 14):
+        cons.putpixel((x, y), (16, 34, 20, 255) if 2 < x < 13 and 2 < y < 7 else (30, 32, 36, 255))
+for x, y in ((4, 4), (5, 4), (6, 4), (8, 4), (9, 4), (4, 5), (6, 5), (8, 5), (10, 5), (11, 5)):
+    cons.putpixel((x, y), (90, 230, 110, 255))
+for x in (3, 5, 7):
+    for y in (10, 12):
+        cons.putpixel((x, y), (190, 190, 196, 255))
+for y in range(9, 14):
+    for x in range(10, 14):
+        cons.putpixel((x, y), NIGHT if x in (10, 13) or y in (9, 13) else (210, 40, 36, 255))
+save(cons, "block", "launch_console_front")
+save(stripes(plate((76, 82, 90)), HAZARD, NIGHT, [14]), "block", "launch_console_side")
+cons_top = plate((86, 92, 100))
+for x in range(3, 13):
+    cons_top.putpixel((x, 12), (50, 54, 60, 255))
+save(cons_top, "block", "launch_console_top")
+
+# The strike beacon: a red lamp behind a grille, an antenna on top.
+beacon = plate((92, 60, 56))
+for y in range(3, 13):
+    for x in range(3, 13):
+        d = math.hypot(x - 7.5, y - 7.5)
+        if d < 4.6:
+            beacon.putpixel((x, y), shade((240, 50, 40), 1.25 - d / 6) if y % 2 else (40, 20, 18, 255))
+save(beacon, "block", "strike_beacon_front")
+beacon_side = plate((84, 56, 52))
+stripes(beacon_side, HAZARD, NIGHT, [2, 3])
+beacon_side.putpixel((7, 9), (240, 60, 40, 255))
+beacon_side.putpixel((8, 9), (240, 60, 40, 255))
+save(beacon_side, "block", "strike_beacon_side")
+beacon_top = plate((80, 82, 88))
+ring(beacon_top, 3.5, 6.5, (150, 154, 160, 255), (110, 114, 120, 255))
+for p in ((7, 7), (8, 7), (7, 8), (8, 8)):
+    beacon_top.putpixel(p, (240, 60, 40, 255))
+save(beacon_top, "block", "strike_beacon_top")
+
+# The missile's icon, nose up and to the right.
+MISSILE = [
+    "............rrr.",
+    "...........rrrrr",
+    "..........wrrrr.",
+    ".........wwwrr..",
+    "........wwwwws..",
+    ".......wwwwws...",
+    "......rrwwws....",
+    ".....rrrrws.....",
+    "....wwrrrs......",
+    "...rwwwws.......",
+    "..rrwwws........",
+    ".rrrwws.........",
+    "..rkkks.........",
+    ".fokks..........",
+    "fofss...........",
+    "ff..............",
+]
+save(item(MISSILE, {"w": (236, 236, 232, 255), "s": (150, 154, 160, 255), "r": (210, 40, 36, 255),
+                    "k": (50, 52, 56, 255), "f": (250, 170, 40, 255), "o": (255, 230, 120, 255)}), "item", "missile")
+
+
+# The flying models' sheets: four flat regions, the models' faces map them by quarter.
+def quarters(colours):
+    im = Image.new("RGBA", (16, 16))
+    for i, c in enumerate(colours):
+        ox, oy = (i % 2) * 8, (i // 2) * 8
+        for y in range(8):
+            for x in range(8):
+                im.putpixel((ox + x, oy + y), shade(c, 1 + silo_rng.uniform(-0.04, 0.04)))
+    return im
+
+
+save(quarters([(234, 234, 228), (200, 36, 32), (60, 62, 66), (22, 22, 24)]), "item", "missile_model")
+save(quarters([(70, 76, 66), (128, 134, 126), (90, 140, 170), (20, 20, 20)]), "item", "bomber_model")
 print("textures written")

@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "big_nukes:block/launch_console_side",
+    "down": "big_nukes:block/launch_console_top",
+    "up": "big_nukes:block/launch_console_top",
+    "north": "big_nukes:block/launch_console_front",
+    "south": "big_nukes:block/launch_console_side",
+    "west": "big_nukes:block/launch_console_side",
+    "east": "big_nukes:block/launch_console_side"
+  }
+}
