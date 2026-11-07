@@ -53,13 +53,15 @@ pub(in crate::game) fn blocks(blocks: &mut Vec<Block>) {
             rules::WallKind::Armored => (12.0, None),
             rules::WallKind::Lead => (5.0, Some("minecraft:iron_block")),
             rules::WallKind::Damper => (2.5, Some("minecraft:white_wool")),
+            // Not among them: the door is declared below, as a door.
+            rules::WallKind::Door => continue,
         };
         let resistance = kind.explosion_resistance();
         blocks.push(block(kind.id(), "minecraft:stone", hardness, resistance, sounds));
         blocks.push(block(kind.cracked_id(), "minecraft:stone", hardness / 2.0, resistance / 2.0, sounds));
     }
-    let armored = rules::WallKind::Armored.explosion_resistance();
-    blocks.push(block(rules::HERMETIC_DOOR, "minecraft:iron_door", 10.0, armored, None));
+    let door = rules::WallKind::Door.explosion_resistance();
+    blocks.push(block(rules::HERMETIC_DOOR, "minecraft:iron_door", 10.0, door, None));
     blocks.push(block(rules::FUEL_GENERATOR, "minecraft:furnace", 3.5, 6.0, None));
     blocks.push(block(rules::AIR_FILTER, "minecraft:furnace", 3.5, 6.0, None));
     blocks.push(block(rules::BUNKER_LAMP, "minecraft:waxed_copper_bulb", 3.0, 6.0, None));
@@ -67,7 +69,8 @@ pub(in crate::game) fn blocks(blocks: &mut Vec<Block>) {
 
 // ---- the walls' registry -------------------------------------------------------------
 //
-// The world keeps its walls by chunk (`Saved.walls`). The level tells of every block set
+// The world keeps its walls by chunk (`Saved.walls`), the hermetic door's two halves among them
+// (`WallKind::Door`, holding as armored concrete). The level tells of every block set
 // through `Level.setBlock`, maybe while the state is locked: the walls placed and taken
 // away wait here until it opens (`take_heard`, from `glue::state`). The wave's own edits tell
 // no one: its plan answers what it cracked and broke, and the glue gives that back.

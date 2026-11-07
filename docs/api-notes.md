@@ -284,7 +284,10 @@ Read in the source of 66f3981, not yet seen in the game:
 - `explosion_resistance` on the declared walls is vanilla's (600 and 1200, as obsidian's 1200): TNT and creepers.
 - The hermetic door copies `minecraft:iron_door`: its two halves, its placing and redstone are the template's. A hand
   opens it in `native_right_click_block` (API 21): `native_set_block_property` (API 18) sets `open` on both halves,
-  the click heard once for both hands.
+  the click heard once for both hands. Both halves are in the walls' registry (`WallKind::Door`, `block_changed` hears
+  each half set): the wave judges them as armored concrete, but with no cracked block a door stands where armored
+  concrete would crack (so no atomic breaks it), and it is no layer of a multilayer wall. A bulk edit leaves a door's
+  other half alone, so where the crater's floor cuts a breaking door between its halves the run takes the lower one too.
 - The lamp copies `minecraft:waxed_copper_bulb`, whose light follows `lit`; its block entity sets `lit` once a second
   (API 18). The generator, the filter and the lamp tick as mod block entities on templates of their own (furnace,
   copper bulb), as the assembly table does on the crafting table.

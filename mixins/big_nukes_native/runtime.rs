@@ -1149,7 +1149,7 @@ pub fn plan_chunk(blast: &Blast, chunk: [i32; 2], walls: &[Wall]) -> ([ChunkEdit
                 Ring::Core => {
                     let floor = crater_floor(blast, d);
                     let bottom = core_walls(blast, floor, top, near.column(x, z), &near, &mut plants, &mut changes);
-                    plants.runs.extend(absolute(bottom.unwrap_or(floor), AIR, None));
+                    plants.runs.extend(absolute(bottom, AIR, None));
                 }
                 Ring::Middle => {
                     for f in [LEAVES, LOGS, GLASS].into_iter().chain(PLANTS) {
@@ -3359,7 +3359,7 @@ pub const RATION_SATURATION: f64 = 16.0;
 /// The bunker's blocks besides its walls.
 pub const BUNKER_BLOCKS: [&str; 4] = [HERMETIC_DOOR, FUEL_GENERATOR, AIR_FILTER, BUNKER_LAMP];
 
-/// The bunker's walls, weakest first.
+/// The bunker's walls, and its door, which the wave judges as one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum WallKind {
     /// Reinforced concrete: holds a demolition charge anywhere, a tactical warhead at the crater's edge.
@@ -3368,6 +3368,9 @@ pub enum WallKind {
     Armored,
     Lead,
     Damper,
+    /// Either half of the hermetic door: it holds as armored concrete, but has no cracked block (where
+    /// armored concrete would crack, it stands whole) and is no layer of a multilayer wall.
+    Door,
 }
 
 /// Every wall's block and its cracked block.
@@ -3388,6 +3391,7 @@ pub const MULTILAYER_STRENGTH: f64 = 700.0;
 pub const CRACKS_UP_TO: f64 = 1.5;
 
 impl WallKind {
+    /// The walls of `WALL_BLOCKS`, each with its cracked block: all but the door.
     pub const ALL: [WallKind; 4] = [WallKind::Reinforced, WallKind::Armored, WallKind::Lead, WallKind::Damper];
 
     fn index(self) -> usize {
@@ -3395,25 +3399,36 @@ impl WallKind {
     }
 
     pub fn id(self) -> &'static str {
-        WALL_BLOCKS[self.index()]
+        if self == WallKind::Door { HERMETIC_DOOR } else { WALL_BLOCKS[self.index()] }
     }
 
+    /// Its cracked block; the door has none, and is never cracked.
     pub fn cracked_id(self) -> &'static str {
-        WALL_BLOCKS[4 + self.index()]
+        if self == WallKind::Door { HERMETIC_DOOR } else { WALL_BLOCKS[4 + self.index()] }
     }
 
     /// The wave's strength (`wave_strength`) the whole wall holds alone.
     pub fn strength(self) -> f64 {
-        [40.0, 200.0, 60.0, 60.0][self.index()]
+        match self {
+            WallKind::Reinforced => 40.0,
+            WallKind::Armored | WallKind::Door => 200.0,
+            WallKind::Lead | WallKind::Damper => 60.0,
+        }
     }
 
     /// What vanilla's explosions (TNT, creepers) make of the whole wall; the cracked one has half.
     pub fn explosion_resistance(self) -> f32 {
-        [600.0, 1200.0, 600.0, 600.0][self.index()]
+        match self {
+            WallKind::Armored | WallKind::Door => 1200.0,
+            WallKind::Reinforced | WallKind::Lead | WallKind::Damper => 600.0,
+        }
     }
 
-    /// The wall a block is, and whether it is cracked.
+    /// The wall a block is, and whether it is cracked: the door's either half too.
     pub fn of_block(id: &str) -> Option<(WallKind, bool)> {
+        if id == HERMETIC_DOOR {
+            return Some((WallKind::Door, false));
+        }
         let i = WALL_BLOCKS.iter().position(|b| *b == id)?;
         Some((WallKind::ALL[i % 4], i >= 4))
     }
@@ -3463,13 +3478,14 @@ pub fn wave_strength(blast: &Blast, x: i32, z: i32) -> f64 {
     blast.radius as f64 * (1.0 - edge(blast, x, z)).max(0.0)
 }
 
-/// What a wave of `strength_here` does to `wall`, a block of a multilayer wall or not.
+/// What a wave of `strength_here` does to `wall`, a block of a multilayer wall or not. The door, which has no
+/// cracked block, stands where a wall would crack.
 pub fn wall_fate(strength_here: f64, wall: &Wall, multilayer: bool) -> WallFate {
     let holds = wall.strength(multilayer);
     if strength_here <= holds {
         WallFate::Stands
     } else if !wall.cracked && strength_here <= holds * CRACKS_UP_TO {
-        WallFate::Cracks
+        if wall.kind == WallKind::Door { WallFate::Stands } else { WallFate::Cracks }
     } else {
         WallFate::Breaks
     }
@@ -3510,6 +3526,7 @@ fn series_at(walls: &dyn Fn([i32; 3]) -> Option<WallKind>, pos: [i32; 3], axis: 
         WallKind::Reinforced | WallKind::Armored => &[0, 3],
         WallKind::Lead => &[1],
         WallKind::Damper => &[2],
+        WallKind::Door => &[],
     };
     places.iter().any(|&k| (0..4).all(|i| i == k || walls(at(i - k)).is_some_and(|w| layer(i, w))))
 }
@@ -3567,20 +3584,26 @@ fn core_fate(blast: &Blast, w: &Wall, near: &WallsAt) -> WallFate {
     }
 }
 
-/// The highest wall of a core column, its walls highest first, that the wave leaves standing (it stands or
-/// cracks), between the crater's `floor` and `top`: the place just over it, where the crater stops. The walls
-/// over it break, and those under it it shields, unjudged.
-fn column_holds(blast: &Blast, floor: i32, top: i32, column: &[Wall], near: &WallsAt) -> Option<i32> {
+/// The highest wall of a core column, its walls highest first, that the wave leaves standing between the
+/// crater's `floor` and `top`, and whether it stands or cracks. The walls over it break, and those under it it
+/// shields, unjudged.
+fn holding<'a>(blast: &Blast, floor: i32, top: i32, column: &'a [Wall], near: &WallsAt) -> Option<(&'a Wall, WallFate)> {
     column
         .iter()
         .filter(|w| w.pos[1] >= floor && w.pos[1] < top)
-        .find(|w| core_fate(blast, w, near) != WallFate::Breaks)
-        .map(|w| w.pos[1] + 1)
+        .map(|w| (w, core_fate(blast, w, near)))
+        .find(|(_, fate)| *fate != WallFate::Breaks)
 }
 
-/// The walls of one column of the core, its highest first: those over the one that holds (`column_holds`)
-/// break, and that one may crack (its cracked block goes into `plants`). The lowest place the crater
-/// reaches, if a wall held: just over it.
+/// Where the crater stops in a core column (`holding`): just over the highest wall the wave leaves standing.
+fn column_holds(blast: &Blast, floor: i32, top: i32, column: &[Wall], near: &WallsAt) -> Option<i32> {
+    holding(blast, floor, top, column, near).map(|(w, _)| w.pos[1] + 1)
+}
+
+/// The walls of one column of the core, its highest first: those over the one that holds (`holding`) break,
+/// and that one may crack (its cracked block goes into `plants`). The lowest place the crater reaches: just
+/// over the wall that held, or its `floor`; under it when that cuts a door it breaks between its halves, so no
+/// half door is left.
 fn core_walls(
     blast: &Blast,
     floor: i32,
@@ -3589,28 +3612,37 @@ fn core_walls(
     near: &WallsAt,
     plants: &mut ChunkEdit,
     changes: &mut Vec<WallChange>,
-) -> Option<i32> {
-    let held = column_holds(blast, floor, top, column, near);
-    for w in column.iter().filter(|w| w.pos[1] >= held.map_or(floor, |y| y - 1) && w.pos[1] < top) {
-        match core_fate(blast, w, near) {
-            WallFate::Breaks => changes.push(WallChange::Broken(w.pos)),
-            WallFate::Cracks => {
-                let cracked = w.kind.cracked_id();
-                let block = match plants.palette.iter().position(|p| p == cracked) {
-                    Some(i) => i,
-                    None => {
-                        plants.palette.push(cracked.to_owned());
-                        plants.palette.len() - 1
-                    }
-                } as u32;
-                let [x, y, z] = w.pos;
-                plants.runs.push(Run { x, z, y, height: 1, surface: None, block, only: None });
-                changes.push(WallChange::Cracked(w.pos));
-            }
-            WallFate::Stands => {}
-        }
+) -> i32 {
+    let held = holding(blast, floor, top, column, near);
+    let held_at = held.map(|(w, _)| w.pos[1]);
+    for w in column.iter().filter(|w| w.pos[1] >= floor && w.pos[1] < top && held_at.is_none_or(|y| w.pos[1] > y)) {
+        changes.push(WallChange::Broken(w.pos));
     }
-    held
+    if let Some((w, fate)) = held {
+        if fate == WallFate::Cracks {
+            let cracked = w.kind.cracked_id();
+            let block = match plants.palette.iter().position(|p| p == cracked) {
+                Some(i) => i,
+                None => {
+                    plants.palette.push(cracked.to_owned());
+                    plants.palette.len() - 1
+                }
+            } as u32;
+            let [x, y, z] = w.pos;
+            plants.runs.push(Run { x, z, y, height: 1, surface: None, block, only: None });
+            changes.push(WallChange::Cracked(w.pos));
+        }
+        return w.pos[1] + 1;
+    }
+    // Nothing held: a door on the floor broke, and the half of it under the floor goes too.
+    let under = column.iter().find(|w| w.kind == WallKind::Door && w.pos[1] == floor && floor < top).map(|w| [w.pos[0], floor - 1, w.pos[2]]);
+    match under {
+        Some(lower) if near.kind(lower) == Some(WallKind::Door) => {
+            changes.push(WallChange::Broken(lower));
+            floor - 1
+        }
+        _ => floor,
+    }
 }
 
 /// The registry's key of a chunk's walls.
@@ -9282,6 +9314,91 @@ mod bunker_tests {
         assert!(roofed(&b, &roof, [x, 60, 0], false));
         // One block of the best concrete alone breaks there.
         assert!(!roofed(&b, &[wall([x, 70, 0], WallKind::Armored)], [x, 60, 0], false));
+    }
+
+    /// The hermetic door's two halves, its lower one at `pos`.
+    fn door(pos: [i32; 3]) -> [Wall; 2] {
+        [wall([pos[0], pos[1] + 1, pos[2]], WallKind::Door), wall(pos, WallKind::Door)]
+    }
+
+    #[test]
+    fn the_hermetic_door_holds_as_armored_concrete() {
+        assert_eq!(WallKind::of_block(HERMETIC_DOOR), Some((WallKind::Door, false)));
+        assert_eq!(WallKind::Door.id(), HERMETIC_DOOR);
+        assert_eq!(WallKind::Door.strength(), WallKind::Armored.strength());
+        assert_eq!(WallKind::Door.explosion_resistance(), WallKind::Armored.explosion_resistance());
+        assert!(!WallKind::ALL.contains(&WallKind::Door), "it isn't one of the wall blocks");
+        let b = blast(BombKind::Atomic.radius());
+        // At a quarter of the border it stands, and shields its column like a wall.
+        let x = out_to(&b, 0.25);
+        let halves = door([x, 70, 0]);
+        let (edits, changes) = plan_chunk(&b, chunk_of(x, 0), &halves);
+        assert!(changes.is_empty(), "{changes:?}");
+        for h in &halves {
+            assert_eq!(touched(&edits, h.pos), None);
+        }
+        assert_eq!(touched(&edits, [x, 72, 0]), Some("minecraft:air"));
+        assert_eq!(touched(&edits, [x, 65, 0]), None);
+        assert!(roofed(&b, &halves, [x, 60, 0], false));
+        // Where armored concrete would crack, the door has no cracked block: it stands whole.
+        let near = out_to(&b, 0.15);
+        assert_eq!(fate(&b, near, WallKind::Armored), WallFate::Cracks);
+        assert_eq!(fate(&b, near, WallKind::Door), WallFate::Stands);
+        let halves = door([near, 70, 0]);
+        let (edits, changes) = plan_chunk(&b, chunk_of(near, 0), &halves);
+        assert!(changes.is_empty(), "{changes:?}");
+        assert_eq!(touched(&edits, halves[0].pos), None);
+        assert_eq!(touched(&edits, halves[1].pos), None);
+        // So no atomic breaks it: at its very center armored concrete only cracks.
+        let center = out_to(&b, 0.04);
+        assert_eq!(fate(&b, center, WallKind::Armored), WallFate::Cracks);
+        assert_eq!(fate(&b, center, WallKind::Door), WallFate::Stands);
+        // Past one and a half times its strength it breaks, both halves: a Sunbreaker near its center.
+        let b = blast(BombKind::Sunbreaker.radius());
+        let x = out_to(&b, 0.1);
+        assert_eq!(fate(&b, x, WallKind::Door), WallFate::Breaks);
+        let halves = door([x, 70, 0]);
+        let (edits, changes) = plan_chunk(&b, chunk_of(x, 0), &halves);
+        assert_eq!(changes, halves.map(|h| WallChange::Broken(h.pos)));
+        assert_eq!(touched(&edits, halves[0].pos), Some("minecraft:air"));
+        assert_eq!(touched(&edits, halves[1].pos), Some("minecraft:air"));
+        assert!(!roofed(&b, &halves, [x, 60, 0], false));
+    }
+
+    #[test]
+    fn a_door_the_crater_floor_cuts_goes_whole() {
+        let b = blast(BombKind::Sunbreaker.radius());
+        let x = out_to(&b, 0.1);
+        let floor = crater_floor(&b, edge(&b, x, 0));
+        // Its upper half in the crater, its lower one just under the floor: no half door is left.
+        let halves = door([x, floor - 1, 0]);
+        let (edits, changes) = plan_chunk(&b, chunk_of(x, 0), &halves);
+        assert_eq!(changes, halves.map(|h| WallChange::Broken(h.pos)));
+        assert_eq!(touched(&edits, [x, floor - 1, 0]), Some("minecraft:air"));
+        assert_eq!(touched(&edits, [x, floor - 2, 0]), None);
+        // A wall under the floor stays, as before.
+        let (_, changes) = plan_chunk(&b, chunk_of(x, 0), &[wall([x, floor - 1, 0], WallKind::Armored)]);
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn the_door_is_no_layer_of_a_multilayer_wall() {
+        let c = [0, 64, 0];
+        let mut walls = series([100, 64, 3], [1, 0, 0]);
+        walls[0].kind = WallKind::Door;
+        assert!(walls.iter().all(|w| !multilayer_at(&lookup(&walls), c, w.pos)));
+        let mut walls = series([100, 64, 3], [1, 0, 0]);
+        walls[3].kind = WallKind::Door;
+        assert!(walls.iter().all(|w| !multilayer_at(&lookup(&walls), c, w.pos)));
+        // Nor is a door in a whole series' place, beside it, one of it.
+        let mut walls = series([100, 64, 3], [1, 0, 0]);
+        walls.push(wall([104, 64, 3], WallKind::Door));
+        assert!(walls[..4].iter().all(|w| multilayer_at(&lookup(&walls), c, w.pos)));
+        assert!(!multilayer_at(&lookup(&walls), c, [104, 64, 3]));
+        let sunbreaker = blast(BombKind::Sunbreaker.radius());
+        let x = out_to(&sunbreaker, 0.3);
+        let d = wall([x, 64, 0], WallKind::Door);
+        assert_eq!(wall_fate(wave_strength(&sunbreaker, x, 0), &d, false), WallFate::Breaks);
     }
 
     #[test]
