@@ -172,8 +172,10 @@ pub(in crate::game) fn blocks(blocks: &mut Vec<Block>) {
         blocks.push(block(kind.id(), "minecraft:furnace", 2.0));
     }
     // The Sunbreaker's structure: plain metal blocks, the shell softer than the reflector.
-    blocks.push(block(rules::IMPLOSION_SHELL, "minecraft:iron_block", 3.0));
-    blocks.push(block(rules::NEUTRON_REFLECTOR, "minecraft:iron_block", 5.0));
+    // On the furnace too: the game opens a block's menu on a right click only for a block that has one, and a
+    // part shows its core's keypad.
+    blocks.push(block(rules::IMPLOSION_SHELL, "minecraft:furnace", 3.0));
+    blocks.push(block(rules::NEUTRON_REFLECTOR, "minecraft:furnace", 5.0));
     silo::blocks(blocks, block);
 }
 
