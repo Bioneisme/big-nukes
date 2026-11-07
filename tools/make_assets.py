@@ -43,6 +43,7 @@ ITEMS = {
     "hazmat_boots": ("Hazmat Boots", "Ботинки химзащиты"),
     "anti_rad": ("Anti-Rad", "Антирад"),
     "geiger_counter": ("Geiger Counter", "Счётчик Гейгера"),
+    "guide": ("Big Nukes Guide", "Руководство Big Nukes"),
 }
 # Mob effects: id: (category, RGB, English, Russian)
 EFFECTS = {"radiation": ("harmful", 0x7FB238, "Radiation", "Радиация")}

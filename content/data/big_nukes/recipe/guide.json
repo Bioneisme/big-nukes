@@ -1,0 +1,12 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "ingredients": [
+    "minecraft:book",
+    "big_nukes:raw_uranium"
+  ],
+  "result": {
+    "id": "big_nukes:guide",
+    "count": 1
+  }
+}

@@ -66,7 +66,7 @@ impl BombKind {
 
 /// The items: id, how many stack, and whether they are rare. Each copies its
 /// `template` with the `components` patch.
-pub const ITEMS: [(&str, u8, bool); 14] = [
+pub const ITEMS: [(&str, u8, bool); 15] = [
     ("big_nukes:raw_uranium", 64, false),
     ("big_nukes:enriched_uranium", 64, true),
     ("big_nukes:nuclear_charge", 16, true),
@@ -81,35 +81,21 @@ pub const ITEMS: [(&str, u8, bool); 14] = [
     (HAZMAT[3].0, 1, false),
     (ANTI_RAD, 16, false),
     (GEIGER_COUNTER, 1, false),
+    (GUIDE, 1, false),
 ];
 
-/// The guide's pages, lang keys of the assets half: the book reads in the player's language.
-pub const GUIDE_PAGES: [&str; 10] = [
-    "big_nukes.guide.1",
-    "big_nukes.guide.2",
-    "big_nukes.guide.3",
-    "big_nukes.guide.4",
-    "big_nukes.guide.5",
-    "big_nukes.guide.6",
-    "big_nukes.guide.7",
-    "big_nukes.guide.8",
-    "big_nukes.guide.9",
-    "big_nukes.guide.10",
-];
+/// The guide: a book of the mod's own, whose screen is drawn by the mod (see "the guide" below).
+pub const GUIDE: &str = "big_nukes:guide";
 /// A player who was given the guide when they first joined.
 pub const GUIDE_TAG: &str = "big_nukes_guide_given";
 
-/// The command that gives `name` the guide: a written book, the only kind the game opens as a book.
+/// The command that gives `name` the guide.
 pub fn guide_give(name: &str) -> String {
-    let pages: Vec<String> = GUIDE_PAGES.iter().map(|k| format!("{{translate:\"{k}\"}}")).collect();
-    format!(
-        "give {name} minecraft:written_book[minecraft:written_book_content={{title:\"Big Nukes\",author:\"bioneisme\",pages:[{}]}}]",
-        pages.join(",")
-    )
+    format!("give {name} {GUIDE}")
 }
 
 /// What each block and item says under its name about how to use it: lang keys, one line each.
-const TIPS: [(&str, &[&str]); 21] = [
+const TIPS: [(&str, &[&str]); 22] = [
     ("big_nukes:demolition_charge", &["big_nukes.tip.demolition_charge", "big_nukes.tip.demolition_charge.2"]),
     ("big_nukes:tactical_warhead", &["big_nukes.tip.tactical_warhead", "big_nukes.tip.tactical_warhead.2"]),
     ("big_nukes:atomic_bomb", &["big_nukes.tip.atomic_bomb", "big_nukes.tip.atomic_bomb.2"]),
@@ -131,6 +117,7 @@ const TIPS: [(&str, &[&str]); 21] = [
     ("big_nukes:hazmat_leggings", &["big_nukes.tip.hazmat"]),
     ("big_nukes:hazmat_boots", &["big_nukes.tip.hazmat"]),
     ("big_nukes:anti_rad", &["big_nukes.tip.anti_rad"]),
+    ("big_nukes:guide", &["big_nukes.tip.guide"]),
 ];
 
 /// The tip lines of `id`, empty for anything else.
@@ -158,8 +145,11 @@ const ANTI_RAD_DOSE: f64 = 300.0;
 /// How much wear a piece of the suit takes, and what the dose's wear counts when the game doesn't tell it.
 pub const HAZMAT_DURABILITY: u32 = 600;
 
-/// The vanilla item an item copies: a suit piece its iron armour, the rest paper.
+/// The vanilla item an item copies: a suit piece its iron armour, the guide a book, the rest paper.
 pub fn template(id: &str) -> &'static str {
+    if id == GUIDE {
+        return "minecraft:book";
+    }
     HAZMAT.iter().find(|p| p.0 == id).map_or("minecraft:paper", |p| p.2)
 }
 
@@ -191,6 +181,9 @@ pub fn components(id: &str) -> BTreeMap<String, serde_json::Value> {
                 "on_consume_effects": [{"type": ANTI_RADIATION, "amount": ANTI_RAD_DOSE}]}),
         );
         c.insert("minecraft:use_remainder".into(), json!({"id": "minecraft:glass_bottle", "count": 1}));
+    } else if id == GUIDE {
+        // A book goes on the enchanting table; the guide stays the guide.
+        c.insert("!minecraft:enchantable".into(), json!({}));
     }
     c
 }
@@ -1944,6 +1937,495 @@ pub fn cloud(age_ticks: f64, radius: u32) -> Cloud {
     }
 }
 
+// ---- the guide ---------------------------------------------------------------------
+//
+// A book of the mod's own. A right click with it asks the player's window to open the
+// mod's screen (API 111), which draws a two-page spread on `textures/gui/guide.png` with
+// a bookmark per chapter down its left edge. Each chapter is laid out as lines (its
+// heading, a row of item icons, its text wrapped to the page, the assembly table's
+// recipes), the lines are cut into pages, and every chapter starts on a left page.
+// Positions are GUI pixels from the book's top left corner unless they say otherwise.
+
+/// The message that opens the guide in a player's window.
+pub const GUIDE_CHANNEL: &str = "big_nukes:guide";
+/// The screen's texture, in the GUI atlas.
+pub const GUIDE_GUI: &str = "big_nukes:gui/guide";
+
+/// A chapter: its title (the bookmark's tooltip and the heading) and text as lang keys,
+/// the item on its bookmark, the items pictured under its heading, and whether it shows
+/// the assembly table's recipes after its text.
+#[derive(Clone, Copy, Debug)]
+pub struct Chapter {
+    pub title: &'static str,
+    pub text: &'static str,
+    pub tab: &'static str,
+    pub icons: &'static [&'static str],
+    pub recipes: bool,
+}
+
+pub const CHAPTERS: [Chapter; 8] = [
+    Chapter {
+        title: "big_nukes.guide.uranium",
+        text: "big_nukes.guide.uranium.text",
+        tab: RAW_URANIUM,
+        icons: &["big_nukes:uranium_ore", "big_nukes:deepslate_uranium_ore", RAW_URANIUM],
+        recipes: false,
+    },
+    Chapter {
+        title: "big_nukes.guide.centrifuge",
+        text: "big_nukes.guide.centrifuge.text",
+        tab: CENTRIFUGE,
+        icons: &[CENTRIFUGE, RAW_URANIUM, "minecraft:coal", ENRICHED_URANIUM],
+        recipes: false,
+    },
+    Chapter {
+        title: "big_nukes.guide.assembly",
+        text: "big_nukes.guide.assembly.text",
+        tab: ASSEMBLY_TABLE,
+        icons: &[ASSEMBLY_TABLE],
+        recipes: true,
+    },
+    Chapter {
+        title: "big_nukes.guide.bombs",
+        text: "big_nukes.guide.bombs.text",
+        tab: "big_nukes:atomic_bomb",
+        icons: &["big_nukes:demolition_charge", "big_nukes:tactical_warhead", "big_nukes:atomic_bomb"],
+        recipes: false,
+    },
+    Chapter {
+        title: "big_nukes.guide.detonators",
+        text: "big_nukes.guide.detonators.text",
+        tab: "big_nukes:keypad_detonator",
+        icons: &["big_nukes:fuse_detonator", FLINT_AND_STEEL, "big_nukes:keypad_detonator"],
+        recipes: false,
+    },
+    Chapter {
+        title: "big_nukes.guide.remote",
+        text: "big_nukes.guide.remote.text",
+        tab: REMOTE,
+        icons: &["big_nukes:receiver_detonator", REMOTE],
+        recipes: false,
+    },
+    Chapter {
+        title: "big_nukes.guide.radiation",
+        text: "big_nukes.guide.radiation.text",
+        tab: GEIGER_COUNTER,
+        icons: &[GEIGER_COUNTER, HAZMAT[0].0, HAZMAT[1].0, HAZMAT[2].0, HAZMAT[3].0, ANTI_RAD],
+        recipes: false,
+    },
+    Chapter {
+        title: "big_nukes.guide.commands",
+        text: "big_nukes.guide.commands.text",
+        tab: "minecraft:command_block",
+        icons: &["minecraft:command_block", GUIDE],
+        recipes: false,
+    },
+];
+
+/// The closed book's spread: a dark cover round two pages and a footer.
+pub const BOOK_SIZE: [f32; 2] = [288.0, 192.0];
+/// The parchment of the left and the right page, `[x, y, w, h]`.
+pub const PAGES: [[f32; 4]; 2] = [[6.0, 6.0, 136.0, 164.0], [146.0, 6.0, 136.0, 164.0]];
+/// Where each page's text starts, and how wide it may run.
+pub const PAGE_X: [f32; 2] = [16.0, 156.0];
+pub const PAGE_WIDTH: f32 = 116.0;
+pub const PAGE_TOP: f32 = 12.0;
+/// A line of the game's font.
+pub const ROW: f32 = 9.0;
+pub const PAGE_ROWS: usize = 17;
+/// A row of item icons, 16 pixels each.
+pub const ICON_STEP: f32 = 18.0;
+/// A recipe: its 3×3 grid from the page's text, and its arrow and result right of the grid.
+pub const RECIPE_X: f32 = 10.0;
+pub const RECIPE_ARROW_X: f32 = 58.0;
+pub const RECIPE_RESULT_X: f32 = 78.0;
+/// A bookmark: closed, it sticks out `-TAB_X` pixels left of the cover; the open
+/// chapter's sticks out to `TAB_OPEN_X`. They are drawn under the book, so their
+/// right ends tuck under the cover.
+pub const TAB_SIZE: [f32; 2] = [26.0, 18.0];
+pub const TAB_X: f32 = -22.0;
+pub const TAB_OPEN_X: f32 = -26.0;
+pub const TAB_TOP: f32 = 14.0;
+pub const TAB_STEP: f32 = 20.0;
+/// The arrows, in the footer's corners, and the page number's line between them.
+pub const PREV_AT: [f32; 4] = [12.0, 176.0, 18.0, 10.0];
+pub const NEXT_AT: [f32; 4] = [258.0, 176.0, 18.0, 10.0];
+pub const NUMBER_Y: f32 = 177.0;
+
+/// The texture: the spread at its top left, then a row of closed bookmarks and a row
+/// of open ones (one colour a chapter), the arrows (lit ones below), a slot and a
+/// recipe's arrow. tools/make_textures.py draws it with the same numbers.
+pub const GUIDE_TEXTURE: [f32; 2] = [288.0, 228.0];
+pub const SLOT_SRC: [f32; 4] = [244.0, 192.0, 18.0, 18.0];
+pub const RECIPE_ARROW_SRC: [f32; 4] = [262.0, 192.0, 16.0, 10.0];
+
+/// Chapter `i`'s bookmark in the texture.
+pub fn tab_src(i: usize, open: bool) -> [f32; 4] {
+    let y = if open { 210.0 } else { 192.0 };
+    [i as f32 * TAB_SIZE[0], y, TAB_SIZE[0], TAB_SIZE[1]]
+}
+
+/// An arrow in the texture: back or on, lit while the mouse is over it.
+pub fn arrow_src(next: bool, lit: bool) -> [f32; 4] {
+    let x = if next { 226.0 } else { 208.0 };
+    [x, if lit { 202.0 } else { 192.0 }, PREV_AT[2], PREV_AT[3]]
+}
+
+pub const GUIDE_TEXT: u32 = 0x3A_2A1A;
+pub const GUIDE_HEADING: u32 = 0x7A_1E12;
+pub const GUIDE_FOOTER: u32 = 0xE6_D3A0;
+const TOOLTIP_TEXT: u32 = 0xFF_FFFF;
+const TOOLTIP_BACK: u32 = 0xF010_0010;
+const TOOLTIP_EDGE: u32 = 0xFF50_00A0;
+/// A shade over the world behind the book.
+pub const GUIDE_DIM: u32 = 0x6000_0000;
+
+/// Where a row of `n` icons starts on a page: centred under the heading.
+pub fn icons_x(n: usize) -> f32 {
+    ((PAGE_WIDTH - (n as f32 * ICON_STEP - 2.0)) / 2.0).floor()
+}
+
+/// Where the book's top left corner goes in a window of GUI size `window`: the book
+/// and its bookmarks centred, on whole pixels.
+pub fn guide_origin(window: [f32; 2]) -> [f32; 2] {
+    let width = BOOK_SIZE[0] - TAB_OPEN_X;
+    [((window[0] - width) / 2.0).floor() - TAB_OPEN_X, ((window[1] - BOOK_SIZE[1]) / 2.0).floor()]
+}
+
+/// A line of a page.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GuideLine {
+    /// A chapter's title, centred, with a blank line under it.
+    Heading(String),
+    Text(String),
+    /// Item icons in a row.
+    Icons(&'static [&'static str]),
+    /// One of `ASSEMBLIES`: the result's name over a 3×3 grid, an arrow and the result.
+    Recipe(usize),
+}
+
+impl GuideLine {
+    /// How many of a page's rows the line takes.
+    pub fn rows(&self) -> usize {
+        match self {
+            GuideLine::Heading(_) | GuideLine::Icons(_) => 2,
+            GuideLine::Text(_) => 1,
+            GuideLine::Recipe(_) => 7,
+        }
+    }
+
+    fn blank(&self) -> bool {
+        matches!(self, GuideLine::Text(t) if t.is_empty())
+    }
+}
+
+/// `text` in lines no wider than `width`, as `measure` reckons widths: its own line
+/// breaks kept (a blank line stays blank), words moved down whole, and a word wider
+/// than `width` cut where it overflows.
+pub fn wrap(text: &str, width: f32, measure: &dyn Fn(&str) -> f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut line = String::new();
+        for word in paragraph.split(' ').filter(|w| !w.is_empty()) {
+            let joined = if line.is_empty() { word.to_owned() } else { format!("{line} {word}") };
+            if measure(&joined) <= width {
+                line = joined;
+                continue;
+            }
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            let mut rest = word;
+            while measure(rest) > width {
+                let mut ends = rest.char_indices().map(|(i, _)| i).skip(1).chain([rest.len()]);
+                let first = ends.next().unwrap_or(rest.len());
+                let cut = ends.take_while(|&end| measure(&rest[..end]) <= width).last().unwrap_or(first);
+                lines.push(rest[..cut].to_owned());
+                rest = &rest[cut..];
+            }
+            line = rest.to_owned();
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+/// The lines cut into pages of `lines_per_page` rows. A picture is never cut: it
+/// starts the next page when it doesn't fit, and a blank line never starts a page.
+/// There is always one page, if an empty one.
+pub fn paginate(text_lines: &[GuideLine], lines_per_page: usize) -> Vec<Vec<GuideLine>> {
+    let mut pages = vec![Vec::new()];
+    let mut used = 0;
+    for line in text_lines {
+        if used > 0 && used + line.rows() > lines_per_page {
+            pages.push(Vec::new());
+            used = 0;
+        }
+        if used == 0 && line.blank() {
+            continue;
+        }
+        pages.last_mut().expect("one page at least").push(line.clone());
+        used += line.rows();
+    }
+    pages
+}
+
+/// A chapter's lines, its texts read with `tr`.
+pub fn chapter_lines(chapter: &Chapter, tr: &dyn Fn(&str) -> String, measure: &dyn Fn(&str) -> f32) -> Vec<GuideLine> {
+    let mut lines = vec![GuideLine::Heading(tr(chapter.title)), GuideLine::Icons(chapter.icons), GuideLine::Text(String::new())];
+    lines.extend(wrap(&tr(chapter.text), PAGE_WIDTH, measure).into_iter().map(GuideLine::Text));
+    if chapter.recipes {
+        for i in 0..ASSEMBLIES.len() {
+            lines.push(GuideLine::Text(String::new()));
+            lines.push(GuideLine::Recipe(i));
+        }
+    }
+    lines
+}
+
+/// A recipe's parts laid in its grid, row by row in the order it names them: the
+/// assembly table takes them anywhere.
+pub fn recipe_cells(recipe: &Assembly) -> [Option<&'static str>; GRID_SLOTS] {
+    let mut cells = [None; GRID_SLOTS];
+    let parts = recipe.parts.iter().flat_map(|&(id, n)| std::iter::repeat_n(id, n as usize));
+    for (cell, id) in cells.iter_mut().zip(parts) {
+        *cell = Some(id);
+    }
+    cells
+}
+
+/// What a click on the book does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuideClick {
+    Chapter(usize),
+    Prev,
+    Next,
+}
+
+fn within([x, y]: [f32; 2], [rx, ry, rw, rh]: [f32; 4]) -> bool {
+    x >= rx && x < rx + rw && y >= ry && y < ry + rh
+}
+
+/// Chapter `i`'s bookmark as the mouse finds it: its whole length out of the cover.
+fn tab_at(i: usize) -> [f32; 4] {
+    [TAB_OPEN_X, TAB_TOP + i as f32 * TAB_STEP, -TAB_OPEN_X, TAB_SIZE[1]]
+}
+
+/// What is at `at`, from the book's top left corner: a bookmark or an arrow.
+pub fn guide_hit(at: [f32; 2]) -> Option<GuideClick> {
+    if within(at, PREV_AT) {
+        return Some(GuideClick::Prev);
+    }
+    if within(at, NEXT_AT) {
+        return Some(GuideClick::Next);
+    }
+    (0..CHAPTERS.len()).find(|&i| within(at, tab_at(i))).map(GuideClick::Chapter)
+}
+
+/// Something to draw, in GUI pixels of the window.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GuideDraw {
+    /// Part `src` of the guide's texture, stretched over `dst`.
+    Sprite([f32; 4], [f32; 4]),
+    Fill([f32; 4], u32),
+    Text(String, [f32; 2], u32),
+    /// An item's icon, 16 pixels square.
+    Item(&'static str, [f32; 2]),
+}
+
+/// The open guide: its pages in the window's language, and the spread shown.
+#[derive(Clone, Debug, Default)]
+pub struct Guide {
+    pub titles: Vec<String>,
+    pub pages: Vec<Vec<GuideLine>>,
+    /// Each chapter's first page, always a left one.
+    pub starts: Vec<usize>,
+    /// The spread shown: pages `2 * spread` and `2 * spread + 1`.
+    pub spread: usize,
+    /// The window's GUI size at the last frame, where the clicks are found.
+    pub window: [f32; 2],
+}
+
+impl Guide {
+    pub fn new(tr: &dyn Fn(&str) -> String, measure: &dyn Fn(&str) -> f32) -> Guide {
+        let mut guide = Guide::default();
+        for chapter in &CHAPTERS {
+            guide.starts.push(guide.pages.len());
+            guide.titles.push(tr(chapter.title));
+            let mut pages = paginate(&chapter_lines(chapter, tr, measure), PAGE_ROWS);
+            if pages.len() % 2 == 1 {
+                pages.push(Vec::new());
+            }
+            guide.pages.extend(pages);
+        }
+        guide
+    }
+
+    pub fn spreads(&self) -> usize {
+        self.pages.len().div_ceil(2).max(1)
+    }
+
+    /// Shows `spread`, or the last one past the end.
+    pub fn go(&mut self, spread: usize) {
+        self.spread = spread.min(self.spreads() - 1);
+    }
+
+    pub fn next(&mut self) {
+        self.go(self.spread + 1);
+    }
+
+    pub fn prev(&mut self) {
+        self.go(self.spread.saturating_sub(1));
+    }
+
+    /// Opens chapter `i` at its first page; there is no such chapter, nothing changes.
+    pub fn open(&mut self, i: usize) {
+        if let Some(start) = self.starts.get(i) {
+            self.go(start / 2);
+        }
+    }
+
+    /// The chapter of the spread shown.
+    pub fn chapter(&self) -> usize {
+        self.starts.iter().rposition(|&s| s / 2 <= self.spread).unwrap_or(0)
+    }
+
+    /// A left click at `mouse` in the window: whether it did something.
+    pub fn click(&mut self, mouse: [f32; 2]) -> bool {
+        let o = guide_origin(self.window);
+        match guide_hit([mouse[0] - o[0], mouse[1] - o[1]]) {
+            Some(GuideClick::Chapter(i)) => self.open(i),
+            Some(GuideClick::Prev) => self.prev(),
+            Some(GuideClick::Next) => self.next(),
+            None => return false,
+        }
+        true
+    }
+
+    /// The wheel: up turns back, down turns on.
+    pub fn wheel(&mut self, y: f64) {
+        if y > 0.0 {
+            self.prev();
+        } else if y < 0.0 {
+            self.next();
+        }
+    }
+
+    /// A key, by the game's name: whether it turned a page. Escape is left to the game, which closes the screen.
+    pub fn key(&mut self, key: &str) -> bool {
+        match key {
+            "key.keyboard.left" | "key.keyboard.page.up" => self.prev(),
+            "key.keyboard.right" | "key.keyboard.page.down" => self.next(),
+            _ => return false,
+        }
+        true
+    }
+
+    /// The screen with the mouse at `mouse`: `measure` is the font's width of a text,
+    /// `name` an item's name.
+    pub fn draw(&self, mouse: [f32; 2], measure: &dyn Fn(&str) -> f32, name: &dyn Fn(&str) -> String) -> Vec<GuideDraw> {
+        let [ox, oy] = guide_origin(self.window);
+        let rel = [mouse[0] - ox, mouse[1] - oy];
+        let mut out = Vec::new();
+        let mut tip: Option<String> = None;
+        let open = self.chapter();
+        for (i, chapter) in CHAPTERS.iter().enumerate() {
+            let hovered = within(rel, tab_at(i));
+            if hovered {
+                tip = self.titles.get(i).cloned();
+            }
+            let x = if i == open {
+                TAB_OPEN_X
+            } else if hovered {
+                TAB_X - 2.0
+            } else {
+                TAB_X
+            };
+            let [x, y] = [ox + x, oy + TAB_TOP + i as f32 * TAB_STEP];
+            out.push(GuideDraw::Sprite(tab_src(i, i == open), [x, y, TAB_SIZE[0], TAB_SIZE[1]]));
+            out.push(GuideDraw::Item(chapter.tab, [x + 4.0, y + 1.0]));
+        }
+        out.push(GuideDraw::Sprite([0.0, 0.0, BOOK_SIZE[0], BOOK_SIZE[1]], [ox, oy, BOOK_SIZE[0], BOOK_SIZE[1]]));
+        let mut item = |out: &mut Vec<GuideDraw>, id: &'static str, at: [f32; 2]| {
+            out.push(GuideDraw::Item(id, at));
+            if within(mouse, [at[0], at[1], 16.0, 16.0]) {
+                tip = Some(name(id));
+            }
+        };
+        for side in 0..2 {
+            let x = ox + PAGE_X[side];
+            let mut y = oy + PAGE_TOP;
+            for line in self.pages.get(2 * self.spread + side).into_iter().flatten() {
+                match line {
+                    GuideLine::Heading(t) => {
+                        let at = [x + ((PAGE_WIDTH - measure(t)) / 2.0).floor(), y];
+                        out.push(GuideDraw::Text(t.clone(), at, GUIDE_HEADING));
+                    }
+                    GuideLine::Text(t) => out.push(GuideDraw::Text(t.clone(), [x, y], GUIDE_TEXT)),
+                    GuideLine::Icons(ids) => {
+                        let left = x + icons_x(ids.len());
+                        for (n, id) in ids.iter().enumerate() {
+                            item(&mut out, id, [left + n as f32 * ICON_STEP, y]);
+                        }
+                    }
+                    GuideLine::Recipe(r) => {
+                        let recipe = &ASSEMBLIES[*r];
+                        let caption = name(recipe.result);
+                        let at = [x + ((PAGE_WIDTH - measure(&caption)) / 2.0).floor(), y];
+                        out.push(GuideDraw::Text(caption, at, GUIDE_HEADING));
+                        let (x, top) = (x + RECIPE_X, y + ROW);
+                        for (cell, id) in recipe_cells(recipe).iter().enumerate() {
+                            let at = [x + (cell % 3) as f32 * 18.0, top + (cell / 3) as f32 * 18.0];
+                            out.push(GuideDraw::Sprite(SLOT_SRC, [at[0], at[1], 18.0, 18.0]));
+                            if let Some(id) = id {
+                                item(&mut out, id, [at[0] + 1.0, at[1] + 1.0]);
+                            }
+                        }
+                        let [_, _, aw, ah] = RECIPE_ARROW_SRC;
+                        out.push(GuideDraw::Sprite(RECIPE_ARROW_SRC, [x + RECIPE_ARROW_X, top + 22.0, aw, ah]));
+                        let at = [x + RECIPE_RESULT_X, top + 18.0];
+                        out.push(GuideDraw::Sprite(SLOT_SRC, [at[0], at[1], 18.0, 18.0]));
+                        item(&mut out, recipe.result, [at[0] + 1.0, at[1] + 1.0]);
+                    }
+                }
+                y += line.rows() as f32 * ROW;
+            }
+        }
+        for (next, shown, [x, y, w, h]) in [(false, self.spread > 0, PREV_AT), (true, self.spread + 1 < self.spreads(), NEXT_AT)] {
+            if shown {
+                let lit = within(rel, [x, y, w, h]);
+                out.push(GuideDraw::Sprite(arrow_src(next, lit), [ox + x, oy + y, w, h]));
+            }
+        }
+        let number = format!("{} / {}", self.spread + 1, self.spreads());
+        let at = [ox + ((BOOK_SIZE[0] - measure(&number)) / 2.0).floor(), oy + NUMBER_Y];
+        out.push(GuideDraw::Text(number, at, GUIDE_FOOTER));
+        if let Some(t) = tip {
+            out.extend(tooltip(t, mouse, self.window, measure));
+        }
+        out
+    }
+}
+
+/// A tooltip at the mouse, as the game draws an item's: right of the pointer, or left
+/// of it where the window ends.
+fn tooltip(text: String, mouse: [f32; 2], window: [f32; 2], measure: &dyn Fn(&str) -> f32) -> Vec<GuideDraw> {
+    let w = measure(&text);
+    let mut x = mouse[0] + 12.0;
+    if x + w + 4.0 > window[0] {
+        x = (mouse[0] - 16.0 - w).max(4.0);
+    }
+    let y = (mouse[1] - 12.0).max(4.0);
+    vec![
+        GuideDraw::Fill([x - 4.0, y - 4.0, w + 8.0, 16.0], TOOLTIP_BACK),
+        GuideDraw::Fill([x - 3.0, y - 3.0, w + 6.0, 1.0], TOOLTIP_EDGE),
+        GuideDraw::Fill([x - 3.0, y + 10.0, w + 6.0, 1.0], TOOLTIP_EDGE),
+        GuideDraw::Fill([x - 3.0, y - 3.0, 1.0, 14.0], TOOLTIP_EDGE),
+        GuideDraw::Fill([x + w + 2.0, y - 3.0, 1.0, 14.0], TOOLTIP_EDGE),
+        GuideDraw::Text(text, [x, y], TOOLTIP_TEXT),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -2693,30 +3175,305 @@ mod tests {
         (int(16), int(20))
     }
 
+    // ---- the guide (plan 6) ---------------------------------------------------------------
+
+    /// The smallest GUI the game lays out: a window at its largest GUI scale.
+    const MIN_GUI: [f32; 2] = [320.0, 240.0];
+
+    /// Six pixels a character, as a stand-in for the game's font.
+    fn six(text: &str) -> f32 {
+        6.0 * text.chars().count() as f32
+    }
+
     #[test]
-    fn every_guide_page_is_in_both_languages_and_fits() {
+    fn the_guide_is_a_book_of_the_mods_own() {
+        assert_eq!(stack_of(GUIDE), 1);
+        assert!(!ITEMS.iter().find(|i| i.0 == GUIDE).unwrap().2, "the guide isn't rare");
+        assert_eq!(super::template(GUIDE), "minecraft:book");
+        // A book can be enchanted: the guide can't.
+        assert_eq!(components(GUIDE)["!minecraft:enchantable"], serde_json::json!({}));
+        assert_eq!(guide_give("Steve"), "give Steve big_nukes:guide");
+        assert_eq!(guide_give("@s"), "give @s big_nukes:guide");
+        let recipe: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/recipe/guide.json")).unwrap();
+        assert_eq!(recipe["type"], "minecraft:crafting_shapeless");
+        assert_eq!(recipe["ingredients"], serde_json::json!(["minecraft:book", RAW_URANIUM]));
+        assert_eq!(recipe["result"], serde_json::json!({"id": GUIDE, "count": 1}));
+    }
+
+    #[test]
+    fn the_guide_has_eight_chapters_in_both_languages() {
         let (en, ru) = (language("en_us"), language("ru_ru"));
-        assert_eq!(GUIDE_PAGES.len(), 10);
-        for key in GUIDE_PAGES {
-            for (lang, lines) in [("en_us", &en), ("ru_ru", &ru)] {
-                let page = lines.get(key).unwrap_or_else(|| panic!("{key} isn't in {lang}"));
-                // A book's page holds 14 lines of about 19 characters.
-                assert!(page.chars().count() <= 260, "{key} in {lang} is {} characters", page.chars().count());
-                assert!(page.lines().count() <= 14, "{key} in {lang} has too many lines");
+        let titles: Vec<&str> = CHAPTERS.iter().map(|c| en.get(c.title).map_or(c.title, String::as_str)).collect();
+        assert_eq!(titles, ["Uranium", "Centrifuge", "Assembly", "Bombs", "Detonators", "Remote", "Radiation", "Commands"]);
+        let known: BTreeSet<&str> = ITEMS
+            .iter()
+            .map(|i| i.0)
+            .chain(BombKind::ALL.map(BombKind::id))
+            .chain([CENTRIFUGE, ASSEMBLY_TABLE])
+            .chain(FILE_BLOCKS)
+            .collect();
+        for c in &CHAPTERS {
+            for key in [c.title, c.text] {
+                assert!(en.contains_key(key) && ru.contains_key(key), "{key}");
             }
+            // A bookmark's title is a tooltip, one short line.
+            for lang in [&en, &ru] {
+                assert!(lang[c.title].chars().count() <= 16 && !lang[c.title].contains('\n'), "{}", c.title);
+            }
+            for id in c.icons.iter().chain([&c.tab]) {
+                assert!(id.starts_with("minecraft:") || known.contains(id), "{}: {id}", c.title);
+            }
+            assert!(!c.icons.is_empty(), "{} has no picture", c.title);
+            assert!(c.icons.len() as f32 * ICON_STEP <= PAGE_WIDTH, "{}: too many icons for a row", c.title);
+        }
+        let with_recipes: Vec<&str> = CHAPTERS.iter().filter(|c| c.recipes).map(|c| c.title).collect();
+        assert_eq!(with_recipes, ["big_nukes.guide.assembly"]);
+        // The written book's numbered pages are gone.
+        assert!(!en.contains_key("big_nukes.guide.1"));
+    }
+
+    #[test]
+    fn text_wraps_to_the_page_and_keeps_its_paragraphs() {
+        assert_eq!(wrap("aaa bbb ccc", 42.0, &six), ["aaa bbb", "ccc"]);
+        assert_eq!(wrap("one\n\ntwo", 42.0, &six), ["one", "", "two"]);
+        assert_eq!(wrap("  spaced   out  ", 60.0, &six), ["spaced out"]);
+        // A word wider than the page is cut where it overflows.
+        assert_eq!(wrap("abcdefghij k", 24.0, &six), ["abcd", "efgh", "ij k"]);
+        assert_eq!(wrap("", 42.0, &six), [""]);
+        for line in wrap(&"word ".repeat(50), PAGE_WIDTH, &six) {
+            assert!(six(&line) <= PAGE_WIDTH, "{line}");
         }
     }
 
     #[test]
-    fn the_guide_command_names_every_page() {
-        let line = guide_give("Steve");
-        assert!(line.starts_with("give Steve minecraft:written_book[minecraft:written_book_content={"), "{line}");
-        for key in GUIDE_PAGES {
-            assert!(line.contains(&format!("{{translate:\"{key}\"}}")), "{key}");
+    fn pages_fill_up_without_cutting_a_picture() {
+        let t = |s: &str| GuideLine::Text(s.to_owned());
+        assert_eq!(GuideLine::Heading("x".into()).rows(), 2);
+        assert_eq!(t("x").rows(), 1);
+        assert_eq!(GuideLine::Icons(&[GUIDE]).rows(), 2);
+        assert_eq!(GuideLine::Recipe(0).rows(), 7);
+        // The recipe doesn't fit under four lines: it starts the next page.
+        let lines = vec![t("a"), t("b"), t("c"), t("d"), GuideLine::Recipe(0)];
+        assert_eq!(paginate(&lines, 8), vec![vec![t("a"), t("b"), t("c"), t("d")], vec![GuideLine::Recipe(0)]]);
+        // A blank line never starts a page.
+        let lines = vec![t("a"), t("b"), t("c"), GuideLine::Recipe(0), t(""), t("e")];
+        assert_eq!(paginate(&lines, 10), vec![vec![t("a"), t("b"), t("c"), GuideLine::Recipe(0)], vec![t("e")]]);
+        assert_eq!(paginate(&[t("a"), t("b"), t("c")], 2), vec![vec![t("a"), t("b")], vec![t("c")]]);
+        assert_eq!(paginate(&[], 5), vec![Vec::<GuideLine>::new()]);
+        for page in paginate(&lines, PAGE_ROWS) {
+            assert!(page.iter().map(GuideLine::rows).sum::<usize>() <= PAGE_ROWS);
         }
-        assert!(line.contains("title:\"Big Nukes\"") && line.contains("author:\"bioneisme\""));
-        assert_eq!(line.matches('[').count(), line.matches(']').count());
-        assert_eq!(line.matches('{').count(), line.matches('}').count());
+    }
+
+    #[test]
+    fn recipe_cells_hold_each_assemblys_parts() {
+        for a in &ASSEMBLIES {
+            let cells = recipe_cells(a);
+            for &(id, need) in a.parts {
+                assert_eq!(cells.iter().filter(|c| **c == Some(id)).count() as u32, need, "{}: {id}", a.result);
+            }
+            let total: u32 = a.parts.iter().map(|p| p.1).sum();
+            assert_eq!(cells.iter().flatten().count() as u32, total, "{}", a.result);
+        }
+    }
+
+    /// A book whose second chapter's text runs over several pages.
+    fn long_guide() -> Guide {
+        let tr = |key: &str| if key == CHAPTERS[1].text { "many words here ".repeat(60) } else { key.to_owned() };
+        Guide::new(&tr, &six)
+    }
+
+    #[test]
+    fn a_chapter_opens_on_a_left_page_and_the_pages_turn_within_the_book() {
+        let mut g = long_guide();
+        assert_eq!(g.starts.len(), CHAPTERS.len());
+        assert_eq!(g.pages.len() % 2, 0);
+        assert!(g.starts.iter().all(|s| s % 2 == 0), "{:?}", g.starts);
+        assert!(g.starts.windows(2).all(|w| w[0] < w[1]));
+        assert!(g.starts[2] - g.starts[1] >= 4, "the long chapter takes two spreads at least");
+        assert_eq!(g.spreads(), g.pages.len() / 2);
+        assert_eq!((g.spread, g.chapter()), (0, 0));
+        g.prev();
+        assert_eq!(g.spread, 0, "nothing before the first page");
+        g.next();
+        assert_eq!((g.spread, g.chapter()), (1, 1));
+        g.next();
+        assert_eq!(g.chapter(), 1, "the long chapter's second spread");
+        g.open(6);
+        assert_eq!((g.spread, g.chapter()), (g.starts[6] / 2, 6));
+        g.go(usize::MAX);
+        assert_eq!(g.spread, g.spreads() - 1);
+        g.next();
+        assert_eq!(g.spread, g.spreads() - 1, "nothing past the last page");
+        assert_eq!(g.chapter(), CHAPTERS.len() - 1);
+        g.open(99);
+        assert_eq!(g.chapter(), CHAPTERS.len() - 1, "no such chapter: the page stays");
+        // The assembly chapter holds all five recipes, each once.
+        let recipes: Vec<usize> = g.pages[g.starts[2]..g.starts[3]]
+            .iter()
+            .flatten()
+            .filter_map(|l| if let GuideLine::Recipe(i) = l { Some(*i) } else { None })
+            .collect();
+        assert_eq!(recipes, [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn the_wheel_and_the_arrow_keys_turn_the_pages() {
+        let mut g = long_guide();
+        assert!(g.key("key.keyboard.right"));
+        assert_eq!(g.spread, 1);
+        assert!(g.key("key.keyboard.page.down"));
+        assert_eq!(g.spread, 2);
+        assert!(g.key("key.keyboard.left"));
+        assert_eq!(g.spread, 1);
+        // Escape is the game's: it closes the screen.
+        assert!(!g.key("key.keyboard.escape"));
+        assert!(!g.key("key.keyboard.e"));
+        g.wheel(-1.0);
+        assert_eq!(g.spread, 2);
+        g.wheel(1.0);
+        g.wheel(1.0);
+        assert_eq!(g.spread, 0);
+        g.wheel(0.0);
+        assert_eq!(g.spread, 0);
+    }
+
+    fn middle([x, y, w, h]: [f32; 4]) -> [f32; 2] {
+        [x + w / 2.0, y + h / 2.0]
+    }
+
+    fn tab(i: usize) -> [f32; 4] {
+        [TAB_OPEN_X, TAB_TOP + i as f32 * TAB_STEP, -TAB_OPEN_X, TAB_SIZE[1]]
+    }
+
+    #[test]
+    fn clicks_find_the_bookmarks_and_the_arrows() {
+        for i in 0..CHAPTERS.len() {
+            assert_eq!(guide_hit(middle(tab(i))), Some(GuideClick::Chapter(i)), "{i}");
+        }
+        assert_eq!(guide_hit(middle(PREV_AT)), Some(GuideClick::Prev));
+        assert_eq!(guide_hit(middle(NEXT_AT)), Some(GuideClick::Next));
+        assert_eq!(guide_hit([PAGE_X[0] + 10.0, PAGE_TOP + 10.0]), None);
+        assert_eq!(guide_hit([TAB_OPEN_X - 1.0, TAB_TOP + 4.0]), None);
+        assert_eq!(guide_hit([TAB_OPEN_X + 2.0, TAB_TOP + TAB_SIZE[1] + 1.0]), None, "between two bookmarks");
+        // A click through the screen: the origin is where the book is drawn.
+        let mut g = long_guide();
+        g.window = [480.0, 270.0];
+        let o = guide_origin(g.window);
+        let at = |p: [f32; 2]| [o[0] + p[0], o[1] + p[1]];
+        assert!(g.click(at(middle(tab(4)))));
+        assert_eq!(g.chapter(), 4);
+        assert!(g.click(at(middle(NEXT_AT))));
+        assert_eq!(g.spread, g.starts[4] / 2 + 1);
+        assert!(g.click(at(middle(PREV_AT))));
+        assert!(!g.click(at([PAGE_X[1] + 5.0, PAGE_TOP + 5.0])));
+        assert_eq!(g.chapter(), 4);
+    }
+
+    #[test]
+    fn the_book_fits_the_smallest_gui_and_its_texture() {
+        // The book and its bookmarks, sticking out to the left.
+        let extent = [BOOK_SIZE[0] - TAB_OPEN_X, BOOK_SIZE[1]];
+        assert!(extent[0] <= MIN_GUI[0] && extent[1] <= MIN_GUI[1], "{extent:?}");
+        let o = guide_origin(MIN_GUI);
+        assert!(o[0] + TAB_OPEN_X >= 0.0 && o[0] + BOOK_SIZE[0] <= MIN_GUI[0] && o[1] >= 0.0, "{o:?}");
+        assert_eq!(guide_origin([1000.0, 500.0]), [((1000.0 - extent[0]) / 2.0).floor() - TAB_OPEN_X, 154.0]);
+        // The text stays on the parchment, clear of the spine and the footer.
+        for (x, page) in PAGE_X.iter().zip(PAGES) {
+            assert!(*x >= page[0] + 4.0 && x + PAGE_WIDTH <= page[0] + page[2] - 4.0, "{x}");
+        }
+        let bottom = PAGE_TOP + PAGE_ROWS as f32 * ROW;
+        assert!(bottom <= PAGES[0][1] + PAGES[0][3], "{bottom}");
+        assert!(PREV_AT[1] >= PAGES[0][1] + PAGES[0][3] && NEXT_AT[1] + NEXT_AT[3] <= BOOK_SIZE[1]);
+        assert!(NEXT_AT[0] + NEXT_AT[2] <= BOOK_SIZE[0] && PREV_AT[0] >= 0.0);
+        // A recipe: the grid, the arrow and the result in a page's width, in its rows.
+        assert!(RECIPE_X + RECIPE_RESULT_X + 18.0 <= PAGE_WIDTH);
+        assert!(3.0 * 18.0 <= RECIPE_ARROW_X && RECIPE_ARROW_X + RECIPE_ARROW_SRC[2] <= RECIPE_RESULT_X);
+        // A row of icons, centred: six fit.
+        assert_eq!(icons_x(3), 32.0);
+        assert!(icons_x(6) >= 0.0);
+        assert!(ROW + 3.0 * 18.0 <= GuideLine::Recipe(0).rows() as f32 * ROW);
+        // Eight bookmarks down the book's edge.
+        assert!(TAB_TOP + (CHAPTERS.len() - 1) as f32 * TAB_STEP + TAB_SIZE[1] <= BOOK_SIZE[1] - 8.0);
+        assert!(TAB_STEP > TAB_SIZE[1]);
+        assert!(TAB_X > TAB_OPEN_X && TAB_X + TAB_SIZE[0] > 0.0, "a bookmark tucks under the cover");
+        // Every part the screen draws is in the texture.
+        let size = png_size("content/assets/big_nukes/textures/gui/guide.png");
+        assert_eq!(size, (GUIDE_TEXTURE[0] as u32, GUIDE_TEXTURE[1] as u32));
+        let mut parts = vec![[0.0, 0.0, BOOK_SIZE[0], BOOK_SIZE[1]], SLOT_SRC, RECIPE_ARROW_SRC];
+        for hover in [false, true] {
+            parts.push(arrow_src(false, hover));
+            parts.push(arrow_src(true, hover));
+        }
+        for i in 0..CHAPTERS.len() {
+            parts.push(tab_src(i, false));
+            parts.push(tab_src(i, true));
+        }
+        for [x, y, w, h] in parts {
+            assert!(x >= 0.0 && y >= 0.0 && x + w <= GUIDE_TEXTURE[0] && y + h <= GUIDE_TEXTURE[1], "{x} {y} {w} {h}");
+        }
+        assert_eq!(GUIDE_GUI, "big_nukes:gui/guide");
+    }
+
+    fn texts(draws: &[GuideDraw]) -> Vec<&str> {
+        draws.iter().filter_map(|d| if let GuideDraw::Text(t, _, _) = d { Some(t.as_str()) } else { None }).collect()
+    }
+
+    #[test]
+    fn the_open_book_draws_its_bookmarks_pages_and_number() {
+        let mut g = long_guide();
+        g.window = [480.0, 270.0];
+        let o = guide_origin(g.window);
+        let name = |id: &str| format!("name of {id}");
+        let away = [0.0, 0.0];
+        let draws = g.draw(away, &six, &name);
+        let sprites: Vec<([f32; 4], [f32; 4])> =
+            draws.iter().filter_map(|d| if let GuideDraw::Sprite(s, d) = d { Some((*s, *d)) } else { None }).collect();
+        assert!(sprites.contains(&([0.0, 0.0, BOOK_SIZE[0], BOOK_SIZE[1]], [o[0], o[1], BOOK_SIZE[0], BOOK_SIZE[1]])));
+        // The open chapter's bookmark is lit and sticks out further; the bookmarks come before the book.
+        let book = sprites.iter().position(|s| s.0[2] == BOOK_SIZE[0]).unwrap();
+        for i in 0..CHAPTERS.len() {
+            let open = i == 0;
+            let x = o[0] + if open { TAB_OPEN_X } else { TAB_X };
+            let at = sprites.iter().position(|s| s.0 == tab_src(i, open)).unwrap_or_else(|| panic!("bookmark {i}"));
+            assert_eq!(sprites[at].1[..2], [x, o[1] + TAB_TOP + i as f32 * TAB_STEP], "{i}");
+            assert!(at < book, "{i}");
+        }
+        assert!(texts(&draws).contains(&format!("1 / {}", g.spreads()).as_str()), "{:?}", texts(&draws));
+        assert!(texts(&draws).contains(&CHAPTERS[0].title), "the heading");
+        // No way back from the first page.
+        assert!(!sprites.iter().any(|s| s.0 == arrow_src(false, false) || s.0 == arrow_src(false, true)));
+        assert!(sprites.iter().any(|s| s.0 == arrow_src(true, false)));
+        let items: Vec<&str> = draws.iter().filter_map(|d| if let GuideDraw::Item(id, _) = d { Some(*id) } else { None }).collect();
+        for id in CHAPTERS.iter().map(|c| c.tab).chain(CHAPTERS[0].icons.iter().copied()) {
+            assert!(items.contains(&id), "{id}");
+        }
+        // Over a bookmark: its title; over an icon: the item's name.
+        let over = |at: [f32; 2]| texts(&g.draw(at, &six, &name)).last().map(|t| t.to_string());
+        let tab2 = middle(tab(2));
+        assert_eq!(over([o[0] + tab2[0], o[1] + tab2[1]]), Some(CHAPTERS[2].title.to_owned()));
+        let icon = [o[0] + PAGE_X[0] + icons_x(CHAPTERS[0].icons.len()) + 8.0, o[1] + PAGE_TOP + 2.0 * ROW + 8.0];
+        assert_eq!(over(icon), Some(format!("name of {}", CHAPTERS[0].icons[0])));
+        // The last page: back, but no further.
+        g.go(usize::MAX);
+        let draws = g.draw(away, &six, &name);
+        assert!(texts(&draws).contains(&format!("{0} / {0}", g.spreads()).as_str()));
+        let sprites: Vec<[f32; 4]> = draws.iter().filter_map(|d| if let GuideDraw::Sprite(s, _) = d { Some(*s) } else { None }).collect();
+        assert!(sprites.contains(&arrow_src(false, false)) && !sprites.contains(&arrow_src(true, false)));
+        // The assembly chapter draws its grids: slots, the parts' icons and the result.
+        let mut all = Vec::new();
+        for s in g.starts[2] / 2..g.starts[3] / 2 {
+            g.go(s);
+            all.extend(g.draw(away, &six, &name));
+        }
+        let items: Vec<&str> = all.iter().filter_map(|d| if let GuideDraw::Item(id, _) = d { Some(*id) } else { None }).collect();
+        for a in &ASSEMBLIES {
+            assert!(items.contains(&a.result), "{}", a.result);
+            for p in a.parts {
+                assert!(items.contains(&p.0), "{}", p.0);
+            }
+        }
+        assert!(all.iter().filter(|d| matches!(d, GuideDraw::Sprite(s, _) if *s == SLOT_SRC)).count() >= ASSEMBLIES.len() * 10);
     }
 
     #[test]

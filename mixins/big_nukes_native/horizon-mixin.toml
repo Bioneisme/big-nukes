@@ -217,6 +217,55 @@ bindings = [
   { name = "claimed", ty = "&mut bool", value = "&mut *claimed" },
 ]
 
+# The guide: a right click with it (use-item, above) asks the player's window to open the mod's own screen
+# (API 111), drawn and heard in the screen hooks (API 78, 80, 93, 104).
+[[injection]]
+id = "guide-render"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_screen_render_post"
+helper = "guide_render.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
+  { name = "screen", ty = "&horizon_client::mod_api::NativeScreenView<'_>", value = "screen" },
+]
+
+[[injection]]
+id = "guide-mouse"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_screen_mouse_button_pressed_pre"
+helper = "guide_mouse.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "screen", ty = "&horizon_client::mod_api::NativeScreenView<'_>", value = "screen" },
+  { name = "button", ty = "i32", value = "button" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+[[injection]]
+id = "guide-wheel"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_screen_mouse_scrolled_pre"
+helper = "guide_wheel.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "screen", ty = "&horizon_client::mod_api::NativeScreenView<'_>", value = "screen" },
+  { name = "scroll", ty = "[f64; 2]", value = "scroll" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+[[injection]]
+id = "guide-key"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_screen_key_pressed_pre"
+helper = "guide_key.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "screen", ty = "&horizon_client::mod_api::NativeScreenView<'_>", value = "screen" },
+  { name = "key", ty = "&str", value = "key" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
 # The anti-rad: its consume effect is of the mod's own kind, heard with the drinker as the acting player (API 74).
 [[injection]]
 id = "consume-effect"
@@ -386,7 +435,7 @@ bindings = [
   { name = "phase", ty = "horizon_client::mod_api::WorldPhase", value = "phase" },
 ]
 
-# News of a blast and of the radiation, in the window (API 40).
+# News of a blast and of the radiation, and the guide to open, in the window (API 40).
 [[injection]]
 id = "net-from-server"
 kind = "HEAD"
@@ -487,7 +536,7 @@ bindings = [
   { name = "world", ty = "&mut crate::gfx::native_render::WorldDrawn<'_>", value = "&mut *world" },
 ]
 
-# Every frame, on any screen: the renderer's list of blasts.
+# Every frame, on any screen: the renderer's list of blasts, and the guide's page turns heard.
 [[injection]]
 id = "frame"
 kind = "HEAD"

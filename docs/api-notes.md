@@ -186,3 +186,21 @@ Read in the source of 66f3981, not yet seen in the game:
   dropped whole. With Horizon's Fog option off the distances are 1e9 and 2e9, and the mod leaves them.
 - `native_world_lifecycle` is the server's: a LAN guest or a player on a server never hears it. The window's state goes
   in `native_client_level_unload` (API 135), told on a dimension change and on leaving a world.
+
+## The guide
+
+Read in the source of 66f3981, not yet seen in the game:
+- The game's book screen opens only for `minecraft:written_book` (`game/books.rs`), so the guide is an item of the
+  mod's (on `minecraft:book`, with its `enchantable` removed) and its screen the mod's own (API 111).
+- `native_mod_screen_open` opens only in the window's own `Game`, and `native_use_item` runs on the server: a right
+  click with the guide is claimed there, and a `big_nukes:guide` message (API 40) asks the player's window to open
+  it. A click on a block that lets it through reaches `native_use_item` too, so the guide opens there as a book does.
+- The screen hooks (`native_screen_render_post`, `native_screen_mouse_button_pressed_pre`,
+  `native_screen_mouse_scrolled_pre`, `native_screen_key_pressed_pre`) fire for every screen and are `&self`: the glue
+  checks `screen.id == "mod"` and `native_mod_screen() == Some(ID)`, keeps the open book in a static, and plays a
+  turned page's sound at the next `native_frame`, where `native_play_local_sound` can run. Escape closes the screen
+  by itself, so the key hook leaves it alone.
+- Item icons are the game's (`native_item`, API 20), a block's item too. The texture is the GUI atlas' sprite
+  `big_nukes:gui/guide` (every namespace's `textures/gui` is packed); without the assets half
+  `native_sprite_size` doesn't answer its size and the screen draws in plain colours.
+- The text is wrapped with `native_text_width` and laid out again at each opening, in the window's language.
