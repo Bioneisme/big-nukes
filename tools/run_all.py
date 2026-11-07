@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 CHECKS = [
@@ -35,6 +36,8 @@ def main():
     game = os.path.join(os.environ["APPDATA"], "horizon", "instances", instance)
     build = version(instance)
     env = {k: v for k, v in os.environ.items() if k != "HORIZON_HOME"}
+    # A control socket of the instance's own, so a game the player has open never takes the checks' commands.
+    env["HORIZON_CONTROL"] = os.path.join(tempfile.gettempdir(), f"horizon-control-{instance}.json")
     os.makedirs(LOGS, exist_ok=True)
     print(f"{instance} on {build}", flush=True)
     results = []
