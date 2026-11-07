@@ -711,7 +711,8 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
         game.native_run_command(&format!("execute in {dimension} run forceload query"));
     }
     decon::server_tick(game);
-    for name in std::mem::take(&mut *lock(&GUIDES)) {
+    let asked = std::mem::take(&mut *lock(&GUIDES));
+    for name in asked {
         game.native_run_command(&rules::guide_give(&name));
     }
 }

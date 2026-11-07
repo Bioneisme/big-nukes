@@ -186,5 +186,5 @@
   "big_nukes.tip.decontaminator.2": "What it cleaned stays clean, but a new blast brings the radiation back. Hoppers bring fuel.",
   "big_nukes.screen.decontaminator": "Decontaminator",
   "big_nukes.screen.decontaminator.radius": "Radius %s / %s",
-  "big_nukes.screen.decontaminator.background": "Background here: %s rad/s"
+  "big_nukes.screen.decontaminator.background": "Background before cleaning: %s rad/s"
 }

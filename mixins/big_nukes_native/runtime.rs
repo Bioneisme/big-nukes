@@ -3175,27 +3175,54 @@ fn ring_columns(k: u32) -> Vec<[i32; 2]> {
     columns
 }
 
-/// The ground a pass turns back to grass: the blast's ash, and the coarse dirt that
-/// stands in for it without the assets half (so natural coarse dirt too).
-pub fn regrows(surface: &str) -> bool {
-    surface == ASH || surface == ASH_STAND_IN
+/// How deep under each column's surface (`WorldSurface`: the highest block of any kind) a pass
+/// looks for the blast's ground.
+pub const REGROW_DEPTH: u32 = 24;
+
+/// The blast's ground a pass turns back to grass: its ash, or without the assets half the coarse
+/// dirt the ash is a copy of (with the assets half, natural coarse dirt stays).
+pub fn regrow_target(ash: bool) -> &'static str {
+    if ash { ASH } else { ASH_STAND_IN }
 }
 
-/// A pass's edit for `columns` (absolute x and z): each column's top block by the world's
-/// surface, which water and any block over the ground are, made grass where it regrows.
-/// `ash` is whether the game has the ash block: an edit naming a block the game lacks is
-/// refused whole.
-pub fn regrow_edit(columns: &[[i32; 2]], ash: bool) -> ChunkEdit {
-    let filters: Vec<String> =
-        [ASH, ASH_STAND_IN].into_iter().filter(|b| (ash || *b != ASH) && regrows(b)).map(str::to_owned).collect();
-    let n = filters.len() as u32;
-    let runs = columns
-        .iter()
-        .flat_map(|&[x, z]| {
-            (0..n).map(move |f| Run { x, z, y: -1, height: 1, surface: Some(Surface::WorldSurface), block: 0, only: Some(f) })
-        })
-        .collect();
-    ChunkEdit { palette: vec!["minecraft:grass_block".to_owned()], filters, runs }
+/// What the wave leaves over its ash and a pass looks through: air, the snow and fire on it, the
+/// leaves of broken trees, plants.
+fn see_through(block: &str) -> bool {
+    let name = block.split('[').next().unwrap_or(block);
+    matches!(
+        name,
+        "minecraft:air"
+            | "minecraft:cave_air"
+            | "minecraft:snow"
+            | "minecraft:fire"
+            | "minecraft:soul_fire"
+            | "minecraft:short_grass"
+            | "minecraft:tall_grass"
+            | "minecraft:fern"
+            | "minecraft:large_fern"
+            | "minecraft:dead_bush"
+            | "minecraft:vine"
+    ) || name.ends_with("_leaves")
+        || name.ends_with("_sapling")
+}
+
+/// In a column read from the top down, the index of the ash a pass turns: the first block that
+/// isn't seen through, if it is `target`. Water or any real block over it (a roof) keeps it.
+pub fn ash_under<'a>(top_down: impl Iterator<Item = &'a str>, target: &str) -> Option<usize> {
+    for (i, block) in top_down.enumerate() {
+        if see_through(block) {
+            continue;
+        }
+        return (block.split('[').next() == Some(target)).then_some(i);
+    }
+    None
+}
+
+/// A pass's edit: grass at each of `found` (absolute places a column read found the ash at), only
+/// where it is still the blast's ground. An edit naming a block the game lacks is refused whole.
+pub fn regrow_edit(found: &[[i32; 3]], ash: bool) -> ChunkEdit {
+    let runs = found.iter().map(|&[x, y, z]| Run { x, z, y, height: 1, surface: None, block: 0, only: Some(0) }).collect();
+    ChunkEdit { palette: vec!["minecraft:grass_block".to_owned()], filters: vec![regrow_target(ash).to_owned()], runs }
 }
 
 // ---- the blast's effects ------------------------------------------------------
@@ -8153,26 +8180,41 @@ mod decon_tests {
     }
 
     #[test]
-    fn ash_and_coarse_dirt_regrow_grass() {
-        assert!(regrows(ASH) && regrows("minecraft:coarse_dirt"));
-        for other in ["minecraft:grass_block", "minecraft:dirt", "minecraft:water", "minecraft:stone", "minecraft:air", DECONTAMINATOR] {
-            assert!(!regrows(other), "{other}");
+    fn the_pass_finds_the_ash_under_snow_leaves_fire_and_plants() {
+        // A column read top down: what the wave left over the ash (leaves of broken trees, snow on them, fire,
+        // a plant) lets the pass through to it.
+        let col = ["minecraft:snow[layers=1]", "minecraft:spruce_leaves[distance=2]", "minecraft:air", "minecraft:fire", ASH, "minecraft:dirt"];
+        assert_eq!(ash_under(col.into_iter(), ASH), Some(4));
+        assert_eq!(ash_under(["minecraft:short_grass", ASH].into_iter(), ASH), Some(1));
+        assert_eq!(ash_under([ASH, ASH].into_iter(), ASH), Some(0), "the top one");
+    }
+
+    #[test]
+    fn ash_under_water_or_a_roof_stays() {
+        assert_eq!(ash_under(["minecraft:water[level=0]", ASH].into_iter(), ASH), None);
+        assert_eq!(ash_under(["minecraft:stone", "minecraft:air", ASH].into_iter(), ASH), None);
+        assert_eq!(ash_under(["minecraft:oak_planks", ASH].into_iter(), ASH), None);
+        assert_eq!(ash_under(["minecraft:air", "minecraft:dirt"].into_iter(), ASH), None, "no ash");
+        assert_eq!(ash_under(std::iter::empty(), ASH), None);
+    }
+
+    #[test]
+    fn natural_coarse_dirt_stays_when_the_game_has_ash() {
+        assert_eq!(regrow_target(true), ASH);
+        assert_eq!(regrow_target(false), "minecraft:coarse_dirt", "it stands in for ash only without the assets half");
+        assert_eq!(ash_under(["minecraft:coarse_dirt"].into_iter(), regrow_target(true)), None);
+    }
+
+    #[test]
+    fn the_edit_turns_only_the_ash_it_was_given() {
+        let e = regrow_edit(&[[3, 66, -4], [10, 70, 7]], true);
+        assert_eq!(e.palette, ["minecraft:grass_block"]);
+        assert_eq!(e.filters, [ASH], "only ash: a block changed since the read stays");
+        assert_eq!(e.runs.len(), 2);
+        for (r, [x, y, z]) in e.runs.iter().zip([[3, 66, -4], [10, 70, 7]]) {
+            assert_eq!((r.x, r.y, r.z, r.height, r.surface, r.block, r.only), (x, y, z, 1, None, 0, Some(0)));
         }
-        // The edit: the top block of each column by the world's surface (water and any block over the ash count),
-        // made grass only where it is ash or coarse dirt.
-        let cols = [[3, -4], [10, 7]];
-        for ash in [true, false] {
-            let e = regrow_edit(&cols, ash);
-            assert_eq!(e.palette, ["minecraft:grass_block"]);
-            assert!(e.filters.iter().all(|f| regrows(f)));
-            assert_eq!(e.filters.contains(&ASH.to_owned()), ash, "no ash without the assets half: the edit would be refused");
-            assert_eq!(e.runs.len(), cols.len() * e.filters.len());
-            for r in &e.runs {
-                assert!(cols.contains(&[r.x, r.z]));
-                assert_eq!((r.y, r.height, r.surface, r.block), (-1, 1, Some(Surface::WorldSurface), 0));
-                assert!(r.only.is_some_and(|f| (f as usize) < e.filters.len()));
-            }
-        }
+        assert_eq!(regrow_edit(&[[0, 0, 0]], false).filters, ["minecraft:coarse_dirt"]);
         assert!(regrow_edit(&[], true).runs.is_empty());
     }
 

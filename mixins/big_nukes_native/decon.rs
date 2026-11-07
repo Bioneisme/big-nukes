@@ -5,7 +5,7 @@
 // block here by its id.
 
 use crate::game::{
-    Game, big_nukes as rules,
+    Game, NativeHeightmap, big_nukes as rules,
     big_nukes_glue::{self as glue, lock},
 };
 use horizon_client::{
@@ -217,7 +217,8 @@ pub(in crate::game) fn tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut Mod
                 pass.clear();
             }
         }
-        background = rules::background(&st.saved.zones, &st.saved.cleans, &dimension, glue::middle(pos), now);
+        // What it is fighting: the background here before any cleaning.
+        background = rules::background(&st.saved.zones, &[], &dimension, glue::middle(pos), now);
     }
     if !pass.is_empty() {
         lock(&REGROW).push((dimension, pass));
@@ -244,7 +245,34 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
         return;
     }
     let ash = glue::ash_here(game, dimension);
-    let edit = rules::regrow_edit(&columns, ash);
+    // Each column read down from its highest block: the ash under what the wave left over it.
+    let target = rules::regrow_target(ash);
+    let cols: Vec<(i32, i32)> = columns.iter().map(|&[x, z]| (x, z)).collect();
+    let depth = rules::REGROW_DEPTH as usize;
+    let read = match game.native_read_columns(dimension, &cols, NativeHeightmap::WorldSurface, (rules::REGROW_DEPTH, 0)) {
+        Ok(read) => read,
+        Err(e) => {
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                log::warn!("[big_nukes] the decontaminator couldn't read the ground: {e}");
+            }
+            return;
+        }
+    };
+    let found: Vec<[i32; 3]> = columns
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &[x, z])| {
+            let height = (*read.bases.get(i)?)?;
+            let column = read.blocks.get(i * depth..(i + 1) * depth)?;
+            let top_down = column.iter().rev().map(|&b| read.palette.get(usize::from(b)).map_or("minecraft:air", String::as_str));
+            let k = rules::ash_under(top_down, target)?;
+            Some([x, height - 1 - k as i32, z])
+        })
+        .collect();
+    if found.is_empty() {
+        return;
+    }
+    let edit = rules::regrow_edit(&found, ash);
     if let Err(e) = game.native_edit_blocks(dimension, &glue::native(edit))
         && !WARNED.swap(true, Ordering::Relaxed)
     {
@@ -279,7 +307,8 @@ pub(in crate::game) fn consume_effect(game: &Game<'_>, kind: &str) -> bool {
 
 /// The end of the server's tick, where commands run: the tablets eaten give their effect.
 pub(in crate::game) fn server_tick(game: &mut Game<'_>) {
-    for name in std::mem::take(&mut *lock(&TABLETS)) {
+    let eaten = std::mem::take(&mut *lock(&TABLETS));
+    for name in eaten {
         game.native_run_command(&rules::iodine_command(&name));
     }
 }

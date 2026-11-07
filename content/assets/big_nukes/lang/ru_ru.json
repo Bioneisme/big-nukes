@@ -186,5 +186,5 @@
   "big_nukes.tip.decontaminator.2": "Очищенное остаётся чистым, но новый взрыв возвращает радиацию. Воронки подают топливо.",
   "big_nukes.screen.decontaminator": "Дезактиватор",
   "big_nukes.screen.decontaminator.radius": "Радиус %s / %s",
-  "big_nukes.screen.decontaminator.background": "Фон здесь: %s рад/с"
+  "big_nukes.screen.decontaminator.background": "Фон до очистки: %s рад/с"
 }
