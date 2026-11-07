@@ -156,7 +156,7 @@ static GENERATORS: Mutex<Vec<(String, [i32; 3], u64)>> = Mutex::new(Vec::new());
 static ROOMS: Mutex<Vec<Room>> = Mutex::new(Vec::new());
 /// The share of the background each player's shelter let in at their last second, for their window.
 static SHELTER: Mutex<Vec<(u128, f64)>> = Mutex::new(Vec::new());
-/// The last hand on a door, so a click heard for both hands opens it once.
+/// The last click on a door (player, its lower half, tick), so one press turns it once.
 static LAST_DOOR: Mutex<Option<(u128, [i32; 3], u64)>> = Mutex::new(None);
 
 /// How long a generator heard burning powers what is round it.
@@ -429,20 +429,24 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
     }
     *canceled = true;
     let Some(who) = game.native_acting_player() else { return true };
-    {
-        let mut last = lock(&LAST_DOOR);
-        let click = (who.uuid, pos, now());
-        if *last == Some(click) {
-            return true;
-        }
-        *last = Some(click);
-    }
-    let open = game.native_block_property(pos, "open").as_deref() != Some("true");
-    let value = if open { "true" } else { "false" };
     let other = match game.native_block_property(pos, "half").as_deref() {
         Some("upper") => [pos[0], pos[1] - 1, pos[2]],
         _ => [pos[0], pos[1] + 1, pos[2]],
     };
+    // Both halves are one door: its lower half names it.
+    let door = if other[1] < pos[1] { other } else { pos };
+    {
+        let mut last = lock(&LAST_DOOR);
+        let same = rules::same_press(*last, who.uuid, door, now());
+        // A held button keeps being the same press.
+        *last = Some((who.uuid, door, now()));
+        if same {
+            return true;
+        }
+    }
+    let open = game.native_block_property(pos, "open").as_deref() != Some("true");
+    let value = if open { "true" } else { "false" };
+    // The game's door brings its other half along; set it too, in case it doesn't.
     game.native_set_block_property(pos, "open", value);
     if game.native_block(other) == rules::HERMETIC_DOOR {
         game.native_set_block_property(other, "open", value);

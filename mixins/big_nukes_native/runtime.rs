@@ -3721,6 +3721,15 @@ pub enum Cell {
     Sky,
 }
 
+/// How many ticks after the last click on a door a click on it is still the same press: the game may hear
+/// one click twice, a tick apart, and repeats a held button every 4 ticks.
+pub const DOOR_PRESS_GAP: u64 = 5;
+
+/// Whether `who`'s click on `door` at `now` is the same press as the `last` one heard (player, door, tick).
+pub fn same_press(last: Option<(u128, [i32; 3], u64)>, who: u128, door: [i32; 3], now: u64) -> bool {
+    last.is_some_and(|(w, d, t)| w == who && d == door && now.saturating_sub(t) <= DOOR_PRESS_GAP)
+}
+
 /// A door by its `open` property: an open one lets the air through.
 pub fn door_cell(open: Option<&str>) -> Cell {
     if open == Some("true") { Cell::Open } else { Cell::Wall }
@@ -9421,6 +9430,20 @@ mod bunker_tests {
         assert_eq!(door_cell(Some("false")), Cell::Wall);
         assert_eq!(door_cell(Some("true")), Cell::Open);
         assert_eq!(door_cell(None), Cell::Wall);
+    }
+
+    #[test]
+    fn a_door_click_and_its_echo_or_a_held_button_turn_the_door_once() {
+        let (me, door) = (7u128, [1, 64, 1]);
+        let last = Some((me, door, 100));
+        // The click's echo a tick later, and the button held: the same press.
+        assert!(same_press(last, me, door, 101));
+        assert!(same_press(last, me, door, 100 + DOOR_PRESS_GAP));
+        // A new press after a pause, another player, another door: a new click.
+        assert!(!same_press(last, me, door, 101 + DOOR_PRESS_GAP));
+        assert!(!same_press(last, 8, door, 101));
+        assert!(!same_press(last, me, [1, 64, 2], 101));
+        assert!(!same_press(None, me, door, 101));
     }
 
     #[test]
