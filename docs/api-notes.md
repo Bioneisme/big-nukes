@@ -186,3 +186,30 @@ Read in the source of 66f3981, not yet seen in the game:
   dropped whole. With Horizon's Fog option off the distances are 1e9 and 2e9, and the mod leaves them.
 - `native_world_lifecycle` is the server's: a LAN guest or a player on a server never hears it. The window's state goes
   in `native_client_level_unload` (API 135), told on a dimension change and on leaving a world.
+
+## The silo and the bomber
+
+Read in the source of 66f3981, not yet seen in the game:
+- The flying missile, bomber and bomb are `item_display`s made with `native_summon` and moved every tick with
+  `native_move_entity` (API 59) at the end of their level's tick, the only place the entity helpers reach. A
+  display glides between places over its `teleport_duration` (2), and `view_range` 12 lets it be seen 768 blocks
+  off. Summoning refuses a chunk that isn't loaded, so a missing display is made again on a later tick.
+- Horizon draws an item display as its orientation, then its `transformation`, then half a turn about y, then the
+  item (`text_displays.rs`, as vanilla's `ItemDisplayRenderer`): the models are written nose at -z, so the nose
+  comes out along the display's yaw and pitch, and the summon's `transformation` scales them (a model can't pass
+  3 blocks) and moves the missile forward so its tail is the display's place.
+- The displays are saved with their chunks: each carries `big_nukes_flight`, its flight's and its session's tag,
+  and the mod kills the tagged ones that belong to no flight of this session.
+- A mod menu has 1 to 64 slots (`content.rs`): the console's menu has one hidden slot, as a keypad's.
+- `native_screen_key_pressed_pre` and `native_screen_char_typed_pre` (API 104) tell a block's mod menu apart by
+  `screen.menu` (`big_nukes:console`). A cancelled key still sends its characters, so the digits come through the
+  character hook while every key but Escape is cancelled (no `e` closing it, no 1-9 swapping hotbar items).
+- `native_net_send_to_server` needs the game mutably, so the screen's hooks queue a launch and `native_frame` sends
+  it; `native_net_from_client` (API 40) runs with no level in place, so a launch is worked at the end of the tick
+  of the player's level.
+- A block menu's screen doesn't know its block's place: the server sends it to the window when the console is
+  right-clicked (`big_nukes:console`).
+- `native_camera_pose` (API 402) moves the picture only; the window reckons the missile from the flight it was told
+  and its own `native_clock().game_time`, two ticks back for the display's glide.
+- The target's chunk is kept with `execute in <dim> run forceload add`, run from a level's tick where commands run,
+  and the world keeps the list (`Saved.forced`) to remove it once the blast's wave has worked its center's chunk.
