@@ -770,7 +770,6 @@ pub const BEDROCK_RADIUS: u32 = 1000;
 pub const BEDROCK_HOLE: u32 = 24;
 /// The Sunbreaker's fuse, and its last ticks, when an alarm sounds over the hiss.
 pub const SUNBREAKER_FUSE: u64 = 300;
-#[allow(dead_code)] // plan 8: until the glue uses it
 pub const ALARM_TICKS: u64 = 100;
 
 /// Why a Sunbreaker doesn't go off: its shell has only so many of its blocks.
@@ -825,7 +824,6 @@ pub fn read_structure(core: [i32; 3], block: &dyn Fn([i32; 3]) -> String) -> Str
 
 /// The core whose structure has a place at `pos`, or the core at `pos` itself: the
 /// nearest within 2 blocks on each axis.
-#[allow(dead_code)] // plan 8: until the glue uses it
 pub fn core_near(pos: [i32; 3], block: &dyn Fn([i32; 3]) -> String) -> Option<[i32; 3]> {
     std::iter::once(pos)
         .chain(structure_cells(pos).filter(|c| c.1 == 1).map(|c| c.0))

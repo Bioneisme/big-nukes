@@ -358,7 +358,7 @@ pub(in crate::game) fn refused(why: rules::Refused) -> Text {
 /// The blocks round the bomb at `pos` that a Sunbreaker's structure takes, as they
 /// stand now: read for a rule that looks at them after the state is locked or the
 /// wave has changed them.
-pub(in crate::game) fn structure_now(game: &Game<'_>, pos: [i32; 3]) -> HashMap<[i32; 3], String> {
+fn structure_now(game: &Game<'_>, pos: [i32; 3]) -> HashMap<[i32; 3], String> {
     rules::structure_cells(pos).map(|(p, _)| (p, game.native_block(p))).collect()
 }
 
@@ -906,6 +906,7 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
     lock(&PLACED).clear();
     lock(&DIED).clear();
     lock(&ANTI_RAD).clear();
+    lock(&MIRRORS).clear();
     silo::forget();
 }
 
@@ -917,6 +918,7 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
 fn has_entity(block: &str) -> bool {
     matches!(block, rules::CENTRIFUGE | rules::ASSEMBLY_TABLE)
         || rules::BombKind::of_block(block).is_some()
+        || is_part(block)
         || silo::has_entity(block)
 }
 
@@ -926,8 +928,9 @@ pub(in crate::game) fn block_entity(block: &str, entity: &mut Option<(String, Co
     }
 }
 
+/// Every block entity of the mod ticks but those of a Sunbreaker's structure, which only show its core's keypad.
 pub(in crate::game) fn block_entity_ticks(block: &str, ticks: &mut bool) {
-    if has_entity(block) {
+    if has_entity(block) && !is_part(block) {
         *ticks = true;
     }
 }
@@ -937,6 +940,7 @@ pub(in crate::game) fn container(block: &str, container: &mut Option<ModContaine
         rules::CENTRIFUGE => *container = Some(centrifuge_container()),
         rules::ASSEMBLY_TABLE => *container = Some(assembly_container()),
         block if silo::has_entity(block) => *container = Some(silo::container(block)),
+        block if is_part(block) => *container = Some(bomb_container(rules::BombKind::Sunbreaker)),
         _ => {
             if let Some(kind) = rules::BombKind::of_block(block) {
                 *container = Some(bomb_container(kind));
@@ -965,6 +969,7 @@ pub(in crate::game) fn menu_button(game: &mut Game<'_>, pos: [i32; 3], entity: &
     match entity.id.as_str() {
         rules::ASSEMBLY_TABLE => assembly_button(game, entity, id),
         block if keypad_bomb(block) => keypad_button(game, pos, entity, id),
+        block if is_part(block) => part_button(game, pos, entity, id),
         _ => {}
     }
 }
@@ -973,7 +978,7 @@ pub(in crate::game) fn screen(block: &str, screen: &mut Option<NativeScreen>) {
     match block {
         rules::CENTRIFUGE => *screen = Some(centrifuge_screen()),
         rules::ASSEMBLY_TABLE => *screen = Some(assembly_screen()),
-        block if keypad_bomb(block) => *screen = Some(keypad_screen()),
+        block if keypad_bomb(block) || is_part(block) => *screen = Some(keypad_screen()),
         rules::LAUNCH_PAD => *screen = Some(silo::pad_screen()),
         rules::LAUNCH_CONSOLE => *screen = Some(silo::console_screen()),
         _ => {}
@@ -985,6 +990,8 @@ pub(in crate::game) fn screen_draw(game: &Game<'_>, block: &str, data: &[i32], b
         rules::CENTRIFUGE => centrifuge_screen_draw(game, data, batch, origin),
         rules::ASSEMBLY_TABLE => assembly_screen_draw(game, data, batch, origin),
         block if keypad_bomb(block) => keypad_draw(game, block, data, batch, origin),
+        // A block of a Sunbreaker's structure shows its core's keypad, under the core's name.
+        block if is_part(block) => keypad_draw(game, rules::SUNBREAKER_CORE, data, batch, origin),
         rules::LAUNCH_PAD => silo::pad_draw(game, batch, origin),
         rules::LAUNCH_CONSOLE => silo::console_draw(game, data, batch, origin),
         _ => {}
@@ -994,7 +1001,7 @@ pub(in crate::game) fn screen_draw(game: &Game<'_>, block: &str, data: &[i32], b
 pub(in crate::game) fn screen_click(block: &str, at: [f32; 2], right: bool, button: &mut Option<i32>) {
     match block {
         rules::ASSEMBLY_TABLE => assembly_screen_click(at, right, button),
-        block if keypad_bomb(block) => keypad_click(at, right, button),
+        block if keypad_bomb(block) || is_part(block) => keypad_click(at, right, button),
         rules::LAUNCH_CONSOLE => silo::console_click(at, right),
         _ => {}
     }
@@ -1130,8 +1137,11 @@ fn centrifuge_tick(game: &mut Game<'_>, entity: &mut ModBlockEntity) {
 /// A shift-click from the inventory: uranium it works to its slot, fuel to its slot,
 /// nothing else. One from the centrifuge goes the game's way, to the inventory.
 pub(in crate::game) fn quick_move(game: &Game<'_>, entity: &mut ModBlockEntity, container_slots: usize, slot: usize, stack: &mut ItemStack, handled: &mut bool) {
-    // Nothing moves into or out of a bomb's hidden slot, nor a console's or a beacon's.
-    if rules::BombKind::of_block(&entity.id).is_some() || matches!(entity.id.as_str(), rules::LAUNCH_CONSOLE | rules::STRIKE_BEACON) {
+    // Nothing moves into or out of a bomb's hidden slot, nor a console's, a beacon's or a Sunbreaker's block's.
+    if rules::BombKind::of_block(&entity.id).is_some()
+        || is_part(&entity.id)
+        || matches!(entity.id.as_str(), rules::LAUNCH_CONSOLE | rules::STRIKE_BEACON)
+    {
         *handled = true;
         return;
     }
@@ -1363,6 +1373,8 @@ const BLOCKS: usize = 4;
 const PLAYERS: usize = 7;
 /// How far a bomb's refusal is told.
 const TOLD_WITHIN: f64 = 64.0;
+/// How far a Sunbreaker's is told when its fuse burns out: whoever lit it has run.
+const SUNBREAKER_TOLD_WITHIN: f64 = 256.0;
 
 /// The player, the bomb and the tick of the last click handled on a bomb. The
 /// game asks once per hand: the off hand's turn of the same click is let go,
@@ -1420,10 +1432,15 @@ fn sound(game: &mut Game<'_>, pos: [i32; 3], event: &str, volume: f32, pitch: f3
 
 /// A line in the chat of every player near the bomb.
 pub(in crate::game) fn tell_near(game: &mut Game<'_>, dimension: &str, pos: [i32; 3], line: &Text) {
+    tell_within(game, dimension, pos, line, TOLD_WITHIN);
+}
+
+/// A line in the chat of every player within `within` blocks of `pos`.
+fn tell_within(game: &mut Game<'_>, dimension: &str, pos: [i32; 3], line: &Text, within: f64) {
     let at = middle(pos);
     for p in game.native_server_players() {
         let far = (0..3).map(|i| (p.position[i] - at[i]).powi(2)).sum::<f64>().sqrt();
-        if p.dimension == dimension && far <= TOLD_WITHIN {
+        if p.dimension == dimension && far <= within {
             game.native_tell(p.uuid, line.clone());
         }
     }
@@ -1442,24 +1459,43 @@ fn keypad_menu_known() -> bool {
 /// detonator goes in, flint and steel lights the fuse, and anything else opens the keypad, if
 /// there is one. The furnace the bomb is built on never opens. Sneaking with
 /// something else in hand lets it be used on the bomb (a block placed against it).
+///
+/// A block of a Sunbreaker's structure stands for its core, hidden inside: the click
+/// acts on the core, and the core's keypad opens on the block clicked (`MIRRORS`).
+/// One with no core near opens nothing, and takes a block placed against it only
+/// from a sneaking player, as the core does.
 pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
     if *canceled || !game.native_on(rules::ID) || silo::right_click(game, pos, canceled) {
         return;
     }
-    if rules::BombKind::of_block(&game.native_block(pos)).is_none() {
+    let block = game.native_block(pos);
+    let core = if rules::BombKind::of_block(&block).is_some() {
+        pos
+    } else if is_part(&block) {
+        match rules::core_near(pos, &|p| game.native_block(p)) {
+            Some(core) => core,
+            None => {
+                let held = game.native_equipment(EquipmentSlot::MainHand).is_some();
+                *canceled = !(held && game.native_sneaking());
+                return;
+            }
+        }
+    } else {
         return;
-    }
+    };
     let (Some(who), Some((now, maxpower))) = (game.native_acting_player(), clock(game)) else {
         return;
     };
     *canceled = true;
     {
         let mut last = lock(&LAST_CLICK);
-        if *last == Some((who.uuid, pos, now)) {
+        if *last == Some((who.uuid, core, now)) {
             return;
         }
-        *last = Some((who.uuid, pos, now));
+        *last = Some((who.uuid, core, now));
     }
+    let clicked = pos;
+    let pos = core;
     let Some(mut bomb) = game.native_with_mod_block_entity(pos, |e| load_bomb(e)).flatten() else {
         return;
     };
@@ -1491,9 +1527,8 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
     if held.as_deref() == Some(rules::FLINT_AND_STEEL) {
         match bomb.detonator {
             Some(rules::Detonator::Fuse) if bomb.fires_at.is_none() => {
-                let radius = bomb.kind.radius();
-                if radius > maxpower {
-                    tell(game, refused(rules::Refused::Maxpower { radius, maxpower }));
+                if let Err(why) = may_go_off(game, pos, bomb.kind, maxpower) {
+                    tell(game, refused(why));
                 } else if bomb.light(now) {
                     game.native_with_mod_block_entity(pos, |e| store_bomb(e, &bomb));
                     sound(game, pos, "minecraft:item.flintandsteel.use", 1.0, 1.0);
@@ -1511,10 +1546,19 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
         return;
     }
     let keypad = bomb.detonator == Some(rules::Detonator::Keypad);
-    if (keypad && keypad_menu_known()) || (held.is_some() && game.native_sneaking()) {
-        // The game goes on: the block opens its keypad, or the item is used.
+    if held.is_some() && game.native_sneaking() {
+        // The game goes on: the item is used.
         *canceled = false;
         return;
+    }
+    if keypad && keypad_menu_known() && (clicked == pos || mirror(game, &who.dimension, pos, clicked, &bomb, now)) {
+        // The game goes on: the block opens its keypad, the core's own or the one it shows on the block clicked.
+        *canceled = false;
+        return;
+    }
+    if bomb.kind == rules::BombKind::Sunbreaker {
+        let line = structure_line(game, pos);
+        tell(game, line);
     }
     let hint = match bomb.detonator {
         None => "big_nukes.bomb.no_detonator",
@@ -1523,6 +1567,101 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
         Some(rules::Detonator::Keypad) => return,
     };
     tell(game, Text::translate(hint, &[]));
+}
+
+// ---- the sunbreaker ---------------------------------------------------------------
+//
+// Its core is a bomb as the others are. The blocks of its structure have a block
+// entity each, which never ticks: its one hidden slot and its keypad menu are
+// there so the core's keypad opens on the block clicked. While a player may have
+// it open, the core's tick copies its keypad's data slots to that block (`MIRRORS`),
+// and the keys pressed there go to the core.
+
+/// Whether `block` is one of a Sunbreaker's structure.
+fn is_part(block: &str) -> bool {
+    rules::SUNBREAKER_PARTS.contains(&block)
+}
+
+/// The blocks showing a core's keypad: the dimension, the core and the block, the
+/// newest last.
+static MIRRORS: Mutex<Vec<(String, [i32; 3], [i32; 3])>> = Mutex::new(Vec::new());
+/// How many are kept: a block whose screen is closed costs a copy a tick until it is pushed out.
+const MIRRORS_KEPT: usize = 8;
+
+/// Shows the core's keypad on the block `part`, before the game opens its menu: false
+/// when the block has no block entity to show it.
+fn mirror(game: &mut Game<'_>, dimension: &str, core: [i32; 3], part: [i32; 3], bomb: &rules::Bomb, now: u64) -> bool {
+    let data = bomb.data(now).to_vec();
+    if game.native_with_mod_block_entity(part, |e| e.data = data).is_none() {
+        return false;
+    }
+    let mut mirrors = lock(&MIRRORS);
+    mirrors.retain(|m| m.0 != dimension || m.2 != part);
+    mirrors.push((dimension.to_owned(), core, part));
+    let over = mirrors.len().saturating_sub(MIRRORS_KEPT);
+    mirrors.drain(..over);
+    true
+}
+
+/// A core's tick: its keypad's data on the blocks that show it. One gone is let go.
+fn mirror_data(game: &mut Game<'_>, dimension: &str, core: [i32; 3], data: &[i32]) {
+    let parts: Vec<[i32; 3]> = lock(&MIRRORS).iter().filter(|m| m.0 == dimension && m.1 == core).map(|m| m.2).collect();
+    for part in parts {
+        let shown = game.native_block(part);
+        let kept = is_part(&shown)
+            && game
+                .native_with_mod_block_entity(part, |e| {
+                    if e.data != data {
+                        e.data = data.to_vec();
+                    }
+                })
+                .is_some();
+        if !kept {
+            lock(&MIRRORS).retain(|m| m.0 != dimension || m.2 != part);
+        }
+    }
+}
+
+/// A key pressed on a block's keypad: the core's, as `core_near` finds it.
+fn part_button(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity, id: i32) {
+    let Some(core) = rules::core_near(pos, &|p| game.native_block(p)) else {
+        return;
+    };
+    let Some(mut bomb) = game.native_with_mod_block_entity(core, |e| load_bomb(e)).flatten() else {
+        return;
+    };
+    let Some(data) = press_key(game, core, &mut bomb, id) else {
+        return;
+    };
+    game.native_with_mod_block_entity(core, |e| {
+        store_bomb(e, &bomb);
+        e.data = data.clone();
+    });
+    entity.data = data;
+}
+
+/// Whether the bomb at `pos` may go off now: its radius, or why not (a Sunbreaker's
+/// structure as it stands, the operator's limit).
+fn may_go_off(game: &Game<'_>, pos: [i32; 3], kind: rules::BombKind, maxpower: u32) -> Result<u32, rules::Refused> {
+    let radius = kind.power(pos, &|p| game.native_block(p)).map_err(rules::Refused::Structure)?;
+    if radius > maxpower {
+        return Err(rules::Refused::Maxpower { radius, maxpower });
+    }
+    Ok(radius)
+}
+
+/// What a Sunbreaker's structure is now: its layers and its radius.
+fn structure_line(game: &Game<'_>, core: [i32; 3]) -> Text {
+    let s = rules::read_structure(core, &|p| game.native_block(p));
+    let n = |v: u32| Text::literal(v.to_string());
+    let layers = [n(s.shell), n(rules::SHELL_BLOCKS), n(s.reflector), n(rules::REFLECTOR_BLOCKS)];
+    match s.radius() {
+        Ok(radius) => {
+            let [a, b, c, d] = layers;
+            Text::translate("big_nukes.sunbreaker.state", &[a, b, c, d, n(radius)])
+        }
+        Err(_) => Text::translate("big_nukes.sunbreaker.state.open", &layers),
+    }
 }
 
 /// The detonator goes in: out of the player's hand, unless they're creative,
@@ -1838,11 +1977,10 @@ fn bomb_tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity) {
         counting(game, pos, &bomb, left);
     }
     if bomb.tick(now) {
-        let radius = bomb.kind.radius();
-        let start = if radius > maxpower {
-            Err(rules::Refused::Maxpower { radius, maxpower })
-        } else {
-            start_blast(game, dimension, pos, radius)
+        // A Sunbreaker's radius is its structure's now.
+        let start = match may_go_off(game, pos, bomb.kind, maxpower) {
+            Ok(radius) => start_blast(game, dimension, pos, radius),
+            Err(why) => Err(why),
         };
         match start {
             Ok(_) => {
@@ -1853,10 +1991,16 @@ fn bomb_tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity) {
                 }
                 return;
             }
-            Err(why) => tell_near(game, dimension, pos, &refused(why)),
+            Err(why) => {
+                let within = if bomb.kind == rules::BombKind::Sunbreaker { SUNBREAKER_TOLD_WITHIN } else { TOLD_WITHIN };
+                tell_within(game, dimension, pos, &refused(why), within);
+            }
         }
     }
     let data = bomb.data(now).to_vec();
+    if bomb.kind == rules::BombKind::Sunbreaker {
+        mirror_data(game, dimension, pos, &data);
+    }
     if entity.data != data {
         entity.data = data;
     }
@@ -1868,9 +2012,12 @@ fn bomb_tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity) {
 /// What a counting bomb shows: a lit fuse smokes and sparks on top, a keypad
 /// beeps each second, higher as it ends.
 fn counting(game: &mut Game<'_>, pos: [i32; 3], bomb: &rules::Bomb, left: u64) {
+    let sunbreaker = bomb.kind == rules::BombKind::Sunbreaker;
     match bomb.detonator {
         Some(rules::Detonator::Fuse) => {
-            let top = [f64::from(pos[0]) + 0.5, f64::from(pos[1]) + 1.05, f64::from(pos[2]) + 0.5];
+            // A Sunbreaker's core smokes over its structure, two blocks up.
+            let above = if sunbreaker { 3.05 } else { 1.05 };
+            let top = [f64::from(pos[0]) + 0.5, f64::from(pos[1]) + above, f64::from(pos[2]) + 0.5];
             let smoke = ParticleOptions::simple(ParticleType::Smoke);
             game.native_level_send_particles(&smoke, None, top, [0.1, 0.05, 0.1], 0.02, 2);
             if left % 2 == 0 {
@@ -1879,6 +2026,11 @@ fn counting(game: &mut Game<'_>, pos: [i32; 3], bomb: &rules::Bomb, left: u64) {
             }
             if left % 20 == 0 {
                 sound(game, pos, "minecraft:block.fire.extinguish", 0.3, 2.0);
+            }
+            // The Sunbreaker's last seconds: an alarm, two notes, heard far round it.
+            if sunbreaker && left <= rules::ALARM_TICKS && left % 5 == 0 {
+                let pitch = if left % 10 == 0 { 1.5 } else { 1.0 };
+                sound(game, pos, "minecraft:block.note_block.bit", 4.0, pitch);
             }
         }
         Some(rules::Detonator::Keypad) if left % 20 == 0 => {
@@ -1891,24 +2043,36 @@ fn counting(game: &mut Game<'_>, pos: [i32; 3], bomb: &rules::Bomb, left: u64) {
 
 /// A keypad button pressed on the server.
 fn keypad_button(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity, id: i32) {
-    let (Some(mut bomb), Some(key), Some((now, maxpower))) = (load_bomb(entity), rules::Key::of_button(id), clock(game)) else {
+    let Some(mut bomb) = load_bomb(entity) else {
         return;
     };
+    if let Some(data) = press_key(game, pos, &mut bomb, id) {
+        entity.data = data;
+        store_bomb(entity, &bomb);
+    }
+}
+
+/// Button `id` of the keypad of the bomb at `pos`: the keypad's data slots after it.
+fn press_key(game: &mut Game<'_>, pos: [i32; 3], bomb: &mut rules::Bomb, id: i32) -> Option<Vec<i32>> {
+    let (Some(key), Some((now, maxpower))) = (rules::Key::of_button(id), clock(game)) else {
+        return None;
+    };
     match bomb.press(key, now) {
-        rules::Press::Accepted if bomb.kind.radius() > maxpower => {
-            // The code was right, but the bomb is over the operator's limit.
-            bomb.fires_at = None;
-            let why = rules::Refused::Maxpower { radius: bomb.kind.radius(), maxpower };
-            let dimension = game.native_dimension();
-            tell_near(game, dimension, pos, &refused(why));
+        rules::Press::Accepted => {
+            // The code was right, but the bomb may not go off: over the operator's limit, or a
+            // Sunbreaker without its shell.
+            if let Err(why) = may_go_off(game, pos, bomb.kind, maxpower) {
+                bomb.fires_at = None;
+                let dimension = game.native_dimension();
+                tell_near(game, dimension, pos, &refused(why));
+            }
         }
         rules::Press::CodeSet => sound(game, pos, "minecraft:block.note_block.chime", 1.0, 1.0),
         rules::Press::Wrong | rules::Press::TooShort => sound(game, pos, "minecraft:block.note_block.bass", 1.0, 0.8),
         rules::Press::Locked => sound(game, pos, "minecraft:block.note_block.bass", 1.0, 0.5),
-        rules::Press::Accepted | rules::Press::Typed | rules::Press::Cleared | rules::Press::Ignored => {}
+        rules::Press::Typed | rules::Press::Cleared | rules::Press::Ignored => {}
     }
-    entity.data = bomb.data(now).to_vec();
-    store_bomb(entity, &bomb);
+    Some(bomb.data(now).to_vec())
 }
 
 // ---- the remote ------------------------------------------------------------------
@@ -2047,6 +2211,11 @@ pub(in crate::game) fn use_item(game: &mut Game<'_>, stack: &ItemStack, claimed:
                 save(st);
             }
         }
+    }
+    let recorded = state(game).and_then(|g| g.as_ref().and_then(|st| st.saved.recorded(dimension, pos)));
+    if recorded == Some(rules::BombKind::Sunbreaker) && !here {
+        game.native_tell(who.uuid, Text::translate("big_nukes.sunbreaker.far", &[]));
+        return;
     }
     let blocks = if here { structure_now(game, pos) } else { HashMap::new() };
     let line = match start(game, dimension, |saved| saved.fire_bomb(dimension, pos, &read_from(&blocks))) {

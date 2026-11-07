@@ -236,3 +236,22 @@ Read in the source of 66f3981, not yet seen in the game:
   Home (`key.keyboard.home`) and a «Contents» button in the footer, right of the arrow back, on every other spread.
   A new book opens at the contents; one opened before in the window opens where it was left. Not yet seen in the
   game.
+
+## The Sunbreaker
+
+Read in the source of 66f3981, not yet seen in the game:
+- `native_edit_blocks` (API 126) has no bedrock guard (`block_edits.rs`): a run from `min_y` takes the bedrock, and
+  nothing lies below `min_y`, so a blast of radius 1000 leaves a hole into the void at its center. The Nether's roof
+  stays: its runs end at the roof (123), as every blast's do.
+- `native_block` (API 20) answers air where nothing is loaded, so a structure across an unloaded chunk reads as
+  missing blocks: a weaker bomb, not an error. It reads the level in place: a remote reads a Sunbreaker only from its
+  own dimension with its chunk loaded, and the chain reads it at the end of the level tick of the wave's dimension.
+- No API opens a block's menu at another block's place, and the core sits inside its shell: so every block of the
+  structure has a block entity that never ticks (`native_block_entity_ticks` false), with the bomb's container (one
+  hidden slot, the keypad's menu type). A right click lets the game open that block's keypad after writing the
+  core's keypad data to it; the core's tick copies its data there while the block is among the last eight opened
+  (`MIRRORS`), and the block's buttons (`native_menu_button`) act on the core found again with `core_near`.
+- A mod menu's data slots are read from the block entity at the menu's place at every container sync
+  (`lan/containers.rs`, `BlockEntity::Mod(e) => e.data`), whether or not that entity ticks.
+- A block with a menu opens it on a plain right click before an item is placed against it, so the structure's
+  blocks, like the bombs, take a block placed against them only from a sneaking player.
