@@ -2835,11 +2835,18 @@ pub fn uuid_text(uuid: u128) -> String {
 }
 
 impl Saved {
-    /// The zones that faded out for good are dropped. Whether any was.
+    /// The zones that faded out for good are dropped, and with them the decontaminators' circles no zone
+    /// reaches any more: they clean nothing, and never will, as every zone to come is newer than they are.
+    /// Whether any zone was.
     pub fn prune_zones(&mut self, now: u64) -> bool {
         let before = self.zones.len();
         self.zones.retain(|z| !z.gone(now));
-        self.zones.len() != before
+        if self.zones.len() == before {
+            return false;
+        }
+        let zones = &self.zones;
+        self.cleans.retain(|c| zones.iter().any(|z| c.meets(z)));
+        true
     }
 
     /// A second of the player's exposure at `pos`, with `protection` kept out:
@@ -3146,13 +3153,19 @@ impl Saved {
     /// grown, and the radius the circle has is answered. One placed where a circle is takes
     /// that circle on. A zone newer than the circle that reaches it starts a new circle from
     /// nothing (0 is answered): the old one still cleans the zones older than it, and goes
-    /// once the new one is as large. Nothing is kept of a circle of radius 0.
+    /// once the new one is as large. Nothing is kept of a circle of radius 0. One grown past its first block
+    /// with no circle had it pruned (`prune_zones`) when no zone reached it: it is made again as it was, or,
+    /// if a zone has come over it since, which is newer than it, started again from nothing.
     pub fn cleaned(&mut self, dimension: &str, center: [i32; 3], radius: u32) -> u32 {
         let now = self.tick;
         let here = |c: &Clean| c.dimension == dimension && c.center == center;
         let Some(i) = self.cleans.iter().rposition(here) else {
+            let new = Clean { dimension: dimension.to_owned(), center, radius, start: now };
+            if radius > 1 && self.zones.iter().any(|z| new.meets(z)) {
+                return 0;
+            }
             if radius > 0 {
-                self.cleans.push(Clean { dimension: dimension.to_owned(), center, radius, start: now });
+                self.cleans.push(new);
             }
             return radius;
         };
@@ -3196,7 +3209,9 @@ impl Decontaminator {
     /// `CLEAN_GROW_TICKS` (`Step::made`); a full circle burns nothing more. Without fuel it
     /// stands, keeping what it cleaned.
     pub fn step(&mut self, fuel: Option<u32>) -> Step {
+        // A full circle: the cleaning is over, and the flame goes out.
         if self.radius >= CLEAN_RADIUS {
+            self.burn = 0;
             return Step::IDLE;
         }
         let mut step = Step::IDLE;
@@ -3216,6 +3231,9 @@ impl Decontaminator {
             self.grow = 0;
             self.radius += 1;
             step.made = true;
+            if self.radius >= CLEAN_RADIUS {
+                self.burn = 0;
+            }
         }
         step
     }
@@ -8312,6 +8330,7 @@ mod decon_tests {
         // The decontaminator starts again once a newer zone reaches its circle: its old circle stays for the old
         // zone, and the new one grows from nothing for both.
         let mut saved = Saved { tick: 1000, zones: vec![old.clone()], ..Saved::default() };
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 1), 1);
         assert_eq!(saved.cleaned(OW, [0, 64, 0], 30), 30);
         assert_eq!(saved.cleans, [clean([0, 64, 0], 30, 1000)]);
         saved.tick = 2000;
@@ -8342,6 +8361,47 @@ mod decon_tests {
         assert_eq!((d.radius, d.grow, d.next_column), (31, 7, 300));
         d.keep_circle(0);
         assert_eq!((d.radius, d.grow, d.next_column), (0, 0, 0));
+    }
+
+    #[test]
+    fn circles_that_clean_nothing_go_with_the_last_zone_they_met() {
+        let fading = |center: [i32; 3], start: u64| Zone { radius: 100.0, half_life: 1000, floor: 0.0, ..zone(center, start) };
+        let mut saved = Saved { tick: 1000, zones: vec![fading([0, 64, 0], 0), zone([2000, 64, 0], 0)], ..Saved::default() };
+        saved.cleans = vec![clean([0, 64, 0], 20, 500), clean([2000, 64, 0], 20, 500), clean([9000, 64, 0], 5, 500)];
+        // While no zone goes, nothing is looked at.
+        assert!(!saved.prune_zones(2000));
+        assert_eq!(saved.cleans.len(), 3);
+        // The fading zone goes: the circles no zone reaches go with it, the one over the lasting zone stays.
+        assert!(saved.prune_zones(20_000));
+        assert_eq!(saved.cleans, [clean([2000, 64, 0], 20, 500)]);
+        // Its decontaminator, still there, makes its circle again as it was while no zone reaches it...
+        saved.tick = 21_000;
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 20), 20);
+        assert_eq!(saved.cleans[1], clean([0, 64, 0], 20, 21_000));
+        // ...and starts from nothing if a zone came over it meanwhile: that zone is newer than its old circle.
+        saved.cleans.remove(1);
+        saved.zones.push(zone([30, 64, 0], 20_500));
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 20), 0);
+        assert_eq!(saved.cleans.len(), 1);
+        // One that has just grown its first block starts its circle anywhere.
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 1), 1);
+        assert_eq!(saved.cleans[1], clean([0, 64, 0], 1, 21_000));
+    }
+
+    #[test]
+    fn the_flame_goes_out_when_the_circle_is_full() {
+        let mut d = Decontaminator { radius: CLEAN_RADIUS - 1, grow: CLEAN_GROW_TICKS - 1, burn: 300, burn_max: 400, next_column: 0 };
+        assert!(d.step(Some(1600)).made);
+        assert_eq!(d.radius, CLEAN_RADIUS);
+        assert_eq!(d.data(0.0)[0], 0, "out as the cleaning ends");
+        assert_eq!(flame_height(d.data(0.0)[0], d.data(0.0)[1]), 0);
+        // One saved lit at its full circle goes out at its next tick, taking no fuel.
+        let mut lit = Decontaminator { radius: CLEAN_RADIUS, burn: 300, burn_max: 400, ..Decontaminator::default() };
+        assert_eq!(lit.step(Some(1600)), Step::IDLE);
+        assert_eq!(lit.burn, 0);
+        // Started again from nothing, it takes fuel.
+        lit.keep_circle(0);
+        assert!(lit.step(Some(1600)).took_fuel);
     }
 
     // ---- the decontaminator ----
@@ -8504,6 +8564,8 @@ mod decon_tests {
         // The window is told the circles of its dimension with the zones, and reckons the same background.
         saved.blast(OW, [0, 64, 0], 120).unwrap();
         saved.tick = 500;
+        // It grows from its first block, as a decontaminator's does.
+        saved.cleaned(OW, [0, 64, 0], 1);
         saved.cleaned(OW, [0, 64, 0], 48);
         let rad = saved.rad_for(1, OW, [0.0, 64.0, 0.0]);
         assert!(rad.cleans.iter().all(|c| c.dimension == OW) && rad.cleans.len() == 2);

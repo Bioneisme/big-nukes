@@ -15,6 +15,7 @@ use horizon_client::{
     lang,
     mod_api::NativeScreen,
 };
+use horizon_core::geometry::Direction;
 use horizon_mods::content::Block;
 use horizon_world::nbt::{JavaString, Tag};
 use std::{
@@ -182,6 +183,21 @@ fn take_fuel(entity: &mut ModBlockEntity) {
     }
 }
 
+/// What lies in the fuel slot and doesn't burn (the bucket a lava bucket leaves) goes down into the
+/// container under the block, a hopper say, as a furnace's bucket goes: the slot is free for the next fuel.
+fn spent_out(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity) {
+    let Some(stack) = entity.items[rules::DECON_FUEL_SLOT].clone() else {
+        return;
+    };
+    if glue::burn_time(game, &stack) > 0 {
+        return;
+    }
+    let left = game.native_insert_item([pos[0], pos[1] - 1, pos[2]], Direction::Up, stack.clone());
+    if left.as_ref() != Some(&stack) {
+        entity.items[rules::DECON_FUEL_SLOT] = left;
+    }
+}
+
 /// A tick: the fuel burns and the circle grows (`Decontaminator::step`), the world's
 /// circle is kept (`Saved::cleaned`: a blast over it starts it again), once a second a
 /// pass of its columns is queued for the grass, and the screen shows the background here.
@@ -199,6 +215,9 @@ pub(in crate::game) fn tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut Mod
     let step = decon.step(fuel);
     if step.took_fuel {
         take_fuel(entity);
+    }
+    if fuel.is_none() {
+        spent_out(game, pos, entity);
     }
     let dimension = game.native_dimension().to_owned();
     let (mut pass, mut background) = (Vec::new(), 0.0);
