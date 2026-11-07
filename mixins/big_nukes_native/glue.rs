@@ -126,11 +126,11 @@ pub(in crate::game) fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Opti
             None => st.saved.unplace(&dimension, pos),
         };
     }
-    // The bunker's walls placed and taken away.
-    forgot |= bunker::take_heard(&mut st.saved);
     if forgot {
         save(st);
     }
+    // The bunker's walls placed and taken away: a wall is placed a block at a time, so they keep till the next save.
+    st.dirty |= bunker::take_heard(&mut st.saved);
     for uuid in std::mem::take(&mut *lock(&DIED)) {
         st.dirty |= st.saved.died(uuid);
     }
