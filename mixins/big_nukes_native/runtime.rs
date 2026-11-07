@@ -3797,6 +3797,19 @@ pub fn same_press(last: Option<(u128, [i32; 3], u64)>, who: u128, door: [i32; 3]
     last.is_some_and(|(w, d, t)| w == who && d == door && now.saturating_sub(t) <= DOOR_PRESS_GAP)
 }
 
+/// Whether `who`'s click on `door` at `now` is a new press, not the same as their last one in `presses`
+/// (`same_press`). `presses` keeps each player's last click (a held button's too) for `DOOR_PRESS_GAP` ticks.
+pub fn new_press(presses: &mut Vec<(u128, [i32; 3], u64)>, who: u128, door: [i32; 3], now: u64) -> bool {
+    presses.retain(|p| now.saturating_sub(p.2) <= DOOR_PRESS_GAP);
+    let i = presses.iter().position(|p| p.0 == who);
+    let same = same_press(i.map(|i| presses[i]), who, door, now);
+    match i {
+        Some(i) => presses[i] = (who, door, now),
+        None => presses.push((who, door, now)),
+    }
+    !same
+}
+
 /// A door by its `open` property: an open one lets the air through.
 pub fn door_cell(open: Option<&str>) -> Cell {
     if open == Some("true") { Cell::Open } else { Cell::Wall }
@@ -9761,6 +9774,26 @@ mod bunker_tests {
         assert!(!same_press(last, 8, door, 101));
         assert!(!same_press(last, me, [1, 64, 2], 101));
         assert!(!same_press(None, me, door, 101));
+    }
+
+    #[test]
+    fn two_players_at_two_doors_in_one_tick_each_turn_theirs_once() {
+        let mut presses = Vec::new();
+        let (a, b) = ((1u128, [0, 64, 0]), (2u128, [5, 64, 0]));
+        // Both click on tick 100, and each click's echo comes on tick 101.
+        assert!(new_press(&mut presses, a.0, a.1, 100));
+        assert!(new_press(&mut presses, b.0, b.1, 100));
+        assert!(!new_press(&mut presses, a.0, a.1, 101));
+        assert!(!new_press(&mut presses, b.0, b.1, 101));
+        // A held button stays one press; a new one after a pause turns the door again.
+        assert!(!new_press(&mut presses, a.0, a.1, 101 + DOOR_PRESS_GAP));
+        assert!(new_press(&mut presses, a.0, a.1, 102 + 2 * DOOR_PRESS_GAP));
+        // The other door, by the first player: a new press.
+        assert!(new_press(&mut presses, a.0, b.1, 103 + 2 * DOOR_PRESS_GAP));
+        // What is older than the gap goes: one entry a player at most.
+        assert!(presses.len() <= 2, "{presses:?}");
+        new_press(&mut presses, 3, a.1, 1000);
+        assert_eq!(presses, [(3, a.1, 1000)]);
     }
 
     #[test]

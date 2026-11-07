@@ -159,8 +159,8 @@ static GENERATORS: Mutex<Vec<(String, [i32; 3], u64)>> = Mutex::new(Vec::new());
 static ROOMS: Mutex<Vec<Room>> = Mutex::new(Vec::new());
 /// The share of the background each player's shelter let in at their last second, for their window.
 static SHELTER: Mutex<Vec<(u128, f64)>> = Mutex::new(Vec::new());
-/// The last click on a door (player, its lower half, tick), so one press turns it once.
-static LAST_DOOR: Mutex<Option<(u128, [i32; 3], u64)>> = Mutex::new(None);
+/// Each player's last click on a door (player, its lower half, tick), so one press turns it once.
+static DOOR_PRESSES: Mutex<Vec<(u128, [i32; 3], u64)>> = Mutex::new(Vec::new());
 
 /// How long a generator heard burning powers what is round it.
 const POWER_LASTS: u64 = 2 * rules::SECOND;
@@ -439,14 +439,8 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
     };
     // Both halves are one door: its lower half names it.
     let door = if other[1] < pos[1] { other } else { pos };
-    {
-        let mut last = lock(&LAST_DOOR);
-        let same = rules::same_press(*last, who.uuid, door, now());
-        // A held button keeps being the same press.
-        *last = Some((who.uuid, door, now()));
-        if same {
-            return true;
-        }
+    if !rules::new_press(&mut lock(&DOOR_PRESSES), who.uuid, door, now()) {
+        return true;
     }
     let open = game.native_block_property(pos, "open").as_deref() != Some("true");
     let value = if open { "true" } else { "false" };
@@ -539,6 +533,6 @@ pub(in crate::game) fn forget() {
     lock(&GENERATORS).clear();
     lock(&ROOMS).clear();
     lock(&SHELTER).clear();
-    *lock(&LAST_DOOR) = None;
+    lock(&DOOR_PRESSES).clear();
     TICK.store(0, Ordering::Relaxed);
 }
