@@ -1199,21 +1199,25 @@ fn beacon_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
             // One of the very stack in hand, a renamed bomb too, into the beacon's slot (a broken beacon gives it
             // back as it was), then out of the hand unless creative.
             let hand = hand.filter(|s| &*s.item == kind.id());
-            let put = hand.as_ref().is_some_and(|hand| {
-                let one = ItemStack { count: 1, ..hand.clone() };
-                game.native_with_mod_block_entity(pos, |e| {
-                    if e.items.is_empty() {
-                        e.items.resize(1, None);
-                    }
-                    e.items[0] = Some(one);
-                })
-                .is_some()
-            });
-            let taken = put && (who.game_mode == 1 || hand.as_ref().is_some_and(|hand| take_from_hand(game, hand)));
-            if !taken {
-                if put {
-                    game.native_with_mod_block_entity(pos, |e| e.items.iter_mut().for_each(|s| *s = None));
-                }
+            let creative = who.game_mode == 1;
+            let charged = rules::charge_from_hand(
+                game,
+                hand.as_ref().map(|h| ItemStack { count: 1, ..h.clone() }),
+                |g, one| {
+                    g.native_with_mod_block_entity(pos, |e| {
+                        if e.items.is_empty() {
+                            e.items.resize(1, None);
+                        }
+                        e.items[0] = Some(one);
+                    })
+                    .is_some()
+                },
+                |g| creative || hand.as_ref().is_some_and(|h| take_from_hand(g, h)),
+                |g| {
+                    g.native_with_mod_block_entity(pos, |e| e.items.iter_mut().for_each(|s| *s = None));
+                },
+            );
+            if !charged {
                 if let Some(mut guard) = glue::state(game) {
                     let st = guard.as_mut().expect("opened");
                     st.saved.beacons.retain(|f| f.dimension != dimension || f.from != pos);

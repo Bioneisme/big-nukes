@@ -2640,6 +2640,27 @@ pub fn hand_slot<T: PartialEq>(hotbar: &[Option<T>], held: &T) -> Option<usize> 
     hotbar.iter().position(|s| s.as_ref() == Some(held))
 }
 
+/// A charged beacon takes its bomb, `g` being the game: `put` lays `one` (one of the stack seen in hand) in the
+/// beacon's slot, then `take` takes it out of the hand; when that fails, `unput` empties the slot again, so the
+/// bomb is never in both or in neither. Whether it went in.
+pub fn charge_from_hand<G, S>(
+    g: &mut G,
+    one: Option<S>,
+    put: impl FnOnce(&mut G, S) -> bool,
+    take: impl FnOnce(&mut G) -> bool,
+    unput: impl FnOnce(&mut G),
+) -> bool {
+    let Some(one) = one else { return false };
+    if !put(g, one) {
+        return false;
+    }
+    if take(g) {
+        return true;
+    }
+    unput(g);
+    false
+}
+
 impl Flight {
     /// A bomber's pass over its beacon.
     pub fn pass(&self) -> Pass {
@@ -8334,6 +8355,61 @@ mod flight_tests {
         assert_eq!(hand_slot::<(&str, u32, Option<&str>)>(&[], &named(1).unwrap()), None);
     }
 
+    /// A beacon's slot and a player's hotbar, the hand on one slot: stacks of (item, count, name).
+    struct Charging {
+        beacon: Option<(&'static str, u32, Option<&'static str>)>,
+        hotbar: Vec<Option<(&'static str, u32, Option<&'static str>)>>,
+        entity: bool,
+    }
+
+    /// The glue's sequence on `w`, with the stack `seen` in hand: one of it into the slot, then out of the hand.
+    fn charge_seen(w: &mut Charging, seen: (&'static str, u32, Option<&'static str>)) -> bool {
+        charge_from_hand(
+            w,
+            Some((seen.0, 1, seen.2)),
+            |w, one| {
+                if w.entity {
+                    w.beacon = Some(one);
+                }
+                w.entity
+            },
+            |w| match hand_slot(&w.hotbar, &seen) {
+                Some(i) => {
+                    let s = w.hotbar[i].as_mut().unwrap();
+                    s.1 -= 1;
+                    true
+                }
+                None => false,
+            },
+            |w| w.beacon = None,
+        )
+    }
+
+    #[test]
+    fn a_renamed_bomb_goes_from_the_hand_into_the_beacon_or_stays_in_the_hand() {
+        let atomic = BombKind::Atomic.id();
+        let named = (atomic, 2, Some("Big One"));
+        let fresh = || Charging { beacon: None, hotbar: vec![Some((atomic, 5, None)), Some(named)], entity: true };
+        // Put, then taken from its own slot, not the plain stack before it; the beacon keeps its name.
+        let mut w = fresh();
+        assert!(charge_seen(&mut w, named));
+        assert_eq!(w.beacon, Some((atomic, 1, Some("Big One"))));
+        assert_eq!(w.hotbar, [Some((atomic, 5, None)), Some((atomic, 1, Some("Big One")))]);
+        // The stack changed since it was seen (another click took one): nothing taken, the slot emptied again.
+        let mut w = fresh();
+        w.hotbar[1] = Some((atomic, 1, Some("Big One")));
+        assert!(!charge_seen(&mut w, named));
+        assert_eq!(w.beacon, None);
+        assert_eq!(w.hotbar[1], Some((atomic, 1, Some("Big One"))));
+        // No block entity to put it in: nothing is taken.
+        let mut w = Charging { entity: false, ..fresh() };
+        assert!(!charge_seen(&mut w, named));
+        assert_eq!((w.beacon, w.hotbar), (None, fresh().hotbar));
+        // Nothing seen in hand: nothing at all.
+        let mut w = fresh();
+        assert!(!charge_from_hand(&mut w, None::<u8>, |_, _| unreachable!(), |_| unreachable!(), |_| unreachable!()));
+    }
+
     #[test]
     fn the_strike_goes_within_maxpower() {
         let mut saved = Saved { maxpower: 50, ..Saved::default() };
@@ -8531,6 +8607,21 @@ mod decon_tests {
         assert_eq!((d.radius, d.grow, d.next_column), (31, 7, 300));
         d.keep_circle(0);
         assert_eq!((d.radius, d.grow, d.next_column), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_circle_wider_than_a_block_with_none_kept_beside_a_zone_starts_from_nothing() {
+        let mut saved = Saved { tick: 3000, zones: vec![zone([0, 64, 0], 100)], ..Saved::default() };
+        // No circle of its own and grown past its first block: its circle was pruned, and the zone came since.
+        assert_eq!(saved.cleaned(OW, [10, 64, 0], 5), 0);
+        assert!(saved.cleans.is_empty());
+        // Grown again from its first block, it has its circle, which then grows.
+        assert_eq!(saved.cleaned(OW, [10, 64, 0], 1), 1);
+        assert_eq!(saved.cleaned(OW, [10, 64, 0], 5), 5);
+        assert_eq!(saved.cleans, [clean([10, 64, 0], 5, 3000)]);
+        // Away from every zone, the same block makes its circle again as it was.
+        assert_eq!(saved.cleaned(OW, [5000, 64, 0], 5), 5);
+        assert_eq!(saved.cleans[1], clean([5000, 64, 0], 5, 3000));
     }
 
     #[test]
