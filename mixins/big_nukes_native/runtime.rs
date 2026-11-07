@@ -1790,6 +1790,8 @@ pub const MISSILE_LAUNCH: &str = "big_nukes:missile_launch";
 pub const BOMBER_FLYBY: &str = "big_nukes:bomber_flyby";
 /// The tag of every display a flight shows, so the ones a closed world left are found.
 pub const FLIGHT_TAG: &str = "big_nukes_flight";
+/// The tag of every display a loaded pad shows its missile with; `pad_tag` is the pad's own.
+pub const PAD_TAG: &str = "big_nukes_pad";
 /// The farthest place from the world's middle, as `/summon` and `/forceload` take it.
 const WORLD_EDGE: i64 = 29_999_984;
 
@@ -1879,6 +1881,37 @@ fn yaw_of(dx: f64, dz: f64) -> f32 {
     (-dx).atan2(dz).to_degrees() as f32
 }
 
+/// The way across the ground a missile with none faces: south.
+const UPRIGHT: [f64; 2] = [0.0, 1.0];
+
+/// A climb from `from`, the block over its pad, leaning along `heading`, `t` ticks after the liftoff: the tail,
+/// yaw and pitch.
+fn climb_from(from: [i32; 3], heading: [f64; 2], t: f64) -> ([f64; 3], f32, f32) {
+    let height = |t: f64| ASCENT_HEIGHT * ((t + 1.0) / ASCENT_TICKS as f64).clamp(0.0, 1.0).powi(2);
+    let lean_from = (ASCENT_TICKS - TILT_TICKS) as f64;
+    let tilt = |t: f64| TILT_DEGREES * ((t - lean_from) / TILT_TICKS as f64).clamp(0.0, 1.0);
+    // It drifts the way it leans, by what it climbs each tick.
+    let mut drift = 0.0;
+    let mut k = lean_from;
+    while k < t {
+        let next = (k + 1.0).min(t);
+        drift += (height(next) - height(k)) * tilt(k).to_radians().tan();
+        k = next;
+    }
+    let h = heading;
+    let pos = [
+        f64::from(from[0]) + 0.5 + h[0] * drift,
+        f64::from(from[1]) + height(t),
+        f64::from(from[2]) + 0.5 + h[1] * drift,
+    ];
+    (pos, yaw_of(h[0], h[1]), (tilt(t) - 90.0) as f32)
+}
+
+/// The missile a loaded pad shows: as a climb from over it starts, upright, facing south while it has no target.
+pub fn pad_pose(pad: [i32; 3]) -> ([f64; 3], f32, f32) {
+    climb_from([pad[0], pad[1] + 1, pad[2]], UPRIGHT, 0.0)
+}
+
 impl Flight {
     /// The tick the missile leaves its pad.
     pub fn liftoff(&self) -> u64 {
@@ -1899,7 +1932,7 @@ impl Flight {
     fn heading(&self) -> [f64; 2] {
         let r = self.range();
         if r == 0.0 {
-            return [0.0, 1.0];
+            return UPRIGHT;
         }
         [f64::from(self.to[0] - self.from[0]) / r, f64::from(self.to[1] - self.from[2]) / r]
     }
@@ -1955,24 +1988,17 @@ impl Flight {
 
     /// The climb `t` ticks after the liftoff, between ticks too (the window's camera): the tail, yaw and pitch.
     pub fn climb(&self, t: f64) -> ([f64; 3], f32, f32) {
-        let height = |t: f64| ASCENT_HEIGHT * ((t + 1.0) / ASCENT_TICKS as f64).clamp(0.0, 1.0).powi(2);
-        let lean_from = (ASCENT_TICKS - TILT_TICKS) as f64;
-        let tilt = |t: f64| TILT_DEGREES * ((t - lean_from) / TILT_TICKS as f64).clamp(0.0, 1.0);
-        // It drifts the way it leans, by what it climbs each tick.
-        let mut drift = 0.0;
-        let mut k = lean_from;
-        while k < t {
-            let next = (k + 1.0).min(t);
-            drift += (height(next) - height(k)) * tilt(k).to_radians().tan();
-            k = next;
-        }
-        let h = self.heading();
-        let pos = [
-            f64::from(self.from[0]) + 0.5 + h[0] * drift,
-            f64::from(self.from[1]) + height(t),
-            f64::from(self.from[2]) + 0.5 + h[1] * drift,
-        ];
-        (pos, yaw_of(h[0], h[1]), (tilt(t) - 90.0) as f32)
+        climb_from(self.from, self.heading(), t)
+    }
+
+    /// The missile in its shaft through the countdown: in its pad's pose at the launch, it turns on the pad the
+    /// short way to face its target by the liftoff, where its climb goes on from the same pose.
+    pub fn standing(&self, now: u64) -> ([f64; 3], f32, f32) {
+        let (_, from, _) = pad_pose([self.from[0], self.from[1] - 1, self.from[2]]);
+        let (pos, to, pitch) = self.climb(0.0);
+        let turn = (to - from + 180.0).rem_euclid(360.0) - 180.0;
+        let done = (now.saturating_sub(self.start) as f32 / LAUNCH_COUNTDOWN as f32).min(1.0);
+        (pos, from + turn * done, pitch)
     }
 
     /// The fall `t` ticks after it shows over the target, straight to its ground.
@@ -2065,6 +2091,37 @@ pub fn pad_load(missile: Option<&str>, warhead: Option<&str>) -> Result<BombKind
         return Err(ShaftProblem::NoMissile);
     }
     warhead.and_then(BombKind::of_block).filter(|k| k.flies()).ok_or(ShaftProblem::NoWarhead)
+}
+
+/// Whether a pad shows the missile in its slot, warhead or not: not while a flight stands in its shaft
+/// (`Saved::pad_busy`), which shows its own.
+pub fn pad_shows(missile_slot: Option<&str>, busy: bool) -> bool {
+    missile_slot == Some(MISSILE) && !busy
+}
+
+/// What is done to a pad's display at a tick (`pad_act`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadAct {
+    Show,
+    Hide,
+    /// Still there, and alone at its pad.
+    Check,
+}
+
+/// A pad's display at `now`: made when it is wanted and missing, taken away when it isn't wanted, and checked
+/// once a second while it stays.
+pub fn pad_act(shown: bool, wanted: bool, now: u64) -> Option<PadAct> {
+    match (shown, wanted) {
+        (false, true) => Some(PadAct::Show),
+        (true, false) => Some(PadAct::Hide),
+        (true, true) if now % SECOND == 0 => Some(PadAct::Check),
+        _ => None,
+    }
+}
+
+/// The tag of the display of the pad at `pad`, within its dimension.
+pub fn pad_tag(pad: [i32; 3]) -> String {
+    format!("{PAD_TAG}_{}_{}_{}", pad[0], pad[1], pad[2])
 }
 
 /// A launch console's code and its wrong tries, as the world keeps them (`Saved.consoles`).
@@ -8774,6 +8831,82 @@ mod flight_tests {
         for id in [LAUNCH_PAD, MISSILE, atomic, tactical] {
             assert!(slot_rules.contains(&format!("\"{id}\"")), "slot_rules.rs doesn't name {id}");
         }
+    }
+
+    #[test]
+    fn a_loaded_pad_stands_its_missile_as_its_climb_starts() {
+        // The pose of a climb from over the pad at its first tick, with no target to lean to.
+        let pad = [10, 63, -20];
+        let upright = Flight { from: [10, 64, -20], to: [10, -20], ..missile() };
+        assert_eq!(pad_pose(pad), upright.climb(0.0));
+        let (pos, _, pitch) = pad_pose(pad);
+        assert!(flat(pos, [10.5, 0.0, -19.5]) < 1e-9 && near(pos[1], 64.0, 0.1), "{pos:?}");
+        assert_eq!(pitch, -90.0, "upright, nose to the sky");
+    }
+
+    #[test]
+    fn the_countdown_stands_the_missile_where_the_pad_did_and_turns_it_to_its_climb() {
+        for to in [[1000, 0], [0, 1000], [-1000, 0], [0, -1000], [-700, -700], [300, -900]] {
+            let f = Flight { start: 500, to, ..missile() };
+            let pad = [f.from[0], f.from[1] - 1, f.from[2]];
+            // At the launch, the pad's very pose: the flight's display takes its place.
+            assert_eq!(f.standing(f.start), pad_pose(pad), "{to:?}");
+            // At the liftoff, the climb's first: it goes on from there.
+            let (pos, yaw, pitch) = f.standing(f.liftoff());
+            let (climb_pos, climb_yaw, climb_pitch) = ascent(&f, f.liftoff());
+            assert_eq!((pos, pitch), (climb_pos, climb_pitch), "{to:?}");
+            assert!(near(f64::from((yaw - climb_yaw).rem_euclid(360.0)), 0.0, 1e-3) || near(f64::from((yaw - climb_yaw).rem_euclid(360.0)), 360.0, 1e-3), "{to:?}: {yaw} {climb_yaw}");
+            // In between it stands still and turns the short way, a little each tick.
+            let mut was = f.standing(f.start).1;
+            for now in f.start + 1..=f.liftoff() {
+                let (p, y, pi) = f.standing(now);
+                assert_eq!((p, pi), (pos, pitch), "{to:?} at {now}");
+                assert!((y - was).abs() <= 180.0 / LAUNCH_COUNTDOWN as f32 + 1e-3, "{to:?} at {now}: {was} to {y}");
+                was = y;
+            }
+        }
+    }
+
+    #[test]
+    fn a_pad_shows_its_missile_unless_one_stands_in_its_shaft() {
+        let (atomic, tactical) = (BombKind::Atomic.id(), BombKind::Tactical.id());
+        assert!(pad_shows(Some(MISSILE), false), "with or without its warhead");
+        for item in [None, Some(atomic), Some(tactical), Some("minecraft:stone")] {
+            assert!(!pad_shows(item, false), "{item:?}");
+        }
+        // A flight counting down or climbing out shows its own: never two.
+        assert!(!pad_shows(Some(MISSILE), true));
+        // Over a launch: the pad's until the launch, the flight's from it until it is out of the shaft, the pad's
+        // again for a missile put in after.
+        let mut saved = Saved { tick: 500, ..Saved::default() };
+        let from = [0, 65, 0];
+        assert!(pad_shows(Some(MISSILE), saved.pad_busy(OVERWORLD, from, 499)));
+        let f = saved.launch(OVERWORLD, from, [1000, 0], BombKind::Atomic, 72).unwrap();
+        for now in f.start..f.climbed() {
+            assert!(!pad_shows(Some(MISSILE), saved.pad_busy(OVERWORLD, from, now)), "{now}");
+            assert!(matches!(f.leg(now), Leg::Countdown { .. } | Leg::Ascent { .. }), "{now}: the flight shows it");
+        }
+        assert!(pad_shows(Some(MISSILE), saved.pad_busy(OVERWORLD, from, f.climbed())));
+    }
+
+    #[test]
+    fn a_pads_display_is_made_hidden_and_checked_once_a_second() {
+        assert_eq!(pad_act(false, true, 7), Some(PadAct::Show));
+        assert_eq!(pad_act(true, false, 7), Some(PadAct::Hide));
+        assert_eq!(pad_act(false, false, 7), None);
+        assert_eq!(pad_act(true, true, 7), None);
+        assert_eq!(pad_act(true, true, 3 * SECOND), Some(PadAct::Check));
+        assert_eq!(pad_act(false, false, 3 * SECOND), None);
+    }
+
+    #[test]
+    fn each_pads_display_is_tagged_with_its_place_apart_from_the_flights() {
+        assert_eq!(pad_tag([1, -2, 30]), "big_nukes_pad_1_-2_30");
+        assert_ne!(pad_tag([1, 23, 4]), pad_tag([12, 3, 4]));
+        assert_ne!(PAD_TAG, FLIGHT_TAG);
+        assert!(pad_tag([0, 0, 0]).starts_with(PAD_TAG) && !pad_tag([0, 0, 0]).starts_with(FLIGHT_TAG));
+        // A selector takes it as it is.
+        assert!(pad_tag([-30_000_000, -64, 29_999_999]).chars().all(|c| c.is_ascii_alphanumeric() || "_-.+".contains(c)));
     }
 
     #[test]
