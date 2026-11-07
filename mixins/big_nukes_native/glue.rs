@@ -1408,10 +1408,11 @@ const TOLD_WITHIN: f64 = 64.0;
 /// How far a Sunbreaker's is told when its fuse burns out: whoever lit it has run.
 const SUNBREAKER_TOLD_WITHIN: f64 = 256.0;
 
-/// The player, the bomb and the tick of the last click handled on a bomb. The
+/// The clicks heard on the bombs: the player, the bomb and the item in hand. The
 /// game asks once per hand: the off hand's turn of the same click is let go,
-/// so nothing goes in or is lit twice.
-static LAST_CLICK: Mutex<Option<(u128, [i32; 3], u64)>> = Mutex::new(None);
+/// so nothing goes in or is lit twice; and a click held down, which the game
+/// repeats, is answered once.
+static LAST_CLICK: Mutex<rules::Clicks<(u128, [i32; 3], Option<String>)>> = Mutex::new(rules::Clicks::new());
 
 /// A bomb's one slot holds its detonator, out of every hopper's reach and hidden on
 /// its screen: a broken bomb drops it as a chest drops its items. The bombs that
@@ -1519,25 +1520,26 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
         return;
     };
     *canceled = true;
-    {
-        let mut last = lock(&LAST_CLICK);
-        if *last == Some((who.uuid, core, now)) {
-            return;
-        }
-        *last = Some((who.uuid, core, now));
-    }
+    let held = game.native_equipment(EquipmentSlot::MainHand).map(|s| s.item.to_string());
+    // A click held down: what it does goes on (a block placed, the keypad), what it says is said once.
+    let held_down = match lock(&LAST_CLICK).heard((who.uuid, core, held.clone()), now) {
+        Some(0) => return,
+        since => since.is_some(),
+    };
     let clicked = pos;
     let pos = core;
     let Some(mut bomb) = game.native_with_mod_block_entity(pos, |e| load_bomb(e)).flatten() else {
         return;
     };
-    let held = game.native_equipment(EquipmentSlot::MainHand).map(|s| s.item.to_string());
     let creative = who.game_mode == 1;
     let tell = |game: &mut Game<'_>, line: Text| {
         game.native_tell(who.uuid, line);
     };
     // A remote is linked to a bomb with a receiver, sneaking or not.
     if held.as_deref() == Some(rules::REMOTE) {
+        if held_down {
+            return;
+        }
         match bomb.detonator {
             Some(rules::Detonator::Receiver) => link(game, &who, pos, bomb.kind),
             _ => tell(game, Text::translate("big_nukes.remote.no_receiver", &[])),
@@ -1545,6 +1547,9 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
         return;
     }
     if let Some(detonator) = held.as_deref().and_then(rules::Detonator::of_item) {
+        if held_down {
+            return;
+        }
         match bomb.install(detonator) {
             Ok(()) => {
                 if install(game, pos, &bomb, detonator, creative, who.uuid) && detonator == rules::Detonator::Receiver {
@@ -1557,6 +1562,9 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
         return;
     }
     if held.as_deref() == Some(rules::FLINT_AND_STEEL) {
+        if held_down {
+            return;
+        }
         match bomb.detonator {
             Some(rules::Detonator::Fuse) if bomb.fires_at.is_none() => {
                 if let Err(why) = may_go_off(game, pos, bomb.kind, maxpower) {
@@ -1586,6 +1594,9 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
     if keypad && keypad_menu_known() && (clicked == pos || mirror(game, &who.dimension, pos, clicked, &bomb, now)) {
         // The game goes on: the block opens its keypad, the core's own or the one it shows on the block clicked.
         *canceled = false;
+        return;
+    }
+    if held_down {
         return;
     }
     if bomb.kind == rules::BombKind::Sunbreaker {

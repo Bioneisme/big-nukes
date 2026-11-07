@@ -566,6 +566,41 @@ pub const PAD_ENTER: i32 = 1;
 pub const PAD_LOCKED: i32 = 2;
 pub const PAD_COUNTING: i32 = 3;
 
+/// The game repeats a right click held down every 4 ticks: a click on the same thing this many
+/// ticks or fewer after the last one heard is the same click, held.
+pub const HELD_CLICK_TICKS: u64 = 8;
+
+/// The clicks heard lately, by what each was (the player, the block, the item in hand) and its
+/// last tick: a click held down is answered once, not at each of the game's repeats.
+#[derive(Debug, Default)]
+pub struct Clicks<K> {
+    last: Vec<(K, u64)>,
+}
+
+impl<K: PartialEq> Clicks<K> {
+    pub const fn new() -> Self {
+        Clicks { last: Vec::new() }
+    }
+
+    /// A click `key` at `now`: None for a new click, else the ticks since the one it goes on
+    /// from (0 for the other hand's turn of the same click). Each repeat keeps the click held;
+    /// one let go longer than `HELD_CLICK_TICKS` is forgotten.
+    pub fn heard(&mut self, key: K, now: u64) -> Option<u64> {
+        self.last.retain(|(_, t)| *t <= now && now - *t <= HELD_CLICK_TICKS);
+        match self.last.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, t)) => {
+                let since = now - *t;
+                *t = now;
+                Some(since)
+            }
+            None => {
+                self.last.push((key, now));
+                None
+            }
+        }
+    }
+}
+
 /// What sets a bomb off, put in as an item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Detonator {
@@ -7149,6 +7184,29 @@ mod tests {
         for id in [SUNBREAKER_CORE, IMPLOSION_SHELL, NEUTRON_REFLECTOR, WEAPONS_GRADE_URANIUM] {
             assert!(!tips(id).is_empty(), "{id}");
         }
+    }
+
+    #[test]
+    fn a_held_click_is_heard_once_until_it_is_let_go() {
+        let mut clicks = Clicks::new();
+        let bomb = (7u128, [1, 2, 3], Some(REMOTE.to_owned()));
+        assert_eq!(clicks.heard(bomb.clone(), 100), None, "a new click");
+        assert_eq!(clicks.heard(bomb.clone(), 100), Some(0), "the other hand's turn of it");
+        // The game repeats a held click every 4 ticks: each repeat keeps it held, however long.
+        for t in (104..=200).step_by(4) {
+            assert!(clicks.heard(bomb.clone(), t).is_some_and(|since| since > 0), "{t}");
+        }
+        // Let go a while, it is a new click.
+        assert_eq!(clicks.heard(bomb.clone(), 200 + HELD_CLICK_TICKS + 1), None);
+        // Another player, another block or another item is another click.
+        let now = 300;
+        assert_eq!(clicks.heard(bomb.clone(), now), None);
+        assert_eq!(clicks.heard((8, [1, 2, 3], Some(REMOTE.to_owned())), now + 4), None);
+        assert_eq!(clicks.heard((7, [1, 2, 4], Some(REMOTE.to_owned())), now + 4), None);
+        assert_eq!(clicks.heard((7, [1, 2, 3], Some(FLINT_AND_STEEL.to_owned())), now + 4), None);
+        assert_eq!(clicks.heard(bomb.clone(), now + 4), Some(4));
+        // A clock that went back (another world) starts afresh.
+        assert_eq!(clicks.heard(bomb, 10), None);
     }
 }
 
