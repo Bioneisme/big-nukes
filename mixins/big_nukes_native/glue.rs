@@ -42,9 +42,9 @@ const BUDGET: Duration = Duration::from_millis(6);
 const SAVE_EVERY: u64 = 200;
 
 /// The open world's waves and where they are kept.
-struct State {
+pub(in crate::game) struct State {
     dir: PathBuf,
-    saved: rules::Saved,
+    pub(in crate::game) saved: rules::Saved,
     /// Blasts whose refused edit is already in the log.
     warned: BTreeSet<u64>,
     /// Blasts whose opening (the fireball and the debris) has been shown.
@@ -53,7 +53,7 @@ struct State {
     ash: Option<bool>,
     /// Something changed since the last save. A wave whose far chunks never load
     /// never ends, so saving only on changes keeps it from costing forever.
-    dirty: bool,
+    pub(in crate::game) dirty: bool,
     /// Dimensions a remote's blast went off in, to be opened at the end of the
     /// server's tick, where a command may run.
     wake: Vec<String>,
@@ -84,12 +84,12 @@ static DIED: Mutex<Vec<u128>> = Mutex::new(Vec::new());
 /// same way.
 static ANTI_RAD: Mutex<Vec<(u128, f64)>> = Mutex::new(Vec::new());
 
-fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
+pub(in crate::game) fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// The open world's state, read from its folder the first time.
-fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Option<State>>> {
+pub(in crate::game) fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Option<State>>> {
     let dir = game.native_world_dir()?.join(rules::DIR);
     let mut guard = lock(&STATE);
     if guard.as_ref().is_none_or(|s| s.dir != dir) {
@@ -134,7 +134,7 @@ fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Option<State>>> {
     Some(guard)
 }
 
-fn save(st: &mut State) {
+pub(in crate::game) fn save(st: &mut State) {
     st.dirty = false;
     let write = || -> std::io::Result<()> {
         fs::create_dir_all(&st.dir)?;
@@ -340,7 +340,7 @@ fn start(
 }
 
 /// Why a blast didn't start, for the player who asked.
-fn refused(why: rules::Refused) -> Text {
+pub(in crate::game) fn refused(why: rules::Refused) -> Text {
     let n = |v: u32| Text::literal(v.to_string());
     match why {
         rules::Refused::Dimension => Text::translate("big_nukes.blast.dimension", &[]),
@@ -694,7 +694,7 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
 /// half, which brings the type itself. This is the game's own table, not an API:
 /// when it changes, the build breaks, not the game.
 /// Whether the assets half is installed: it brings the marker loot table.
-fn assets_here(game: &Game<'_>) -> bool {
+pub(in crate::game) fn assets_here(game: &Game<'_>) -> bool {
     world_items!(game).has_loot_table(rules::ASSETS_MARKER)
 }
 
@@ -717,6 +717,7 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
         return;
     }
     irradiate_mobs(game, dimension);
+    silo::level_tick(game, dimension);
     let Some(mut guard) = state(game) else { return };
     let st = guard.as_mut().expect("opened");
     effects(game, st, dimension);
@@ -876,6 +877,7 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
     lock(&PLACED).clear();
     lock(&DIED).clear();
     lock(&ANTI_RAD).clear();
+    silo::forget();
 }
 
 // ---- the machines ---------------------------------------------------------------
@@ -922,6 +924,7 @@ pub(in crate::game) fn tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut Mod
         rules::CENTRIFUGE => centrifuge_tick(game, entity),
         rules::ASSEMBLY_TABLE => assembly_tick(entity),
         id if rules::BombKind::of_block(id).is_some() => bomb_tick(game, pos, entity),
+        id if silo::has_entity(id) => silo::tick(game, pos, entity),
         _ => {}
     }
 }
@@ -943,6 +946,7 @@ pub(in crate::game) fn screen(block: &str, screen: &mut Option<NativeScreen>) {
         rules::ASSEMBLY_TABLE => *screen = Some(assembly_screen()),
         block if keypad_bomb(block) => *screen = Some(keypad_screen()),
         rules::LAUNCH_PAD => *screen = Some(silo::pad_screen()),
+        rules::LAUNCH_CONSOLE => *screen = Some(silo::console_screen()),
         _ => {}
     }
 }
@@ -953,6 +957,7 @@ pub(in crate::game) fn screen_draw(game: &Game<'_>, block: &str, data: &[i32], b
         rules::ASSEMBLY_TABLE => assembly_screen_draw(game, data, batch, origin),
         block if keypad_bomb(block) => keypad_draw(game, block, data, batch, origin),
         rules::LAUNCH_PAD => silo::pad_draw(game, batch, origin),
+        rules::LAUNCH_CONSOLE => silo::console_draw(game, data, batch, origin),
         _ => {}
     }
 }
@@ -961,6 +966,7 @@ pub(in crate::game) fn screen_click(block: &str, at: [f32; 2], right: bool, butt
     match block {
         rules::ASSEMBLY_TABLE => assembly_screen_click(at, right, button),
         block if keypad_bomb(block) => keypad_click(at, right, button),
+        rules::LAUNCH_CONSOLE => silo::console_click(at, right),
         _ => {}
     }
 }
@@ -1369,13 +1375,13 @@ fn store_bomb(entity: &mut ModBlockEntity, bomb: &rules::Bomb) {
 }
 
 /// The world's clock and the operator's limit.
-fn clock(game: &Game<'_>) -> Option<(u64, u32)> {
+pub(in crate::game) fn clock(game: &Game<'_>) -> Option<(u64, u32)> {
     let guard = state(game)?;
     let st = guard.as_ref()?;
     Some((st.saved.tick, st.saved.maxpower))
 }
 
-fn middle(pos: [i32; 3]) -> [f64; 3] {
+pub(in crate::game) fn middle(pos: [i32; 3]) -> [f64; 3] {
     pos.map(|v| f64::from(v) + 0.5)
 }
 
@@ -1384,7 +1390,7 @@ fn sound(game: &mut Game<'_>, pos: [i32; 3], event: &str, volume: f32, pitch: f3
 }
 
 /// A line in the chat of every player near the bomb.
-fn tell_near(game: &mut Game<'_>, dimension: &str, pos: [i32; 3], line: &Text) {
+pub(in crate::game) fn tell_near(game: &mut Game<'_>, dimension: &str, pos: [i32; 3], line: &Text) {
     let at = middle(pos);
     for p in game.native_server_players() {
         let far = (0..3).map(|i| (p.position[i] - at[i]).powi(2)).sum::<f64>().sqrt();
@@ -1408,7 +1414,10 @@ fn keypad_menu_known() -> bool {
 /// there is one. The furnace the bomb is built on never opens. Sneaking with
 /// something else in hand lets it be used on the bomb (a block placed against it).
 pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
-    if *canceled || !game.native_on(rules::ID) || rules::BombKind::of_block(&game.native_block(pos)).is_none() {
+    if *canceled || !game.native_on(rules::ID) || silo::right_click(game, pos, canceled) {
+        return;
+    }
+    if rules::BombKind::of_block(&game.native_block(pos)).is_none() {
         return;
     }
     let (Some(who), Some((now, maxpower))) = (game.native_acting_player(), clock(game)) else {

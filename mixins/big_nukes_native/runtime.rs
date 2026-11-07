@@ -1373,7 +1373,6 @@ pub const DESCENT_HEIGHT: f64 = 320.0;
 /// The air a shaft needs over its pad, under its hatch.
 pub const SHAFT_ROOM: u32 = 6;
 /// How far from a console its pad may be.
-#[allow(dead_code)] // plan 7: until the glue uses it
 pub const CONSOLE_REACH: i32 = 8;
 /// A charged beacon's countdown to the bomber's pass.
 #[allow(dead_code)] // plan 7: until the glue uses it
@@ -1568,7 +1567,6 @@ impl Flight {
 /// What a shaft lacks for a launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShaftProblem {
-    #[allow(dead_code)] // plan 7: until the glue uses it
     NoPad,
     /// Only this much air over the pad.
     LowRoom(u32),
@@ -1584,7 +1582,6 @@ fn is_air(block: &str) -> bool {
 
 /// The blocks over a pad, from the one above it up to the sky (the Nether's roof): the hatch's height over the
 /// pad, or what is wrong. The shaft is `SHAFT_ROOM` or more of air under the hatch, and only air is above it.
-#[allow(dead_code)] // plan 7: until the glue uses it
 pub fn shaft(column_above_pad: &[&str]) -> Result<i32, ShaftProblem> {
     let room = column_above_pad.iter().take_while(|b| is_air(b)).count();
     let low = (room as u32) < SHAFT_ROOM;
@@ -1601,7 +1598,6 @@ pub fn shaft(column_above_pad: &[&str]) -> Result<i32, ShaftProblem> {
     }
 }
 
-#[allow(dead_code)] // plan 7: until the glue uses it
 impl BombKind {
     /// Whether it goes on a missile or a bomber: the demolition charge is too small for either.
     pub fn flies(self) -> bool {
@@ -1619,7 +1615,6 @@ pub fn pad_takes(slot: usize, item: &str) -> bool {
 }
 
 /// What a pad holds in its two slots: the warhead it launches, or what it lacks.
-#[allow(dead_code)] // plan 7: until the glue uses it
 pub fn pad_load(missile: Option<&str>, warhead: Option<&str>) -> Result<BombKind, ShaftProblem> {
     if missile != Some(MISSILE) {
         return Err(ShaftProblem::NoMissile);
@@ -1652,12 +1647,10 @@ pub enum LaunchRefusal {
     WrongCode(u8),
     /// The ticks left of the lock.
     Locked(u64),
-    #[allow(dead_code)] // plan 7: until the glue uses it
     Maxpower,
 }
 
 /// The key of a console in `Saved.consoles`.
-#[allow(dead_code)] // plan 7: until the glue uses it
 pub fn console_key(dimension: &str, pos: [i32; 3]) -> String {
     format!("{dimension} {} {} {}", pos[0], pos[1], pos[2])
 }
@@ -1676,7 +1669,6 @@ fn code_shape(code: &str) -> Result<(), LaunchRefusal> {
 }
 
 /// A launch typed on a console whose pad stands at `from` (x, z): the target and the code, or why not.
-#[allow(dead_code)] // plan 7: until the glue uses it
 pub fn launch_request(from: [i32; 2], x: &str, z: &str, code: &str) -> Result<([i32; 2], String), LaunchRefusal> {
     if x.is_empty() || z.is_empty() || code.is_empty() {
         return Err(LaunchRefusal::Empty);
@@ -1704,7 +1696,6 @@ pub fn launch_request(from: [i32; 2], x: &str, z: &str, code: &str) -> Result<([
     Ok((to, code.to_owned()))
 }
 
-#[allow(dead_code)] // plan 7: until the glue uses it
 impl Console {
     /// A launch's code. The first one a console is given becomes its code; then only that one passes, and
     /// `TRIES` wrong ones in a row lock it for `LOCK_TICKS`.
@@ -1800,6 +1791,280 @@ impl Pass {
     /// The last tick the plane is in the sky.
     pub fn gone(&self) -> u64 {
         self.start + self.plane.len() as u64
+    }
+}
+
+// ---- the launch console ----------------------------------------------------------
+//
+// Its screen is the window's: the typed fields live there, and a launch goes to
+// the server as a mod message on `LAUNCH_CHANNEL`. The server answers on
+// `CONSOLE_CHANNEL`, and the menu's data slots show the shaft's state.
+
+/// A launch, from the window to the server.
+pub const LAUNCH_CHANNEL: &str = "big_nukes:launch";
+/// The console's news, from the server to the window: where it is, the answer to a launch, the missile for
+/// the camera.
+pub const CONSOLE_CHANNEL: &str = "big_nukes:console";
+/// The console screen's data slots: its state, a detail and a number (`ConsoleState::data`).
+pub const CONSOLE_DATA: usize = 3;
+/// The screen's fields: the target's x and z, and the code.
+pub const FIELD_X: usize = 0;
+pub const FIELD_Z: usize = 1;
+pub const FIELD_CODE: usize = 2;
+/// The most characters a field takes.
+pub const FIELD_CHARS: usize = 8;
+
+/// What the console screen has typed, and where.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConsoleInput {
+    pub fields: [String; 3],
+    pub focus: usize,
+}
+
+/// What a key did on the console screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keyed {
+    Edited,
+    Launch,
+    /// Not one of the console's keys.
+    Other,
+}
+
+impl ConsoleInput {
+    /// A character typed into the focused field: digits, and a minus first in x or z. Whether it went in.
+    pub fn typed(&mut self, c: char) -> bool {
+        let field = &mut self.fields[self.focus.min(FIELD_CODE)];
+        let fits = c.is_ascii_digit() || (c == '-' && field.is_empty() && self.focus != FIELD_CODE);
+        if !fits || field.len() >= FIELD_CHARS {
+            return false;
+        }
+        field.push(c);
+        true
+    }
+
+    /// A key by the game's name: Tab goes to the next field, Backspace takes the last character, Enter launches.
+    pub fn key(&mut self, key: &str) -> Keyed {
+        match key {
+            "key.keyboard.tab" => {
+                self.focus = (self.focus + 1) % self.fields.len();
+                Keyed::Edited
+            }
+            "key.keyboard.backspace" => {
+                self.fields[self.focus.min(FIELD_CODE)].pop();
+                Keyed::Edited
+            }
+            "key.keyboard.enter" | "key.keyboard.keypad.enter" => Keyed::Launch,
+            _ => Keyed::Other,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.fields[self.focus.min(FIELD_CODE)].clear();
+    }
+
+    pub fn set_focus(&mut self, field: usize) {
+        if field < self.fields.len() {
+            self.focus = field;
+        }
+    }
+
+    /// The launch the fields ask of the console at `console`.
+    pub fn request(&self, console: [i32; 3], camera: bool) -> LaunchMessage {
+        let [x, z, code] = self.fields.clone();
+        LaunchMessage { console, x, z, code, camera }
+    }
+}
+
+/// A launch typed on a console: its place, the fields as typed, and whether the window wants the camera.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchMessage {
+    pub console: [i32; 3],
+    pub x: String,
+    pub z: String,
+    pub code: String,
+    pub camera: bool,
+}
+
+impl LaunchMessage {
+    pub fn bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap_or_default()
+    }
+}
+
+/// A launch as a client sent it: none when it isn't one, or a field is longer than the screen types.
+pub fn read_launch(data: &[u8]) -> Option<LaunchMessage> {
+    let m: LaunchMessage = serde_json::from_slice(data).ok()?;
+    [&m.x, &m.z, &m.code].iter().all(|f| f.len() <= FIELD_CHARS).then_some(m)
+}
+
+/// A line to show or tell: a language key and its arguments.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reply {
+    pub key: String,
+    pub args: Vec<String>,
+}
+
+impl Reply {
+    pub fn new(key: &str, args: &[&dyn ToString]) -> Reply {
+        Reply { key: key.to_owned(), args: args.iter().map(|a| a.to_string()).collect() }
+    }
+}
+
+/// What the server tells a window of its console.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConsoleNews {
+    /// The console it opened.
+    pub at: Option<[i32; 3]>,
+    /// The answer to its launch.
+    pub reply: Option<Reply>,
+    /// The missile it launched, for the camera, with the server's tick then.
+    pub missile: Option<Flight>,
+    pub now: u64,
+}
+
+/// Seconds, rounded up, as the screen shows them.
+fn seconds_of(ticks: u64) -> u64 {
+    ticks.div_ceil(SECOND)
+}
+
+impl LaunchRefusal {
+    /// The line that says why.
+    pub fn line(self) -> Reply {
+        let digits = (CODE_MIN_DIGITS, CODE_DIGITS);
+        match self {
+            LaunchRefusal::Empty => Reply::new("big_nukes.console.empty", &[]),
+            LaunchRefusal::NotANumber => Reply::new("big_nukes.console.not_a_number", &[]),
+            LaunchRefusal::CodeLength => Reply::new("big_nukes.console.code_length", &[&digits.0, &digits.1]),
+            LaunchRefusal::OutsideWorld => Reply::new("big_nukes.console.outside_world", &[]),
+            LaunchRefusal::TooNear(d) => Reply::new("big_nukes.console.too_near", &[&d, &MISSILE_MIN_RANGE]),
+            LaunchRefusal::TooFar(d) => Reply::new("big_nukes.console.too_far", &[&d, &MISSILE_MAX_RANGE]),
+            LaunchRefusal::WrongCode(left) => Reply::new("big_nukes.console.wrong_code", &[&left]),
+            LaunchRefusal::Locked(ticks) => Reply::new("big_nukes.console.locked", &[&seconds_of(ticks)]),
+            LaunchRefusal::Maxpower => Reply::new("big_nukes.console.maxpower", &[]),
+        }
+    }
+}
+
+/// What a console's screen shows: the shaft's state, a countdown or a lock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsoleState {
+    Ready,
+    Shaft(ShaftProblem),
+    /// Seconds to the liftoff.
+    Countdown(u64),
+    Flying,
+    /// Seconds of the lock left.
+    Locked(u64),
+}
+
+const SHAFT_PROBLEMS: [ShaftProblem; 6] = [
+    ShaftProblem::NoPad,
+    ShaftProblem::LowRoom(0),
+    ShaftProblem::NoHatch,
+    ShaftProblem::NoSky,
+    ShaftProblem::NoMissile,
+    ShaftProblem::NoWarhead,
+];
+
+impl ConsoleState {
+    pub fn counting(ticks: u64) -> ConsoleState {
+        ConsoleState::Countdown(seconds_of(ticks))
+    }
+
+    pub fn locked(ticks: u64) -> ConsoleState {
+        ConsoleState::Locked(seconds_of(ticks))
+    }
+
+    /// The menu's data slots, within the 16 bits a slot has on the wire.
+    pub fn data(self) -> [i32; CONSOLE_DATA] {
+        let short = |v: u64| v.min(i16::MAX as u64) as i32;
+        match self {
+            ConsoleState::Ready => [0, 0, 0],
+            ConsoleState::Shaft(p) => {
+                let which = SHAFT_PROBLEMS.iter().position(|q| std::mem::discriminant(q) == std::mem::discriminant(&p)).unwrap_or(0);
+                let room = if let ShaftProblem::LowRoom(n) = p { short(u64::from(n)) } else { 0 };
+                [1, which as i32, room]
+            }
+            ConsoleState::Countdown(s) => [2, short(s), 0],
+            ConsoleState::Flying => [3, 0, 0],
+            ConsoleState::Locked(s) => [4, short(s), 0],
+        }
+    }
+
+    pub fn of_data(data: &[i32]) -> Option<ConsoleState> {
+        let get = |i: usize| data.get(i).copied();
+        let n = |i: usize| get(i).map(|v| v.max(0) as u64);
+        Some(match get(0)? {
+            0 => ConsoleState::Ready,
+            1 => match *SHAFT_PROBLEMS.get(usize::try_from(get(1)?).ok()?)? {
+                ShaftProblem::LowRoom(_) => ConsoleState::Shaft(ShaftProblem::LowRoom(n(2)? as u32)),
+                p => ConsoleState::Shaft(p),
+            },
+            2 => ConsoleState::Countdown(n(1)?),
+            3 => ConsoleState::Flying,
+            4 => ConsoleState::Locked(n(1)?),
+            _ => return None,
+        })
+    }
+
+    /// The screen's status line.
+    pub fn line(&self) -> Reply {
+        match *self {
+            ConsoleState::Ready => Reply::new("big_nukes.console.ready", &[]),
+            ConsoleState::Shaft(p) => p.line(),
+            ConsoleState::Countdown(s) => Reply::new("big_nukes.console.countdown", &[&s]),
+            ConsoleState::Flying => Reply::new("big_nukes.console.flying", &[]),
+            ConsoleState::Locked(s) => Reply::new("big_nukes.console.locked", &[&s]),
+        }
+    }
+}
+
+impl ShaftProblem {
+    pub fn line(self) -> Reply {
+        match self {
+            ShaftProblem::NoPad => Reply::new("big_nukes.console.no_pad", &[&CONSOLE_REACH]),
+            ShaftProblem::LowRoom(n) => Reply::new("big_nukes.console.low_room", &[&n, &SHAFT_ROOM]),
+            ShaftProblem::NoHatch => Reply::new("big_nukes.console.no_hatch", &[]),
+            ShaftProblem::NoSky => Reply::new("big_nukes.console.no_sky", &[]),
+            ShaftProblem::NoMissile => Reply::new("big_nukes.console.no_missile", &[]),
+            ShaftProblem::NoWarhead => Reply::new("big_nukes.console.no_warhead", &[]),
+        }
+    }
+}
+
+impl Saved {
+    /// A missile launched now from the pad under `from`, the hatch at height `hatch`, within the operator's limit.
+    pub fn launch(&mut self, dimension: &str, from: [i32; 3], to: [i32; 2], kind: BombKind, hatch: i32) -> Result<Flight, LaunchRefusal> {
+        if !self.allows(kind.radius()) {
+            return Err(LaunchRefusal::Maxpower);
+        }
+        self.next_id += 1;
+        let id = self.next_id;
+        let flight = Flight {
+            id,
+            carrier: Carrier::Missile,
+            dimension: dimension.to_owned(),
+            from,
+            to,
+            kind,
+            start: self.tick,
+            surface: None,
+            seed: mix(self.tick ^ mix(id)),
+            hatch: Some(hatch),
+        };
+        self.flights.push(flight.clone());
+        Ok(flight)
+    }
+
+    /// The missile still in the shaft over the pad under `from`: counting down or climbing out.
+    pub fn launching(&self, dimension: &str, from: [i32; 3], now: u64) -> Option<&Flight> {
+        self.flights.iter().find(|f| f.dimension == dimension && f.from == from && now < f.climbed())
+    }
+
+    pub fn pad_busy(&self, dimension: &str, from: [i32; 3], now: u64) -> bool {
+        self.launching(dimension, from, now).is_some()
     }
 }
 
@@ -4775,5 +5040,143 @@ mod flight_tests {
                 assert!(((lo[2] - 8.0) / 16.0 * f64::from(scale) + f64::from(MISSILE_LIFT)).abs() < 0.01, "{}", lo[2]);
             }
         }
+    }
+
+    // ---- the console (Task 3) -------------------------------------------------------------
+
+    #[test]
+    fn the_console_screen_edits_its_three_fields() {
+        let mut i = ConsoleInput::default();
+        assert_eq!(i.focus, FIELD_X);
+        for c in "-12a3".chars() {
+            i.typed(c);
+        }
+        assert_eq!(i.fields[FIELD_X], "-123");
+        assert!(!i.typed('-'), "a minus only first");
+        for _ in 0..9 {
+            i.typed('5');
+        }
+        assert_eq!(i.fields[FIELD_X], "-1235555", "8 characters at most");
+        assert_eq!(i.key("key.keyboard.tab"), Keyed::Edited);
+        assert_eq!(i.focus, FIELD_Z);
+        i.typed('-');
+        i.typed('7');
+        assert_eq!(i.fields[FIELD_Z], "-7");
+        i.key("key.keyboard.tab");
+        assert_eq!(i.focus, FIELD_CODE);
+        assert!(!i.typed('-'), "the code is digits");
+        for c in "123456789".chars() {
+            i.typed(c);
+        }
+        assert_eq!(i.fields[FIELD_CODE], "12345678");
+        i.key("key.keyboard.tab");
+        assert_eq!(i.focus, FIELD_X, "Tab goes round");
+        assert_eq!(i.key("key.keyboard.backspace"), Keyed::Edited);
+        assert_eq!(i.fields[FIELD_X], "-123555");
+        assert_eq!(i.key("key.keyboard.enter"), Keyed::Launch);
+        assert_eq!(i.key("key.keyboard.keypad.enter"), Keyed::Launch);
+        assert_eq!(i.key("key.keyboard.e"), Keyed::Other);
+        assert_eq!(i.fields[FIELD_X], "-123555");
+        i.clear();
+        assert_eq!(i.fields[FIELD_X], "");
+        assert_eq!(i.key("key.keyboard.backspace"), Keyed::Edited, "nothing to erase is still the console's key");
+        i.set_focus(FIELD_CODE);
+        i.set_focus(7);
+        assert_eq!(i.focus, FIELD_CODE);
+        let m = i.request([1, 2, 3], false);
+        assert_eq!(m, LaunchMessage { console: [1, 2, 3], x: String::new(), z: "-7".into(), code: "12345678".into(), camera: false });
+    }
+
+    #[test]
+    fn the_launch_message_reads_back() {
+        let m = LaunchMessage { console: [10, -64, -3], x: "-1500".into(), z: "20".into(), code: "1234".into(), camera: true };
+        assert_eq!(read_launch(&m.bytes()), Some(m.clone()));
+        let text = String::from_utf8(m.bytes()).unwrap();
+        assert!(text.contains("\"console\":[10,-64,-3]") && text.contains("\"camera\":true"), "{text}");
+        for broken in [
+            &b"{"[..],
+            b"",
+            b"null",
+            br#"{"console":[1,2,3],"x":"1","z":"2","code":"123"}"#,
+            br#"{"console":[1,2],"x":"1","z":"2","code":"123","camera":true}"#,
+            br#"{"console":[1,2,3],"x":"1","z":"2","code":"123","camera":true,"more":1}"#,
+            br#"{"console":[1,2,3],"x":"123456789012345678","z":"2","code":"123","camera":true}"#,
+            br#"{"console":[1,2,3],"x":1,"z":"2","code":"123","camera":true}"#,
+        ] {
+            assert_eq!(read_launch(broken), None, "{}", String::from_utf8_lossy(broken));
+        }
+        // The window's news of its console reads back too.
+        let news = ConsoleNews { at: Some([1, 2, 3]), reply: Some(Reply::new("big_nukes.console.ready", &[])), ..ConsoleNews::default() };
+        let back: ConsoleNews = serde_json::from_slice(&serde_json::to_vec(&news).unwrap()).unwrap();
+        assert_eq!(back, news);
+    }
+
+    #[test]
+    fn the_console_shows_its_state() {
+        let states = [
+            ConsoleState::Ready,
+            ConsoleState::Shaft(ShaftProblem::NoPad),
+            ConsoleState::Shaft(ShaftProblem::LowRoom(4)),
+            ConsoleState::Shaft(ShaftProblem::NoHatch),
+            ConsoleState::Shaft(ShaftProblem::NoSky),
+            ConsoleState::Shaft(ShaftProblem::NoMissile),
+            ConsoleState::Shaft(ShaftProblem::NoWarhead),
+            ConsoleState::Countdown(3),
+            ConsoleState::Flying,
+            ConsoleState::Locked(25),
+        ];
+        for s in states {
+            let data = s.data();
+            assert_eq!(data.len(), CONSOLE_DATA);
+            assert!(data.iter().all(|v| (0..=i32::from(i16::MAX)).contains(v)), "{s:?}: {data:?}");
+            assert_eq!(ConsoleState::of_data(&data), Some(s), "{data:?}");
+        }
+        assert_eq!(ConsoleState::of_data(&[]), None);
+        assert_eq!(ConsoleState::of_data(&[99, 0, 0]), None);
+        // Seconds, rounded up, from the ticks.
+        assert_eq!(ConsoleState::counting(41).data()[1], 3);
+        assert_eq!(ConsoleState::locked(1).data()[1], 1);
+        let menu = json("content/data/big_nukes/horizon/menu/console.json");
+        assert_eq!((menu["slots"].as_u64(), menu["data_slots"].as_u64()), (Some(1), Some(CONSOLE_DATA as u64)));
+        // Every line it shows or answers is in both languages, with its arguments.
+        let (en, ru) = (json("content/assets/big_nukes/lang/en_us.json"), json("content/assets/big_nukes/lang/ru_ru.json"));
+        let mut lines: Vec<Reply> = states.iter().map(ConsoleState::line).collect();
+        lines.extend(
+            [
+                LaunchRefusal::Empty,
+                LaunchRefusal::NotANumber,
+                LaunchRefusal::CodeLength,
+                LaunchRefusal::OutsideWorld,
+                LaunchRefusal::TooNear(50),
+                LaunchRefusal::TooFar(5000),
+                LaunchRefusal::WrongCode(2),
+                LaunchRefusal::Locked(30),
+                LaunchRefusal::Maxpower,
+            ]
+            .map(|r| r.line()),
+        );
+        for l in lines {
+            for lang in [&en, &ru] {
+                let text = lang[&l.key].as_str().unwrap_or_else(|| panic!("{} isn't there", l.key));
+                assert_eq!(text.matches("%s").count(), l.args.len(), "{}", l.key);
+            }
+        }
+    }
+
+    #[test]
+    fn a_launch_is_recorded_within_maxpower() {
+        let mut saved = Saved { tick: 500, maxpower: 50, ..Saved::default() };
+        assert_eq!(saved.launch(OVERWORLD, [0, 65, 0], [1000, 0], BombKind::Atomic, 72), Err(LaunchRefusal::Maxpower));
+        assert!(saved.flights.is_empty());
+        let f = saved.launch(OVERWORLD, [0, 65, 0], [1000, 0], BombKind::Tactical, 72).unwrap();
+        assert_eq!(saved.flights, vec![f.clone()]);
+        assert_eq!((f.start, f.from, f.to, f.kind, f.carrier, f.surface, f.hatch), (500, [0, 65, 0], [1000, 0], BombKind::Tactical, Carrier::Missile, None, Some(72)));
+        let g = saved.launch(OVERWORLD, [0, 65, 0], [-1000, 0], BombKind::Tactical, 72).unwrap();
+        assert!(g.id != f.id && g.seed != f.seed);
+        // The pad is busy until its missile is out of the shaft.
+        assert!(saved.pad_busy(OVERWORLD, [0, 65, 0], 500 + LAUNCH_COUNTDOWN + ASCENT_TICKS - 1));
+        assert!(!saved.pad_busy(OVERWORLD, [0, 65, 0], 500 + LAUNCH_COUNTDOWN + ASCENT_TICKS));
+        assert!(!saved.pad_busy("minecraft:the_nether", [0, 65, 0], 500));
+        assert_eq!(saved.launching(OVERWORLD, [0, 65, 0], 510).map(|f| f.id), Some(f.id));
     }
 }
