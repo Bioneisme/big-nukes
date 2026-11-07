@@ -5,7 +5,7 @@
 // by their ids.
 
 use crate::game::{
-    Game, NativeHeightmap,
+    Game, LevelDimension, NativeHeightmap,
     big_nukes as rules,
     big_nukes_glue::{self as glue, lock},
 };
@@ -14,7 +14,7 @@ use horizon_client::{
     hud::HudBatch,
     items::ItemStack,
     lang,
-    mod_api::{NativeScreen, NativeScreenView, NativeServerPlayer},
+    mod_api::{EquipmentSlot, NativeScreen, NativeScreenView, NativeServerPlayer},
     text::Text,
 };
 use horizon_core::geometry::Direction;
@@ -159,6 +159,7 @@ pub(in crate::game) fn pad_draw(game: &Game<'_>, batch: &mut HudBatch, origin: [
 pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     launches(game, dimension);
     flights(game, dimension);
+    strikes(game, dimension);
 }
 
 /// The silo's block entities' ticks.
@@ -169,13 +170,17 @@ pub(in crate::game) fn tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut Mod
 }
 
 /// A right click on a block: the console tells the window where it is, so a launch can name it, and opens;
-/// the pad opens. Without the assets half, whose menus they open, the player hears why not. Whether the block
-/// was one of the silo's.
+/// the pad opens; the strike beacon takes a bomb. Without the assets half, whose menus they open, the player
+/// hears why not. Whether the block was one of the silo's.
 pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) -> bool {
     let block = game.native_block(pos);
     let menu = match &*block {
         rules::LAUNCH_CONSOLE => rules::CONSOLE_MENU,
         rules::LAUNCH_PAD => rules::LAUNCH_PAD,
+        rules::STRIKE_BEACON => {
+            beacon_click(game, pos, canceled);
+            return true;
+        }
         _ => return false,
     };
     let Some(who) = game.native_acting_player() else { return true };
@@ -196,6 +201,8 @@ pub(in crate::game) fn forget() {
     lock(&DISPLAYS).clear();
     lock(&SWEEPS).clear();
     *lock(&SESSION) = None;
+    lock(&TAKEN).clear();
+    *lock(&LAST_CHARGE) = None;
 }
 
 fn text(line: &rules::Reply) -> Text {
@@ -846,15 +853,20 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
         let Some(mut guard) = glue::state(game) else { return };
         let st = guard.as_mut().expect("opened");
         let mut force = Vec::new();
+        // Saved only when something changed: most ticks only ask again for a chunk already forced.
+        let forced = st.saved.forced.len();
+        let mut changed = !fired.is_empty();
         for c in changes {
             match c {
                 Change::Surface(id, y) => {
                     if let Some(f) = st.saved.flights.iter_mut().chain(&mut st.saved.beacons).find(|f| f.id == id) {
+                        changed |= f.surface != Some(y);
                         f.surface = Some(y);
                     }
                 }
                 Change::HatchShut(id) => {
                     if let Some(f) = st.saved.flights.iter_mut().find(|f| f.id == id) {
+                        changed |= f.hatch.is_some();
                         f.hatch = None;
                     }
                 }
@@ -872,7 +884,9 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
             st.saved.landed(*id, *center);
         }
         let free = st.saved.unforce();
-        glue::save(st);
+        if changed || st.saved.forced.len() != forced {
+            glue::save(st);
+        }
         (force, free)
     };
     for chunk in force {
@@ -1028,4 +1042,224 @@ pub(in crate::game) fn camera_pose(game: &Game<'_>, partial: f32, position: &mut
 /// The window's level goes: so does the camera.
 pub(in crate::game) fn forget_camera() {
     *lock(&CAMERA) = None;
+}
+
+// ---- the strike beacon --------------------------------------------------------------
+//
+// A right click with a tactical warhead or an atomic bomb charges a beacon: the bomb
+// goes from the hand into the beacon's hidden slot, so a beacon broken before the
+// drop gives it back, and the world records the strike. Thirty seconds of red smoke
+// later the bomber flies over at the end of the beacon's level's tick, as a display,
+// and the bomb leaves it as another; where the bomb meets the ground it goes off.
+
+const PLANE_PART: u8 = 1;
+const BOMB_PART: u8 = 2;
+/// The drone of the bomber is heard about 190 blocks off.
+const DRONE_VOLUME: f32 = 12.0;
+/// How far a beacon's news is told.
+const BEACON_TOLD: f64 = 64.0;
+
+/// The player, the beacon and the tick of the last click handled on a beacon: the game asks once per hand.
+static LAST_CHARGE: Mutex<Option<(u128, [i32; 3], u64)>> = Mutex::new(None);
+/// Beacons and consoles taken away, heard from the level, which may change a block while the state is locked.
+static TAKEN: Mutex<Vec<(String, [i32; 3])>> = Mutex::new(Vec::new());
+
+/// The game's name of a level's dimension.
+pub(in crate::game) fn dimension_id(dimension: LevelDimension) -> &'static str {
+    match dimension {
+        LevelDimension::Overworld => "minecraft:overworld",
+        LevelDimension::Nether => "minecraft:the_nether",
+        LevelDimension::End => "minecraft:the_end",
+    }
+}
+
+/// A beacon or a console taken away (broken, blown up, replaced): its strike or its code goes the next time the
+/// state opens at the end of its level's tick.
+pub(in crate::game) fn taken(dimension: &str, pos: [i32; 3]) {
+    lock(&TAKEN).push((dimension.to_owned(), pos));
+}
+
+/// The beacons and consoles of `dimension` taken away since its last tick: a beacon's strike is called off before
+/// its drop (its bomb dropped with the beacon), a console's code is forgotten, so a new one starts afresh.
+fn take_away(game: &mut Game<'_>, dimension: &str) {
+    let gone: Vec<[i32; 3]> = {
+        let mut taken = lock(&TAKEN);
+        let (mine, rest): (Vec<_>, Vec<_>) = taken.drain(..).partition(|(d, _)| d == dimension);
+        *taken = rest;
+        mine.into_iter().map(|(_, pos)| pos).collect()
+    };
+    if gone.is_empty() {
+        return;
+    }
+    let Some(mut guard) = glue::state(game) else { return };
+    let st = guard.as_mut().expect("opened");
+    let now = st.saved.tick;
+    for pos in gone {
+        if let Some(kind) = st.saved.uncharge(dimension, pos, now) {
+            log::info!("[big_nukes] the beacon at {pos:?} in {dimension} is gone: its {kind:?} isn't dropped");
+        }
+        st.saved.consoles.remove(&rules::console_key(dimension, pos));
+    }
+    glue::save(st);
+}
+
+/// A right click on a strike beacon: a bomb that flies charges it, anything else hears what it takes. The furnace
+/// it is built on never opens. Sneaking with something else in hand lets it be used (a block placed against it).
+fn beacon_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
+    let held = game.native_equipment(EquipmentSlot::MainHand).map(|s| s.item.to_string());
+    let flies = held.as_deref().and_then(rules::BombKind::of_block).is_some_and(rules::BombKind::flies);
+    if held.is_some() && !flies && game.native_sneaking() {
+        return;
+    }
+    *canceled = true;
+    let (Some(who), Some((now, _))) = (game.native_acting_player(), glue::clock(game)) else { return };
+    {
+        let mut last = lock(&LAST_CHARGE);
+        if *last == Some((who.uuid, pos, now)) {
+            return;
+        }
+        *last = Some((who.uuid, pos, now));
+    }
+    let tell = |game: &mut Game<'_>, line: rules::Reply| {
+        game.native_tell(who.uuid, text(&line));
+    };
+    if !glue::assets_here(game) {
+        tell(game, rules::Reply::new("big_nukes.beacon.no_assets", &[]));
+        return;
+    }
+    let dimension = who.dimension.clone();
+    let charged = {
+        let Some(mut guard) = glue::state(game) else { return };
+        let st = guard.as_mut().expect("opened");
+        let charge = st.saved.charge(&dimension, pos, held.as_deref());
+        let left = st.saved.beacon_at(&dimension, pos).map(|f| f.pass().arrives().saturating_sub(now));
+        (charge, left)
+    };
+    let seconds = |ticks: Option<u64>| ticks.unwrap_or(0).div_ceil(rules::SECOND);
+    match charged {
+        (rules::Charge::Taken(kind), left) => {
+            // Out of the hand, unless creative, into the beacon's slot.
+            let taken = who.game_mode == 1 || game.native_take_items(kind.id(), 1) == 1;
+            let put = taken
+                && game
+                    .native_with_mod_block_entity(pos, |e| {
+                        if e.items.is_empty() {
+                            e.items.resize(1, None);
+                        }
+                        e.items[0] = Some(ItemStack { item: kind.id().into(), count: 1, damage: 0, extra: None });
+                    })
+                    .is_some();
+            if !put {
+                if taken && who.game_mode != 1 {
+                    game.native_give_items(kind.id(), 1);
+                }
+                if let Some(mut guard) = glue::state(game) {
+                    let st = guard.as_mut().expect("opened");
+                    st.saved.beacons.retain(|f| f.dimension != dimension || f.from != pos);
+                }
+                return;
+            }
+            if let Some(mut guard) = glue::state(game) {
+                glue::save(guard.as_mut().expect("opened"));
+            }
+            log::info!("[big_nukes] a bomber is called to {pos:?} in {dimension} with a {kind:?}, by {}", who.name);
+            game.native_level_play_sound("minecraft:block.beacon.activate", glue::middle(pos), 4, 1.0, 1.4);
+            tell(game, rules::Reply::new("big_nukes.beacon.charged", &[&seconds(left)]));
+        }
+        (rules::Charge::Busy, left) => tell(game, rules::Reply::new("big_nukes.beacon.busy", &[&seconds(left)])),
+        (rules::Charge::Not, _) => tell(game, rules::Reply::new("big_nukes.beacon.hint", &[])),
+        (rules::Charge::Maxpower { radius, maxpower }, _) => {
+            game.native_tell(who.uuid, glue::refused(rules::Refused::Maxpower { radius, maxpower }));
+        }
+    }
+}
+
+/// The strikes of `dimension`: the beacon's smoke and news, the bomber's pass, the bomb's fall and its blast.
+fn strikes(game: &mut Game<'_>, dimension: &str) {
+    take_away(game, dimension);
+    let (now, mine) = {
+        let Some(guard) = glue::state(game) else { return };
+        let st = guard.as_ref().expect("opened");
+        (st.saved.tick, st.saved.beacons.iter().filter(|f| f.dimension == dimension).cloned().collect::<Vec<_>>())
+    };
+    if mine.is_empty() {
+        return;
+    }
+    let mut changes = Vec::new();
+    for f in &mine {
+        strike(game, dimension, f, now, &mut changes);
+    }
+    settle(game, dimension, changes);
+}
+
+fn strike(game: &mut Game<'_>, dimension: &str, f: &rules::Flight, now: u64, changes: &mut Vec<Change>) {
+    let beacon = glue::middle(f.from);
+    let pass = f.pass();
+    // The beacon's chunk stays loaded until the blast has worked it.
+    changes.push(Change::Force(f.id, rules::chunk_of(f.from[0], f.from[2])));
+    let comes = pass.arrives();
+    if now < comes {
+        if now % 10 == 0 {
+            let smoke = [beacon[0], beacon[1] + 1.5, beacon[2]];
+            run_in(game, dimension, &particle("minecraft:dust{color:[1.0,0.0,0.0],scale:2.0}", smoke, 0.3, 0.02, 12));
+        }
+        if comes - now == 10 * rules::SECOND {
+            let line = text(&rules::Reply::new("big_nukes.beacon.soon", &[&10]));
+            tell_around(game, dimension, beacon, &line);
+        }
+        return;
+    }
+    if now == comes {
+        play(game, dimension, rules::BOMBER_FLYBY, [beacon[0], beacon[1] + 30.0, beacon[2]], DRONE_VOLUME, 1.0);
+    }
+    match pass.plane(now) {
+        Some((at, yaw)) => show(game, dimension, (f.id, PLANE_PART), rules::BOMBER_MODEL, rules::BOMBER_SCALE, 0.0, at, yaw, 0.0),
+        None => hide(game, dimension, (f.id, PLANE_PART)),
+    }
+    if now < pass.release {
+        return;
+    }
+    if now == pass.release {
+        // The bomb has left: a beacon broken now drops nothing.
+        game.native_with_mod_block_entity(f.from, |e| e.items.iter_mut().for_each(|s| *s = None));
+    }
+    let surface = match f.surface {
+        Some(y) => Some(y),
+        None => {
+            let read = ground_at(game, dimension, f.from[0], f.from[2]);
+            if let Some(y) = read {
+                changes.push(Change::Surface(f.id, y));
+            }
+            read
+        }
+    };
+    let ground = surface.unwrap_or(f.from[1]);
+    let lands = pass.impact(ground);
+    match (pass.bomb(now), lands) {
+        (Some(_), Some(t)) if now >= t => {
+            let at = pass.bomb(t).unwrap_or(beacon);
+            hide(game, dimension, (f.id, BOMB_PART));
+            changes.push(Change::Impact(f.id, [at[0].floor() as i32, ground, at[2].floor() as i32], f.kind));
+        }
+        (Some(at), _) => {
+            let (_, yaw) = pass.plane(pass.release).unwrap_or((at, 0.0));
+            // It noses down as it falls.
+            let pitch = ((now - pass.release) as f32 * 1.5).min(80.0);
+            show(game, dimension, (f.id, BOMB_PART), f.kind.id(), 1.0, 0.0, at, yaw, pitch);
+        }
+        // Past the end of its worked-out fall: it goes off at the beacon.
+        (None, _) => {
+            hide(game, dimension, (f.id, BOMB_PART));
+            changes.push(Change::Impact(f.id, [f.from[0], ground, f.from[2]], f.kind));
+        }
+    }
+}
+
+/// A line to every player of `dimension` near `at`.
+fn tell_around(game: &mut Game<'_>, dimension: &str, at: [f64; 3], line: &Text) {
+    for p in game.native_server_players() {
+        if p.dimension == dimension && distance(p.position, at) <= BEACON_TOLD {
+            game.native_tell(p.uuid, line.clone());
+        }
+    }
 }

@@ -147,5 +147,10 @@
   "big_nukes.console.stand_by": "Для пуска встаньте у пульта",
   "big_nukes.console.gone": "Этого пульта больше нет",
   "big_nukes.console.no_assets": "Мод с ассетами Big Nukes не загружен: без модели ракеты пусков нет",
-  "big_nukes.console.send_failed": "Пуск не дошёл до сервера: %s"
+  "big_nukes.console.send_failed": "Пуск не дошёл до сервера: %s",
+  "big_nukes.beacon.charged": "Бомбардировщик вызван: пролетит через %s с. Отойдите подальше!",
+  "big_nukes.beacon.busy": "Бомбардировщик уже в пути: %s с",
+  "big_nukes.beacon.hint": "ПКМ с тактической боеголовкой или атомной бомбой вызывает бомбардировщик",
+  "big_nukes.beacon.soon": "Бомбардировщик в %s с",
+  "big_nukes.beacon.no_assets": "Мод с ассетами Big Nukes не загружен: без модели самолёта вылета нет"
 }

@@ -2052,6 +2052,10 @@ pub(in crate::game) fn block_changed(
 ) {
     let was = &*level.facts.get(old).name;
     let now = &*level.facts.get(new).name;
+    // A strike beacon or a console taken away.
+    if now != was && matches!(was, rules::STRIKE_BEACON | rules::LAUNCH_CONSOLE) {
+        silo::taken(silo::dimension_id(dimension), [pos.x, pos.y, pos.z]);
+    }
     let (taken, placed) = (rules::BombKind::of_block(was), rules::BombKind::of_block(now));
     if now == was || (taken.is_none() && placed.is_none()) {
         return;

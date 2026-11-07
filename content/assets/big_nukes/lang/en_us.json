@@ -147,5 +147,10 @@
   "big_nukes.console.stand_by": "Stand by the console to launch",
   "big_nukes.console.gone": "That console isn't there any more",
   "big_nukes.console.no_assets": "Big Nukes' assets mod isn't loaded: no launches without the missile's model",
-  "big_nukes.console.send_failed": "The launch didn't reach the server: %s"
+  "big_nukes.console.send_failed": "The launch didn't reach the server: %s",
+  "big_nukes.beacon.charged": "Bomber called: it flies over in %s s. Stand clear!",
+  "big_nukes.beacon.busy": "A bomber is already on its way: %s s",
+  "big_nukes.beacon.hint": "Right click with a tactical warhead or an atomic bomb to call a bomber",
+  "big_nukes.beacon.soon": "The bomber is %s s away",
+  "big_nukes.beacon.no_assets": "Big Nukes' assets mod isn't loaded: no bomber without its model"
 }

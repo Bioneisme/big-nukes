@@ -1379,7 +1379,6 @@ pub const SHAFT_ROOM: u32 = 6;
 /// How far from a console its pad may be.
 pub const CONSOLE_REACH: i32 = 8;
 /// A charged beacon's countdown to the bomber's pass.
-#[allow(dead_code)] // plan 7: until the glue uses it
 pub const STRIKE_COUNTDOWN: u64 = 600;
 /// The bomber: how high over the beacon, blocks a tick, and how far out it comes in.
 pub const PLANE_HEIGHT: f64 = 120.0;
@@ -1408,11 +1407,9 @@ pub const BOMBER_MODEL: &str = "big_nukes:bomber_model";
 pub const MODEL_ITEMS: [&str; 2] = [MISSILE_MODEL, BOMBER_MODEL];
 pub const MISSILE_SCALE: f32 = 2.0;
 pub const MISSILE_LIFT: f32 = 3.0;
-#[allow(dead_code)] // plan 7: until the glue uses it
 pub const BOMBER_SCALE: f32 = 4.0;
 /// The launch's roar and the bomber's drone: the assets half's sounds.
 pub const MISSILE_LAUNCH: &str = "big_nukes:missile_launch";
-#[allow(dead_code)] // plan 7: until the glue uses it
 pub const BOMBER_FLYBY: &str = "big_nukes:bomber_flyby";
 /// The tag of every display a flight shows, so the ones a closed world left are found.
 pub const FLIGHT_TAG: &str = "big_nukes_flight";
@@ -1725,7 +1722,6 @@ impl Console {
 /// A bomber's pass over its beacon, worked out tick by tick when it is made: the plane comes in from
 /// `PLANE_START` blocks out, from a way the seed picks, `PLANE_HEIGHT` over the beacon, and flies straight
 /// over it; the bomb leaves it at the tick whose fall ends nearest the beacon.
-#[allow(dead_code)] // plan 7: until the glue uses it
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pass {
     start: u64,
@@ -1741,7 +1737,6 @@ pub struct Pass {
 /// How far below the beacon a fall is worked out.
 const FALL_DEPTH: f64 = 256.0;
 
-#[allow(dead_code)] // plan 7: until the glue uses it
 impl Pass {
     pub fn new(beacon: [i32; 3], start: u64, seed: u64) -> Pass {
         let angle = (mix(seed ^ 0xb0b0) >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
@@ -1787,9 +1782,9 @@ impl Pass {
         self.bomb.iter().position(|b| b[1] <= f64::from(surface)).map(|k| self.release + k as u64)
     }
 
-    /// The last tick the plane is in the sky.
-    pub fn gone(&self) -> u64 {
-        self.start + self.plane.len() as u64
+    /// The tick the plane comes into the sky.
+    pub fn arrives(&self) -> u64 {
+        self.start
     }
 }
 
@@ -2212,6 +2207,79 @@ pub fn launch_camera(flight: &Flight, now: f64, eye: [f64; 3]) -> Option<([f64; 
 fn followed_climb(flight: &Flight, t: f64) -> Option<([f64; 3], f32, f32)> {
     let climb = flight.climb(t);
     (t < ASCENT_TICKS as f64 && climb.0[1] - f64::from(flight.from[1]) <= FOLLOW_UP_TO).then_some(climb)
+}
+
+// ---- the strike beacon -------------------------------------------------------------
+//
+// A right click with a tactical warhead or an atomic bomb charges a beacon: the
+// bomb goes into its hidden slot and the world records the strike
+// (`Saved.beacons`), whose bomber passes `STRIKE_COUNTDOWN` later. The pass is
+// worked out again from the record whenever it is wanted.
+
+/// What a right click on a beacon did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Charge {
+    Taken(BombKind),
+    /// A bomber is already called to it.
+    Busy,
+    /// Nothing that flies in the hand.
+    Not,
+    Maxpower { radius: u32, maxpower: u32 },
+}
+
+impl Flight {
+    /// A bomber's pass over its beacon.
+    pub fn pass(&self) -> Pass {
+        Pass::new(self.from, self.start + STRIKE_COUNTDOWN, self.seed)
+    }
+}
+
+impl Saved {
+    /// The strike called to the beacon at `pos`.
+    pub fn beacon_at(&self, dimension: &str, pos: [i32; 3]) -> Option<&Flight> {
+        self.beacons.iter().find(|f| f.dimension == dimension && f.from == pos)
+    }
+
+    /// A right click on the beacon at `pos` with `held` in hand: a strike recorded now, within the operator's limit.
+    pub fn charge(&mut self, dimension: &str, pos: [i32; 3], held: Option<&str>) -> Charge {
+        if self.beacon_at(dimension, pos).is_some() {
+            return Charge::Busy;
+        }
+        let Some(kind) = held.and_then(BombKind::of_block).filter(|k| k.flies()) else {
+            return Charge::Not;
+        };
+        if !self.allows(kind.radius()) {
+            return Charge::Maxpower { radius: kind.radius(), maxpower: self.maxpower };
+        }
+        self.next_id += 1;
+        let id = self.next_id;
+        self.beacons.push(Flight {
+            id,
+            carrier: Carrier::Bomber,
+            dimension: dimension.to_owned(),
+            from: pos,
+            to: [pos[0], pos[2]],
+            kind,
+            start: self.tick,
+            surface: None,
+            seed: mix(self.tick ^ mix(id)),
+            hatch: None,
+        });
+        Charge::Taken(kind)
+    }
+
+    /// The beacon at `pos` is gone: before the bomb's release the strike is called off, and its bomb is the
+    /// beacon's to drop; after, the bomb falls anyway.
+    pub fn uncharge(&mut self, dimension: &str, pos: [i32; 3], now: u64) -> Option<BombKind> {
+        let f = self.beacon_at(dimension, pos)?;
+        if now >= f.pass().release {
+            return None;
+        }
+        let (id, kind) = (f.id, f.kind);
+        self.beacons.retain(|f| f.id != id);
+        self.landed(id, None);
+        Some(kind)
+    }
 }
 
 // ---- radiation ---------------------------------------------------------------
@@ -5422,5 +5490,51 @@ mod flight_tests {
         let shut = Flight { hatch: None, ..missile() };
         let (pos, _, _) = launch_camera(&shut, 10.0, eye).unwrap();
         assert!(near(pos[1], 64.0 + f64::from(SHAFT_ROOM) + 0.5 + 6.0, 0.01), "{pos:?}");
+    }
+
+    // ---- the bomber (Task 6) ------------------------------------------------------------------
+
+    #[test]
+    fn a_beacon_takes_a_tactical_or_atomic_bomb_once() {
+        let (atomic, tactical, demolition) = (BombKind::Atomic.id(), BombKind::Tactical.id(), BombKind::Demolition.id());
+        let mut saved = Saved { tick: 40, ..Saved::default() };
+        let b = [10, 64, 10];
+        assert_eq!(saved.charge(OVERWORLD, b, Some("minecraft:stick")), Charge::Not);
+        assert_eq!(saved.charge(OVERWORLD, b, None), Charge::Not);
+        assert_eq!(saved.charge(OVERWORLD, b, Some(demolition)), Charge::Not);
+        assert!(saved.beacons.is_empty());
+        assert_eq!(saved.charge(OVERWORLD, b, Some(tactical)), Charge::Taken(BombKind::Tactical));
+        assert_eq!(saved.charge(OVERWORLD, b, Some(atomic)), Charge::Busy);
+        assert_eq!(saved.charge(OVERWORLD, b, Some("minecraft:stick")), Charge::Busy);
+        assert_eq!(saved.beacons.len(), 1);
+        let f = saved.beacon_at(OVERWORLD, b).unwrap().clone();
+        assert_eq!((f.carrier, f.from, f.to, f.start, f.kind), (Carrier::Bomber, b, [10, 10], 40, BombKind::Tactical));
+        // The bomber comes STRIKE_COUNTDOWN later.
+        let pass = f.pass();
+        assert!(pass.plane(40 + STRIKE_COUNTDOWN - 1).is_none() && pass.plane(40 + STRIKE_COUNTDOWN).is_some());
+        assert_eq!(pass, Pass::new(b, 40 + STRIKE_COUNTDOWN, f.seed));
+        // Another beacon's place, or another dimension, is another beacon.
+        assert_eq!(saved.charge("minecraft:the_nether", b, Some(atomic)), Charge::Taken(BombKind::Atomic));
+        assert!(saved.beacons.iter().all(|g| g.id == f.id || g.seed != f.seed));
+        // A beacon broken before the release gives its bomb back and calls the bomber off; after, it comes anyway.
+        assert_eq!(saved.uncharge(OVERWORLD, b, 41), Some(BombKind::Tactical));
+        assert!(saved.beacon_at(OVERWORLD, b).is_none() && saved.beacons.len() == 1);
+        assert_eq!(saved.uncharge(OVERWORLD, b, 42), None);
+        assert_eq!(saved.charge(OVERWORLD, b, Some(tactical)), Charge::Taken(BombKind::Tactical));
+        let release = saved.beacon_at(OVERWORLD, b).unwrap().pass().release;
+        assert_eq!(saved.uncharge(OVERWORLD, b, release), None);
+        assert!(saved.beacon_at(OVERWORLD, b).is_some());
+    }
+
+    #[test]
+    fn the_strike_goes_within_maxpower() {
+        let mut saved = Saved { maxpower: 50, ..Saved::default() };
+        let b = [0, 70, 0];
+        assert_eq!(saved.charge(OVERWORLD, b, Some(BombKind::Atomic.id())), Charge::Maxpower { radius: 250, maxpower: 50 });
+        assert!(saved.beacons.is_empty());
+        assert_eq!(saved.charge(OVERWORLD, b, Some(BombKind::Tactical.id())), Charge::Taken(BombKind::Tactical));
+        // Its blast keeps within the limit too, should the operator lower it on the way.
+        saved.maxpower = 16;
+        assert_eq!(saved.fire(OVERWORLD, b, BombKind::Tactical.radius()), Err(Refused::Maxpower { radius: 50, maxpower: 16 }));
     }
 }
