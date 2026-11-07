@@ -3810,6 +3810,35 @@ pub fn new_press(presses: &mut Vec<(u128, [i32; 3], u64)>, who: u128, door: [i32
     !same
 }
 
+/// Whether a block lets a filter's air through, as air does: one that doesn't fill its place (panes, bars,
+/// fences, walls, chains, leaves, torches, lanterns, ladders, vines, plants, scaffolding, signs, banners,
+/// buttons, levers, rails, redstone, cobwebs, carpets, pressure plates). Water and lava shut a gap; doors,
+/// trapdoors and gates go by whether they stand open (`door_cell`).
+pub fn lets_air(block: &str) -> bool {
+    let Some(name) = block.strip_prefix("minecraft:") else { return false };
+    const NAMED: [&str; 26] = [
+        "air", "cave_air", "void_air", "iron_bars", "chain", "ladder", "vine", "glow_lichen", "sculk_vein",
+        "short_grass", "tall_grass", "fern", "large_fern", "dead_bush", "bush", "short_dry_grass", "tall_dry_grass",
+        "scaffolding", "lever", "redstone_wire", "cobweb", "tripwire", "tripwire_hook", "sugar_cane", "lily_pad",
+        "flower_pot",
+    ];
+    const FLOWERS: [&str; 20] = [
+        "dandelion", "poppy", "blue_orchid", "allium", "azure_bluet", "oxeye_daisy", "cornflower", "lily_of_the_valley",
+        "wither_rose", "sunflower", "lilac", "rose_bush", "peony", "torchflower", "pitcher_plant", "pink_petals",
+        "wildflowers", "leaf_litter", "open_eyeblossom", "closed_eyeblossom",
+    ];
+    const ENDS: [&str; 19] = [
+        "_pane", "_fence", "_wall", "_chain", "_leaves", "torch", "_sapling", "_tulip", "_vines", "_vines_plant",
+        "_sign", "_banner", "_button", "rail", "_carpet", "_pressure_plate", "_mushroom", "_roots", "_fungus",
+    ];
+    // Full blocks whose names end as one that isn't.
+    if matches!(name, "sea_lantern" | "jack_o_lantern" | "muddy_mangrove_roots") {
+        return false;
+    }
+    let lantern = name.ends_with("lantern");
+    NAMED.contains(&name) || FLOWERS.contains(&name) || lantern || ENDS.iter().any(|e| name.ends_with(e)) || name.starts_with("potted_")
+}
+
 /// A door by its `open` property: an open one lets the air through.
 pub fn door_cell(open: Option<&str>) -> Cell {
     if open == Some("true") { Cell::Open } else { Cell::Wall }
@@ -9774,6 +9803,66 @@ mod bunker_tests {
         assert!(!same_press(last, 8, door, 101));
         assert!(!same_press(last, me, [1, 64, 2], 101));
         assert!(!same_press(None, me, door, 101));
+    }
+
+    #[test]
+    fn what_doesnt_fill_its_place_lets_the_air_through() {
+        for id in [
+            "minecraft:air",
+            "minecraft:cave_air",
+            "minecraft:glass_pane",
+            "minecraft:red_stained_glass_pane",
+            "minecraft:iron_bars",
+            "minecraft:oak_fence",
+            "minecraft:nether_brick_fence",
+            "minecraft:cobblestone_wall",
+            "minecraft:chain",
+            "minecraft:iron_chain",
+            "minecraft:oak_leaves",
+            "minecraft:torch",
+            "minecraft:wall_torch",
+            "minecraft:soul_lantern",
+            "minecraft:lantern",
+            "minecraft:ladder",
+            "minecraft:vine",
+            "minecraft:cave_vines_plant",
+            "minecraft:poppy",
+            "minecraft:short_grass",
+            "minecraft:tall_grass",
+            "minecraft:oak_sapling",
+            "minecraft:scaffolding",
+            "minecraft:oak_sign",
+            "minecraft:oak_wall_hanging_sign",
+            "minecraft:white_banner",
+            "minecraft:stone_button",
+            "minecraft:lever",
+            "minecraft:rail",
+            "minecraft:powered_rail",
+            "minecraft:redstone_wire",
+            "minecraft:cobweb",
+            "minecraft:white_carpet",
+            "minecraft:oak_pressure_plate",
+        ] {
+            assert!(lets_air(id), "{id}");
+        }
+        // Full blocks, glass, water and lava (a flooded gap is shut), and the bunker's own blocks don't.
+        for id in [
+            "minecraft:stone",
+            "minecraft:glass",
+            "minecraft:water",
+            "minecraft:lava",
+            "minecraft:sea_lantern",
+            "minecraft:jack_o_lantern",
+            "minecraft:muddy_mangrove_roots",
+            "minecraft:oak_planks",
+            "minecraft:oak_fence_gate",
+            "minecraft:oak_trapdoor",
+            WALL_BLOCKS[0],
+            HERMETIC_DOOR,
+            AIR_FILTER,
+        ] {
+            assert!(!lets_air(id), "{id}");
+        }
     }
 
     #[test]

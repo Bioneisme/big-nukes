@@ -319,16 +319,18 @@ fn lamp_tick(game: &mut Game<'_>, pos: [i32; 3]) {
     light(game, pos, lit);
 }
 
-/// A place as a filter's room sees it: air goes through, and so does a door, a trapdoor or a gate
-/// standing open; air under the open sky (`open_to_sky`) is the sky; anything else is a wall.
+/// A place as a filter's room sees it: air goes through, and so does a block that doesn't fill its place
+/// (`rules::lets_air`: a pane, a fence, a torch...) and a door, a trapdoor or a gate standing open; such a place
+/// under the open sky (`open_to_sky`) is the sky; anything else is a wall.
 fn cell(game: &Game<'_>, pos: [i32; 3]) -> rules::Cell {
     let block = game.native_block(pos);
-    let through = match block.as_str() {
-        "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air" => rules::Cell::Open,
-        _ => match game.native_block_property(pos, "open") {
+    let through = if rules::lets_air(&block) {
+        rules::Cell::Open
+    } else {
+        match game.native_block_property(pos, "open") {
             Some(open) => rules::door_cell(Some(&open)),
             None => rules::Cell::Wall,
-        },
+        }
     };
     if through == rules::Cell::Open && rules::open_to_sky(game.native_light(pos).1) { rules::Cell::Sky } else { through }
 }

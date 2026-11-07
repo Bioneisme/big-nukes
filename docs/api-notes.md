@@ -292,7 +292,10 @@ Read in the source of 66f3981, not yet seen in the game:
   (API 18). The generator, the filter and the lamp tick as mod block entities on templates of their own (furnace,
   copper bulb), as the assembly table does on the crafting table.
 - `native_light` (API 97) is `(block, sky)` at a place, `(0, 0)` in a chunk not loaded. A player's eyes with sky
-  light 0 are under a roof. A filter's room is filled through air (and open doors, trapdoors, gates) with
-  `native_block`/`native_block_property` (API 20); air with sky light is the sky, so a glass window unseals a room.
+  light under 15 are under a roof: light leaks through doors, windows and leaves a level less a block. A filter's room
+  is filled through air, blocks that don't fill their place (`rules::lets_air`: panes, bars, fences, walls, torches,
+  plants...) and open doors, trapdoors, gates, with `native_block`/`native_block_property` (API 20); water and lava
+  shut a gap. `native_block_collision` has no API number, so `lets_air` is a list of ids. Only such a place with
+  the full sky light 15 is the sky: a hole open to the sky unseals a room; glass, a wall to the air, never does.
   An unloaded chunk reads as dark air: the fill runs into the 4096 limit and the room isn't sealed.
 - The filter's menu has one hidden slot, as the launch console's: a mod menu has 1 slot at least.
