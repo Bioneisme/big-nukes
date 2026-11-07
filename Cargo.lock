@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "horizon-mod-big-nukes"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "naga",
  "serde",

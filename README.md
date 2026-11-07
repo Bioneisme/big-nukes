@@ -7,13 +7,8 @@ radiation they leave or wait it out in a bunker.
 
 ![A mushroom cloud rising beside the setting sun over a scorched horizon](docs/images/cloud-sunset.jpg)
 
-> **The mod has two parts, and you need both:**
->
-> - `big_nukes_native`: the native part, the code.
-> - `big_nukes`: the assets, its textures, models, sounds, text and recipes.
->
-> Install both on the launcher's Mods page and press Build. If one is missing, the game says so in chat, with a link to
-> its page.
+> **One file:** install `big_nukes_native` on the launcher's Mods page and press Build. Its textures, models, sounds,
+> text and recipes come inside it, so no separate content mod is needed.
 
 ## How to play
 
@@ -215,7 +210,7 @@ Anyone can type `/bignukes guide`.
 
 ## Good to know
 
-- Every player needs both parts of the mod. It runs with your account's permissions, as every native mod does.
+- Every player needs the mod. It runs with your account's permissions, as every native mod does.
 - It is pinned to Horizon Nightly 2026-11-05 (66f3981).
 - It is made for single player and play with friends: anyone can set off a bomb anywhere.
 - The ground past your render distance is changed when its chunks load; the cloud and the ring are seen from any
