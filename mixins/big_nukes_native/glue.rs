@@ -2467,13 +2467,20 @@ fn keypad_click(at: [f32; 2], right: bool, button: &mut Option<i32>) {
 // open book lives in a static, and a page turned is heard at the next frame. The book
 // stays after the screen closes, so it opens again where it was left.
 
+/// The players who right-clicked with the guide lately: a click held down asks once, so a
+/// window that sees the book late (a laggy server) doesn't get it again after Escape.
+static GUIDE_CLICKS: Mutex<rules::Clicks<u128>> = Mutex::new(rules::Clicks::new());
+
 /// A right click with the guide: the player's window opens it. The use is claimed
 /// even when the message can't go, so the guide never acts as a plain book.
 fn read_guide(game: &mut Game<'_>, claimed: &mut bool) {
     *claimed = true;
-    let Some(who) = game.native_acting_player() else {
+    let (Some(who), Some((now, _))) = (game.native_acting_player(), clock(game)) else {
         return;
     };
+    if lock(&GUIDE_CLICKS).heard(who.uuid, now).is_some() {
+        return;
+    }
     if let Err(e) = game.native_net_send_to_player(who.uuid, rules::GUIDE_CHANNEL, &[]) {
         log::warn!("[big_nukes] opening the guide: {e}");
     }
@@ -2485,7 +2492,8 @@ static PAGE_TURNED: Mutex<bool> = Mutex::new(false);
 /// The server's message: the book is laid out in the window's language and opened, at the
 /// spread it was left at or, the first time, at its contents.
 pub(in crate::game) fn guide_asked(game: &mut Game<'_>, channel: &str) {
-    if channel != rules::GUIDE_CHANNEL || !game.native_on(rules::ID) {
+    // A message late for a book already open is let go.
+    if channel != rules::GUIDE_CHANNEL || !game.native_on(rules::ID) || game.native_mod_screen() == Some(rules::ID) {
         return;
     }
     let mut guide = rules::Guide::new(&lang::get, &|text: &str| game.native_text_width(text));
