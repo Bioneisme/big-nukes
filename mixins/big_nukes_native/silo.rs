@@ -1385,7 +1385,7 @@ fn beacon_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
                 glue::save(guard.as_mut().expect("opened"));
             }
             log::info!("[big_nukes] a bomber is called to {pos:?} in {dimension} with a {kind:?}, by {}", who.name);
-            game.native_level_play_sound("minecraft:block.beacon.activate", glue::middle(pos), 4, 1.0, 1.4);
+            game.native_play_sound_in_place("minecraft:block.beacon.activate", glue::middle(pos), 4, 1.0, 1.4);
             tell(game, rules::Reply::new("big_nukes.beacon.charged", &[&seconds(left)]));
         }
         (rules::Charge::Busy, left) => tell(game, rules::Reply::new("big_nukes.beacon.busy", &[&seconds(left)])),

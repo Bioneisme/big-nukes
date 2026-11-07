@@ -452,7 +452,7 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
         game.native_set_block_property(other, "open", value);
     }
     let event = if open { "minecraft:block.iron_door.open" } else { "minecraft:block.iron_door.close" };
-    game.native_level_play_sound(event, glue::middle(pos), BLOCKS, 1.0, 0.9);
+    game.native_play_sound_in_place(event, glue::middle(pos), BLOCKS, 1.0, 0.9);
     true
 }
 

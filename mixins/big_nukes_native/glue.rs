@@ -740,11 +740,7 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
         save(st);
     }
     let wake = std::mem::take(&mut st.wake);
-    let second = st.saved.tick % 20 == 0;
     drop(guard);
-    if second {
-        known_damage_type(game);
-    }
     // The commands run with the state let go: a death they cause is heard at once.
     for (name, stage, damage) in sick {
         sicken(game, &name, stage, damage);
@@ -768,28 +764,9 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     }
 }
 
-/// `/damage` checks a type against the command registry the server exported,
-/// which holds only vanilla's damage types (Horizon 66f3981 adds a content mod's
-/// items, blocks and effects there, not its damage types), so the radiation's
-/// type is added once the world's registries are built. Only with the assets
-/// half, which brings the type itself. This is the game's own table, not an API:
-/// when it changes, the build breaks, not the game.
 /// Whether the assets half is installed: it brings the marker loot table.
 pub(in crate::game) fn assets_here(game: &Game<'_>) -> bool {
     world_items!(game).has_loot_table(rules::ASSETS_MARKER)
-}
-
-fn known_damage_type(game: &mut Game<'_>) {
-    if !assets_here(game) {
-        return;
-    }
-    if let Some(r) = game.ui.registries.by_registry.get_mut("minecraft:damage_type")
-        && !r.ids.iter().any(|id| id == rules::RADIATION)
-    {
-        r.ids.push(rules::RADIATION.to_owned());
-        r.ids.sort();
-        log::info!("[big_nukes] {} is known to /damage", rules::RADIATION);
-    }
 }
 
 /// The end of a level's tick: its waves move on, and some of their work is done.
@@ -1540,7 +1517,7 @@ pub(in crate::game) fn middle(pos: [i32; 3]) -> [f64; 3] {
 }
 
 fn sound(game: &mut Game<'_>, pos: [i32; 3], event: &str, volume: f32, pitch: f32) {
-    game.native_level_play_sound(event, middle(pos), BLOCKS, volume, pitch);
+    game.native_play_sound_in_place(event, middle(pos), BLOCKS, volume, pitch);
 }
 
 /// A line in the chat of every player near the bomb.
@@ -2061,7 +2038,7 @@ pub(in crate::game) fn inventory_tick(game: &mut Game<'_>, slot: i32, selected: 
                     Some(damage) => stack.damage = damage,
                     None => {
                         stack.count = 0;
-                        game.native_level_play_sound("minecraft:entity.item.break", who.position, PLAYERS, 0.8, 1.0);
+                        game.native_play_sound_in_place("minecraft:entity.item.break", who.position, PLAYERS, 0.8, 1.0);
                     }
                 }
             }
@@ -2085,7 +2062,7 @@ pub(in crate::game) fn inventory_tick(game: &mut Game<'_>, slot: i32, selected: 
                     Some(damage) => stack.damage = damage,
                     None => {
                         stack.count = 0;
-                        game.native_level_play_sound("minecraft:entity.item.break", who.position, PLAYERS, 0.8, 1.0);
+                        game.native_play_sound_in_place("minecraft:entity.item.break", who.position, PLAYERS, 0.8, 1.0);
                     }
                 }
             }
@@ -2159,10 +2136,10 @@ fn counting(game: &mut Game<'_>, pos: [i32; 3], bomb: &rules::Bomb, left: u64) {
             let above = if sunbreaker { 3.05 } else { 1.05 };
             let top = [f64::from(pos[0]) + 0.5, f64::from(pos[1]) + above, f64::from(pos[2]) + 0.5];
             let smoke = ParticleOptions::simple(ParticleType::Smoke);
-            game.native_level_send_particles(&smoke, None, top, [0.1, 0.05, 0.1], 0.02, 2);
+            game.native_send_particles_in_place(&smoke, None, top, [0.1, 0.05, 0.1], 0.02, 2);
             if left % 2 == 0 {
                 let flame = ParticleOptions::simple(ParticleType::Flame);
-                game.native_level_send_particles(&flame, None, top, [0.05, 0.02, 0.05], 0.01, 1);
+                game.native_send_particles_in_place(&flame, None, top, [0.05, 0.02, 0.05], 0.01, 1);
             }
             if left % 20 == 0 {
                 sound(game, pos, "minecraft:block.fire.extinguish", 0.3, 2.0);
@@ -2371,7 +2348,7 @@ pub(in crate::game) fn use_item(game: &mut Game<'_>, stack: &ItemStack, claimed:
                     st.wake.push(dimension.to_owned());
                 }
             }
-            game.native_level_play_sound("minecraft:block.stone_button.click_on", who.position, PLAYERS, 0.6, 1.4);
+            game.native_play_sound_in_place("minecraft:block.stone_button.click_on", who.position, PLAYERS, 0.6, 1.4);
             Text::translate("big_nukes.remote.fired", &[place(pos)])
         }
         Err(why) => refused(why),

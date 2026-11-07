@@ -1,12 +1,12 @@
 [mod]
 id = "big_nukes_native"
-version = "0.1.1"
+version = "0.1.2"
 priority = 100
 
-# The Horizon source this bundle is planned and built on: Nightly 2026-11-05
-# (`nightly-source/2026-11-05-66f3981`). It needs API 126 (`native_edit_blocks`).
+# The Horizon source this bundle is planned and built on: Nightly 2026-11-07
+# (`nightly-source/2026-11-07-6560641`). It needs API 126 (`native_edit_blocks`).
 [compatibility]
-horizon_revision = "66f3981f522b24c250b21523a70080965b940424"
+horizon_revision = "6560641ba51a452f6bc2407baa4eb1b3be517ca8"
 
 # The rules: no game type, also the mod's Cargo library (its tests).
 [[module]]

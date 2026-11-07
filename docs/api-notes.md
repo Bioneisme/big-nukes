@@ -1,6 +1,9 @@
 # API notes
 
-Findings about Horizon's native mod API that the code relies on. Horizon Nightly 2026-11-05 (66f3981), API 411.
+Findings about Horizon's native mod API that the code relies on. Written on Horizon Nightly 2026-11-05 (66f3981), API 411;
+the mod moved to Nightly 2026-11-07 (6560641), API 411, in 0.1.2. There `native_level_play_sound` and
+`native_level_send_particles` with no level are named `native_play_sound_in_place` and `native_send_particles_in_place`
+(PR #7387).
 
 ## The assets half
 
@@ -30,7 +33,8 @@ The native half knows the assets half is installed when the loot table `big_nuke
 - A mod's `data/<ns>/damage_type/*.json` in the `.hmod` was not found by `/damage` on Nightly 66f3981 ("Can't find
   element 'big_nukes:blast' of type 'minecraft:damage_type'"), so the blast does `minecraft:explosion` damage. The type
   is loaded; only the command's check refuses it (a Horizon bug, written up in `docs/horizon-issue-damage-types.md`).
-  Radiation adds `big_nukes:radiation` to `game.ui.registries.by_registry` itself (`known_damage_type`, not an API).
+  Fixed by Horizon PR #11706 (in Nightly 2026-11-07, 6560641): since 0.1.2 the mod no longer adds
+  `big_nukes:radiation` to `game.ui.registries.by_registry` itself.
 - Sounds are the mod's own (`tools/make_sounds.py`). A local sound reaches `max(volume, 1) × attenuation_distance`
   blocks, so each is played 6 blocks from the player towards the blast, with the delay of the front.
 
