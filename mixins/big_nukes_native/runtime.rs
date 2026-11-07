@@ -1342,6 +1342,16 @@ impl Waves {
         self.waves.iter().any(|w| w.blast.dimension == dimension && w.blast.center == center)
     }
 
+    /// Whether blast `id`'s wave has worked `chunk`: reached by its front, neither waiting its turn nor its load.
+    /// What the registry holds there now is what the wave left.
+    pub fn worked(&mut self, id: u64, chunk: [i32; 2]) -> bool {
+        let Some(w) = self.waves.iter_mut().find(|w| w.blast.id == id) else { return false };
+        let (reached, d) = (w.reached, nearest(w.blast.center, chunk));
+        let mine = (d, chunk);
+        let hit = w.order()[..reached].binary_search_by(|e| e.0.total_cmp(&mine.0).then(e.1.cmp(&mine.1))).is_ok();
+        hit && !w.ready.contains(&chunk) && !w.deferred.contains(&chunk)
+    }
+
     /// Nothing more to do in `dimension` until a chunk loads: every front there
     /// is out and every ready chunk changed.
     pub fn idle(&mut self, dimension: &str) -> bool {
@@ -3548,9 +3558,29 @@ impl WallsAt {
     }
 }
 
-/// The walls of one column of the core, its highest first: each is judged down to the first that holds,
-/// which may crack (its cracked block goes into `plants`). The lowest place the crater reaches, if a wall
-/// held: just over it.
+/// What the wave does to a wall in the core: alone, or as a block of a multilayer wall where alone it wouldn't stand.
+fn core_fate(blast: &Blast, w: &Wall, near: &WallsAt) -> WallFate {
+    let strength = wave_strength(blast, w.pos[0], w.pos[2]);
+    match wall_fate(strength, w, false) {
+        WallFate::Stands => WallFate::Stands,
+        _ => wall_fate(strength, w, multilayer_at(&|p| near.kind(p), blast.center, w.pos)),
+    }
+}
+
+/// The highest wall of a core column, its walls highest first, that the wave leaves standing (it stands or
+/// cracks), between the crater's `floor` and `top`: the place just over it, where the crater stops. The walls
+/// over it break, and those under it it shields, unjudged.
+fn column_holds(blast: &Blast, floor: i32, top: i32, column: &[Wall], near: &WallsAt) -> Option<i32> {
+    column
+        .iter()
+        .filter(|w| w.pos[1] >= floor && w.pos[1] < top)
+        .find(|w| core_fate(blast, w, near) != WallFate::Breaks)
+        .map(|w| w.pos[1] + 1)
+}
+
+/// The walls of one column of the core, its highest first: those over the one that holds (`column_holds`)
+/// break, and that one may crack (its cracked block goes into `plants`). The lowest place the crater
+/// reaches, if a wall held: just over it.
 fn core_walls(
     blast: &Blast,
     floor: i32,
@@ -3560,14 +3590,9 @@ fn core_walls(
     plants: &mut ChunkEdit,
     changes: &mut Vec<WallChange>,
 ) -> Option<i32> {
-    let Some(first) = column.first() else { return None };
-    let strength = wave_strength(blast, first.pos[0], first.pos[2]);
-    for w in column.iter().filter(|w| w.pos[1] >= floor && w.pos[1] < top) {
-        let fate = match wall_fate(strength, w, false) {
-            WallFate::Stands => WallFate::Stands,
-            _ => wall_fate(strength, w, multilayer_at(&|p| near.kind(p), blast.center, w.pos)),
-        };
-        match fate {
+    let held = column_holds(blast, floor, top, column, near);
+    for w in column.iter().filter(|w| w.pos[1] >= held.map_or(floor, |y| y - 1) && w.pos[1] < top) {
+        match core_fate(blast, w, near) {
             WallFate::Breaks => changes.push(WallChange::Broken(w.pos)),
             WallFate::Cracks => {
                 let cracked = w.kind.cracked_id();
@@ -3581,12 +3606,11 @@ fn core_walls(
                 let [x, y, z] = w.pos;
                 plants.runs.push(Run { x, z, y, height: 1, surface: None, block, only: None });
                 changes.push(WallChange::Cracked(w.pos));
-                return Some(y + 1);
             }
-            WallFate::Stands => return Some(w.pos[1] + 1),
+            WallFate::Stands => {}
         }
     }
-    None
+    held
 }
 
 /// The registry's key of a chunk's walls.
@@ -3600,10 +3624,21 @@ pub fn open_to_sky(sky_light: u8) -> bool {
 /// How far up a wall of the bunker still roofs a player under it.
 pub const ROOF_REACH: i32 = 32;
 
-/// Whether a wall of the bunker stands over `pos` in its column, within `ROOF_REACH`: the wave's
-/// blow doesn't reach a player under a roof it left standing (a cracked one included).
-pub fn roofed(walls: &[Wall], pos: [i32; 3]) -> bool {
-    walls.iter().any(|w| w.pos[0] == pos[0] && w.pos[2] == pos[2] && w.pos[1] > pos[1] && w.pos[1] - pos[1] <= ROOF_REACH)
+/// Whether a player's head at `pos` is under a roof of the bunker that `blast` leaves standing (a cracked one
+/// included), within `ROOF_REACH` over it in its column: its blow doesn't reach them. `walls` are those round
+/// the place (`walls_near`). Out of the core the wave touches no wall: any roof stands. In the core, a wall
+/// stands at or under the highest one the wave leaves standing (`column_holds`); once the wave has `worked`
+/// the place's chunk, the walls left there are what stood.
+pub fn roofed(blast: &Blast, walls: &[Wall], pos: [i32; 3], worked: bool) -> bool {
+    let d = edge(blast, pos[0], pos[2]);
+    let mut over = walls.iter().filter(|w| w.pos[0] == pos[0] && w.pos[2] == pos[2] && w.pos[1] > pos[1] && w.pos[1] - pos[1] <= ROOF_REACH);
+    if worked || ring(d) != Ring::Core {
+        return over.next().is_some();
+    }
+    let near = WallsAt::new(chunk_of(pos[0], pos[2]), walls);
+    let top = blast.world.roof.min(blast.world.top());
+    let Some(held) = column_holds(blast, crater_floor(blast, d), top, near.column(pos[0], pos[2]), &near) else { return false };
+    over.any(|w| w.pos[1] < held)
 }
 
 /// Whether `pos` is under the floor the blast's crater has in its column: depth spares it.
@@ -9164,11 +9199,84 @@ mod bunker_tests {
 
     #[test]
     fn a_player_under_a_standing_roof_is_spared() {
-        let roof = [Wall { pos: [5, 80, 5], kind: WallKind::Reinforced, cracked: true }];
-        assert!(roofed(&roof, [5, 70, 5]), "a cracked roof still stands");
-        assert!(!roofed(&roof, [6, 70, 5]), "the next column has no roof");
-        assert!(!roofed(&roof, [5, 81, 5]), "over the roof");
-        assert!(!roofed(&roof, [5, 80 - ROOF_REACH - 1, 5]), "a roof too far up is no roof");
+        // Out of the core the wave touches no wall: any roof over a player stands.
+        let b = blast(BombKind::Atomic.radius());
+        let x = out_to(&b, 0.5);
+        let roof = [Wall { pos: [x, 80, 5], kind: WallKind::Reinforced, cracked: true }];
+        assert!(roofed(&b, &roof, [x, 70, 5], false), "a cracked roof still stands");
+        assert!(!roofed(&b, &roof, [x + 1, 70, 5], false), "the next column has no roof");
+        assert!(!roofed(&b, &roof, [x, 81, 5], false), "over the roof");
+        assert!(!roofed(&b, &roof, [x, 80 - ROOF_REACH - 1, 5], false), "a roof too far up is no roof");
+    }
+
+    #[test]
+    fn a_roof_the_wave_breaks_spares_no_one() {
+        // A lone block of reinforced concrete 30 blocks over a player near an atomic's center: the crater takes it.
+        let b = blast(BombKind::Atomic.radius());
+        let head = [10, 40, 0];
+        assert_eq!(ring(edge(&b, 10, 0)), Ring::Core);
+        assert!(crater_floor(&b, edge(&b, 10, 0)) < head[1]);
+        let roof = [wall([10, 70, 0], WallKind::Reinforced)];
+        assert_eq!(plan_chunk(&b, chunk_of(10, 0), &roof).1, [WallChange::Broken(roof[0].pos)]);
+        assert!(!roofed(&b, &roof, head, false));
+        // Under a broken roof and a standing one below it, the standing one spares; over it, nothing does.
+        let x = out_to(&b, 0.25);
+        let two = [wall([x, 75, 0], WallKind::Reinforced), wall([x, 70, 0], WallKind::Armored)];
+        assert!(roofed(&b, &two, [x, 65, 0], false));
+        assert!(!roofed(&b, &two, [x, 72, 0], false));
+    }
+
+    #[test]
+    fn a_roof_the_wave_leaves_standing_spares_its_player() {
+        // Armored concrete holds an atomic at a quarter of its border, and cracks nearer in: both spare.
+        let b = blast(BombKind::Atomic.radius());
+        let x = out_to(&b, 0.25);
+        assert!(roofed(&b, &[wall([x, 70, 0], WallKind::Armored)], [x, 60, 0], false));
+        let near = out_to(&b, 0.15);
+        let cracking = wall([near, 70, 0], WallKind::Armored);
+        assert_eq!(wall_fate(wave_strength(&b, near, 0), &cracking, false), WallFate::Cracks);
+        assert!(roofed(&b, &[cracking], [near, 60, 0], false));
+        // Once its chunk is worked, the registry holds the cracked roof the wave left: it still spares, though
+        // judged again a cracked wall would break.
+        let mut saved = Saved::default();
+        saved.place_wall(OW, cracking.pos, WallKind::Armored, false);
+        let (_, changes) = plan_chunk(&b, chunk_of(near, 0), &walls_near(&saved.walls, OW, chunk_of(near, 0)));
+        assert!(saved.change_walls(OW, &changes));
+        let left = walls_near(&saved.walls, OW, chunk_of(near, 0));
+        assert!(left[0].cracked);
+        assert!(!roofed(&b, &left, [near, 60, 0], false));
+        assert!(roofed(&b, &left, [near, 60, 0], true));
+        // A worked chunk whose roof broke has none left in the registry.
+        assert!(!roofed(&b, &[], [near, 60, 0], true));
+    }
+
+    #[test]
+    fn a_multilayer_roof_spares_its_player_from_a_sunbreaker() {
+        let b = blast(BombKind::Sunbreaker.radius());
+        let x = out_to(&b, 0.3);
+        assert_eq!(ring(edge(&b, x, 0)), Ring::Core);
+        let roof = series([x, 70, 0], [0, -1, 0]);
+        assert!(roofed(&b, &roof, [x, 60, 0], false));
+        // One block of the best concrete alone breaks there.
+        assert!(!roofed(&b, &[wall([x, 70, 0], WallKind::Armored)], [x, 60, 0], false));
+    }
+
+    #[test]
+    fn a_wave_is_known_to_have_worked_a_chunk_once_it_has() {
+        let mut saved = Saved::default();
+        let id = saved.blast(OW, [0, 64, 0], 64).unwrap();
+        let far = [3, 0];
+        assert!(!saved.waves.worked(id, [0, 0]), "not reached");
+        saved.tick = 1;
+        saved.waves.advance(OW, saved.tick, &|c| c != far);
+        assert!(!saved.waves.worked(id, [0, 0]), "reached, waiting its turn");
+        saved.tick = 10_000;
+        saved.waves.advance(OW, saved.tick, &|c| c != far);
+        saved.waves.work(OW, Duration::MAX, &|| Duration::ZERO, &mut |_, c| c != far);
+        assert!(saved.waves.worked(id, [0, 0]));
+        assert!(!saved.waves.worked(id, far), "deferred till it loads");
+        assert!(!saved.waves.worked(id, [100, 100]), "out of reach");
+        assert!(!saved.waves.worked(id + 1, [0, 0]), "no such blast");
     }
 
     #[test]

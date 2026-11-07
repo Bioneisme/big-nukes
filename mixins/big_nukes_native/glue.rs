@@ -449,7 +449,7 @@ fn effects(game: &mut Game<'_>, st: &mut State, dimension: &str) {
         if bands.is_empty() {
             continue;
         }
-        // A player under a roof of the bunker the wave left standing, or deep under the crater's floor, is spared
+        // A player under a roof of the bunker the wave leaves standing, or deep under the crater's floor, is spared
         // its blow: tagged for the damage's selector to pass over.
         let sheltered: Vec<String> = game
             .native_server_players()
@@ -458,8 +458,9 @@ fn effects(game: &mut Game<'_>, st: &mut State, dimension: &str) {
             .filter(|p| {
                 let feet = p.position.map(|v| v.floor() as i32);
                 let head = [feet[0], feet[1] + 1, feet[2]];
-                let walls = rules::walls_in(&st.saved.walls, &blast.dimension, rules::chunk_of(feet[0], feet[2]));
-                rules::below_crater(&blast, head) || rules::roofed(walls, head)
+                let chunk = rules::chunk_of(feet[0], feet[2]);
+                let walls = rules::walls_near(&st.saved.walls, &blast.dimension, chunk);
+                rules::below_crater(&blast, head) || rules::roofed(&blast, &walls, head, st.saved.waves.worked(blast.id, chunk))
             })
             .map(|p| p.name)
             .collect();
