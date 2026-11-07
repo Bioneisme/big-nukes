@@ -1,0 +1,47 @@
+# Draft of the catalog entry for the native part. `published` is the day it is submitted, and
+# the hash is of dist/big_nukes_native.hnmod built from the commit that is published.
+# TODO(author): every value marked TODO below needs your decision or a build; the form fills
+# icon and screenshots from its uploads (icon.png at the repository's root is the icon).
+id = "big_nukes_native"
+kind = "native-mod"
+name = "Big Nukes"
+summary = "Bombs whose shockwave rolls across the land, up to a superbomb that breaks the bedrock. Radiation to fight, a bunker to wait it out."
+description = """
+**This mod has two parts, and you need both.** Install this one, the native part, and [Big Nukes (assets)](https://playhorizon.dev/mods/big_nukes), then press Build. If one is missing, the game says so in chat.
+
+- **Make** the bombs: mine uranium below y=16, enrich it in a centrifuge, and put the parts together on the assembly table.
+- **Blast** with a demolition charge (radius 16), a tactical warhead (50) or an atomic bomb (250). The flash, the mushroom cloud and the ring of the shockwave are seen from far beyond your render distance, and the wave leaves a crater, ash and fires behind it.
+- **Set them off** by fuse, by a keypad's code, or by a remote from any distance. Fire a missile from a silo at coordinates up to 4096 blocks away, or call a bomber onto a strike beacon.
+- **Build** the Sunbreaker round its core: 26 implosion shells and 98 neutron reflectors, radius 600 to 1000. At 1000 it breaks through the bedrock.
+- **Survive** the radiation: a Geiger counter, a hazmat suit, anti-rad, iodine tablets, and a decontaminator that turns the ash back to grass.
+- **Hide** in a bunker: reinforced and armored concrete, a multilayer wall that holds even the Sunbreaker away from its center, a hermetic door, and an air filter powered by a fuel generator that keeps 95% of the radiation out of a sealed room.
+
+The Big Nukes Guide tells it all in the game. English and Russian.
+
+**Commands:** `/bignukes guide` gives the guide. Operators have `/bignukes blast <radius> [x y z]`, and `/bignukes maxpower [16|50|250|1000|1024]`, the largest blast a world allows.
+
+Native source mod: install it on the launcher's Mods page, press Build there, and confirm the native-code warning. It runs with your account's permissions. It is pinned to one Horizon Nightly and Horizon Mixins revision, named in each version's changelog.
+
+All the art and sounds are original. No Minecraft code or assets are included. MIT licensed."""
+authors = ["bioneisme"]
+owners = ["Bioneisme"]
+owner_ids = [92920845]
+license = "MIT"
+# TODO(author): the repository doesn't exist yet; create it and push the published commit first.
+source = "https://github.com/Bioneisme/big-nukes"
+icon = "icons/big_nukes_native.png"
+# TODO(author): 1 to 3 of: adventure, decoration, economy, equipment, food, game-mechanics, library, magic,
+# management, minigame, mobs, optimization, social, storage, technology, transportation, utility, worldgen.
+categories = ["technology", "equipment", "game-mechanics"]
+# TODO(author): optional, at most 10.
+tags = ["nuclear", "bombs", "explosions", "radiation", "missile", "bunker"]
+# TODO(author): optional, up to 8 PNG or JPEG uploads on the form; none taken yet.
+screenshots = []
+
+[[versions]]
+version = "0.1.0"
+published = "TODO"  # TODO(author): the day it is submitted
+game = "26.3"
+file = "big_nukes_native-0.1.0.hnmod"
+sha256 = "TODO"  # TODO(author): sha256 of dist/big_nukes_native.hnmod built from the published commit
+changelog = "First release. Pinned to Nightly 2026-11-05 (66f3981) and Horizon Mixins e8cd0aa."
