@@ -2561,6 +2561,12 @@ pub enum Charge {
     Maxpower { radius: u32, maxpower: u32 },
 }
 
+/// The slot of `hotbar` that holds `held`, the stack seen in the main hand, whole (its name and
+/// all): the hand's own, where its bomb is taken from. The first, should two be the same.
+pub fn hand_slot<T: PartialEq>(hotbar: &[Option<T>], held: &T) -> Option<usize> {
+    hotbar.iter().position(|s| s.as_ref() == Some(held))
+}
+
 impl Flight {
     /// A bomber's pass over its beacon.
     pub fn pass(&self) -> Pass {
@@ -8066,6 +8072,21 @@ mod flight_tests {
         assert!(back.beacon_at(OVERWORLD, b).unwrap().emptied);
         // A missile is no beacon's.
         assert!(!missile().to_empty(u64::MAX / 2));
+    }
+
+    #[test]
+    fn a_bomb_is_taken_from_the_hand_it_was_seen_in() {
+        // Stacks as the game has them: the item, the count and its name, if renamed.
+        let named = |n: u32| Some((BombKind::Atomic.id(), n, Some("Big One")));
+        let plain = |n: u32| Some((BombKind::Atomic.id(), n, None));
+        let hotbar = [plain(3), None, named(1), plain(1), named(2)];
+        // The hand holds the renamed one: its own slot, not a plain one before it.
+        assert_eq!(hand_slot(&hotbar, &named(1).unwrap()), Some(2));
+        assert_eq!(hand_slot(&hotbar, &named(2).unwrap()), Some(4));
+        assert_eq!(hand_slot(&hotbar, &plain(1).unwrap()), Some(3));
+        // A stack the hotbar doesn't hold (it changed) is in no hand.
+        assert_eq!(hand_slot(&hotbar, &named(5).unwrap()), None);
+        assert_eq!(hand_slot::<(&str, u32, Option<&str>)>(&[], &named(1).unwrap()), None);
     }
 
     #[test]

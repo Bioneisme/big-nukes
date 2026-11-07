@@ -1123,7 +1123,8 @@ fn take_away(game: &mut Game<'_>, dimension: &str) {
 /// A right click on a strike beacon: a bomb that flies charges it, anything else hears what it takes. The furnace
 /// it is built on never opens. Sneaking with something else in hand lets it be used (a block placed against it).
 fn beacon_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
-    let held = game.native_equipment(EquipmentSlot::MainHand).map(|s| s.item.to_string());
+    let hand = game.native_equipment(EquipmentSlot::MainHand);
+    let held = hand.as_ref().map(|s| s.item.to_string());
     let flies = held.as_deref().and_then(rules::BombKind::of_block).is_some_and(rules::BombKind::flies);
     if held.is_some() && !flies && game.native_sneaking() {
         return;
@@ -1151,25 +1152,29 @@ fn beacon_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
     let seconds = |ticks: Option<u64>| ticks.unwrap_or(0).div_ceil(rules::SECOND);
     match charged {
         (rules::Charge::Taken(kind), left) => {
-            // Out of the hand, unless creative, into the beacon's slot.
-            let taken = who.game_mode == 1 || game.native_take_items(kind.id(), 1) == 1;
-            let put = taken
-                && game
-                    .native_with_mod_block_entity(pos, |e| {
-                        if e.items.is_empty() {
-                            e.items.resize(1, None);
-                        }
-                        e.items[0] = Some(ItemStack { item: kind.id().into(), count: 1, damage: 0, extra: None });
-                    })
-                    .is_some();
-            if !put {
-                if taken && who.game_mode != 1 {
-                    game.native_give_items(kind.id(), 1);
+            // One of the very stack in hand, a renamed bomb too, into the beacon's slot (a broken beacon gives it
+            // back as it was), then out of the hand unless creative.
+            let hand = hand.filter(|s| &*s.item == kind.id());
+            let put = hand.as_ref().is_some_and(|hand| {
+                let one = ItemStack { count: 1, ..hand.clone() };
+                game.native_with_mod_block_entity(pos, |e| {
+                    if e.items.is_empty() {
+                        e.items.resize(1, None);
+                    }
+                    e.items[0] = Some(one);
+                })
+                .is_some()
+            });
+            let taken = put && (who.game_mode == 1 || hand.as_ref().is_some_and(|hand| take_from_hand(game, hand)));
+            if !taken {
+                if put {
+                    game.native_with_mod_block_entity(pos, |e| e.items.iter_mut().for_each(|s| *s = None));
                 }
                 if let Some(mut guard) = glue::state(game) {
                     let st = guard.as_mut().expect("opened");
                     st.saved.beacons.retain(|f| f.dimension != dimension || f.from != pos);
                 }
+                tell(game, rules::Reply::new("big_nukes.beacon.not_taken", &[]));
                 return;
             }
             if let Some(mut guard) = glue::state(game) {
@@ -1184,6 +1189,24 @@ fn beacon_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
         (rules::Charge::Maxpower { radius, maxpower }, _) => {
             game.native_tell(who.uuid, glue::refused(rules::Refused::Maxpower { radius, maxpower }));
         }
+    }
+}
+
+/// One of `hand`, the stack seen in the acting player's main hand, taken from that slot: a plain one by the item
+/// helpers, which take from the main hand first; a renamed one, which they leave, from the hotbar slot holding
+/// that very stack (its count of 0, if it was the last, empties the slot at its inventory tick). Whether one was.
+fn take_from_hand(game: &mut Game<'_>, hand: &ItemStack) -> bool {
+    if hand.damage == 0 && hand.extra.is_none() {
+        return game.native_take_items(&hand.item, 1) == 1;
+    }
+    let hotbar: Vec<Option<ItemStack>> = (0..9).map(|i| game.native_carried_stack(i).cloned()).collect();
+    let Some(slot) = rules::hand_slot(&hotbar, hand) else { return false };
+    match game.native_carried_stack(slot as i32) {
+        Some(stack) if stack.count > 0 => {
+            stack.count -= 1;
+            true
+        }
+        _ => false,
     }
 }
 
