@@ -2151,6 +2151,69 @@ impl Saved {
     }
 }
 
+// ---- the launch camera -------------------------------------------------------------
+//
+// For the one who launched it, the window's camera watches the hatch through the
+// countdown, then follows the missile up until it is high in the sky. The window
+// works it out from the flight and its own clock, between ticks too.
+
+/// Through the countdown the camera stands this far beside the hatch and this far above it.
+const CAMERA_ASIDE: f64 = 16.0;
+const CAMERA_ABOVE: f64 = 6.0;
+/// On the climb it follows this far beside the missile and this far below, until the missile is this high.
+const FOLLOW_ASIDE: f64 = 12.0;
+const FOLLOW_BELOW: f64 = 20.0;
+const FOLLOW_UP_TO: f64 = 200.0;
+/// The ticks it takes to close in from the hatch's view to the climb's.
+const CLOSE_IN: f64 = 20.0;
+
+/// Where a yaw and pitch look, as the game reckons them.
+fn look(yaw: f32, pitch: f32) -> [f64; 3] {
+    let (y, p) = (f64::from(yaw).to_radians(), f64::from(pitch).to_radians());
+    [-y.sin() * p.cos(), -p.sin(), y.cos() * p.cos()]
+}
+
+/// The yaw and pitch that look from `from` at `to`.
+fn look_at(from: [f64; 3], to: [f64; 3]) -> (f32, f32) {
+    let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    (yaw_of(d[0], d[2]), (-d[1].atan2(d[0].hypot(d[2]))).to_degrees() as f32)
+}
+
+/// The camera at `now` (the world's ticks, between them too) for a player whose eyes were at `eye` when they
+/// launched `flight`: its place, yaw and pitch, beside the hatch on the player's side, then following the missile.
+/// None before the launch and once the missile is `FOLLOW_UP_TO` blocks up.
+pub fn launch_camera(flight: &Flight, now: f64, eye: [f64; 3]) -> Option<([f64; 3], f32, f32)> {
+    if now < flight.start as f64 {
+        return None;
+    }
+    let hatch_y = flight.hatch.unwrap_or(flight.from[1] + SHAFT_ROOM as i32);
+    let hatch = [f64::from(flight.from[0]) + 0.5, f64::from(hatch_y) + 0.5, f64::from(flight.from[2]) + 0.5];
+    let side = {
+        let d = [eye[0] - hatch[0], eye[2] - hatch[2]];
+        let len = d[0].hypot(d[1]);
+        if len < 1e-6 { [1.0, 0.0] } else { [d[0] / len, d[1] / len] }
+    };
+    let t = now - flight.liftoff() as f64;
+    if t < 0.0 {
+        let pos = [hatch[0] + side[0] * CAMERA_ASIDE, hatch[1] + CAMERA_ABOVE, hatch[2] + side[1] * CAMERA_ASIDE];
+        let (yaw, pitch) = look_at(pos, hatch);
+        return Some((pos, yaw, pitch));
+    }
+    let (tail, yaw, pitch) = followed_climb(flight, t)?;
+    let nose = look(yaw, pitch);
+    let middle = [0, 1, 2].map(|i| tail[i] + nose[i] * f64::from(MISSILE_LIFT));
+    let aside = CAMERA_ASIDE + (FOLLOW_ASIDE - CAMERA_ASIDE) * (t / CLOSE_IN).min(1.0);
+    let pos = [tail[0] + side[0] * aside, (tail[1] - FOLLOW_BELOW).max(hatch[1] + CAMERA_ABOVE), tail[2] + side[1] * aside];
+    let (yaw, pitch) = look_at(pos, middle);
+    Some((pos, yaw, pitch))
+}
+
+/// The climb `t` ticks after the liftoff, while the camera follows it.
+fn followed_climb(flight: &Flight, t: f64) -> Option<([f64; 3], f32, f32)> {
+    let climb = flight.climb(t);
+    (t < ASCENT_TICKS as f64 && climb.0[1] - f64::from(flight.from[1]) <= FOLLOW_UP_TO).then_some(climb)
+}
+
 // ---- radiation ---------------------------------------------------------------
 //
 // A blast of radius 40 or more leaves a zone: a rule, not a map of chunks. The
@@ -5313,5 +5376,51 @@ mod flight_tests {
         assert_eq!(guessed.leg(guessed.descends_at() + SURFACE_WAIT), Leg::Impact { at: [1000, SURFACE_GUESS, 0] });
         // The chunk the target is in.
         assert_eq!(f.chunk_to(), [62, 0]);
+    }
+
+    // ---- the launch camera (Task 5) -----------------------------------------------------------
+
+    fn toward(from: [f64; 3], to: [f64; 3], yaw: f32, pitch: f32) -> f64 {
+        let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let l = looks(yaw, pitch);
+        (d[0] * l[0] + d[1] * l[1] + d[2] * l[2]) / len
+    }
+
+    #[test]
+    fn the_launch_camera_watches_the_hatch_then_follows_up_to_two_hundred_and_lets_go() {
+        let f = missile();
+        let hatch = [0.5, 71.5, 0.5];
+        // The player stands east of the shaft: the camera watches from their side.
+        let eye = [10.0, 66.6, 0.5];
+        for now in [0.0, 30.0, 60.0, 99.5] {
+            let (pos, yaw, pitch) = launch_camera(&f, now, eye).unwrap_or_else(|| panic!("{now}"));
+            assert!(near(flat(pos, hatch), 16.0, 0.01) && near(pos[1], hatch[1] + 6.0, 0.01), "{now}: {pos:?}");
+            assert!(pos[0] > 10.0, "{now}: {pos:?}");
+            assert!(toward(pos, hatch, yaw, pitch) > 0.999, "{now}");
+        }
+        // The climb: below and beside the missile, looking at it.
+        for now in [100.0, 130.0, 150.5, 175.0] {
+            let (tail, nose_yaw, nose_pitch) = f.climb(now - 100.0);
+            let middle = [0, 1, 2].map(|i| tail[i] + looks(nose_yaw, nose_pitch)[i] * 3.0);
+            let (pos, yaw, pitch) = launch_camera(&f, now, eye).unwrap_or_else(|| panic!("{now}"));
+            assert!(toward(pos, middle, yaw, pitch) > 0.999, "{now}");
+            assert!(flat(pos, tail) >= 11.9 && flat(pos, tail) <= 16.01, "{now}: {pos:?}");
+            assert!(pos[1] >= hatch[1] + 5.99, "never under the ground: {now}");
+        }
+        let (tail, _, _) = f.climb(75.0);
+        let (pos, _, _) = launch_camera(&f, 175.0, eye).unwrap();
+        assert!(near(pos[1], tail[1] - 20.0, 0.01) && near(flat(pos, tail), 12.0, 0.01), "{pos:?} {tail:?}");
+        // Two hundred blocks up it lets go, and the view is the player's again.
+        let up = (100..220).find(|t| f.climb(f64::from(*t) - 100.0).0[1] > 64.0 + 200.0).unwrap();
+        assert!(launch_camera(&f, f64::from(up) - 1.0, eye).is_some());
+        assert!(launch_camera(&f, f64::from(up), eye).is_none());
+        assert!(launch_camera(&f, 5000.0, eye).is_none());
+        assert!(launch_camera(&f, -1.0, eye).is_none());
+        // A player straight over the hatch still gets a view; a shut hatch is looked for where a shaft has one.
+        assert!(launch_camera(&f, 10.0, [0.5, 90.0, 0.5]).is_some());
+        let shut = Flight { hatch: None, ..missile() };
+        let (pos, _, _) = launch_camera(&shut, 10.0, eye).unwrap();
+        assert!(near(pos[1], 64.0 + f64::from(SHAFT_ROOM) + 0.5 + 6.0, 0.01), "{pos:?}");
     }
 }

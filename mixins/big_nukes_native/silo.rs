@@ -463,6 +463,9 @@ pub(in crate::game) fn net_from_server(game: &mut Game<'_>, channel: &str, data:
             return;
         }
     };
+    if let Some(flight) = news.missile.clone() {
+        follow(game, flight, news.now);
+    }
     with_ui(|ui| {
         if let Some(at) = news.at {
             // Another console starts empty; the same one keeps what was typed.
@@ -982,4 +985,47 @@ fn hatch(game: &mut Game<'_>, dimension: &str, f: &rules::Flight, now: u64, chan
         }
         changes.push(Change::HatchShut(f.id));
     }
+}
+
+// ---- the launch camera, in the window -------------------------------------------------
+//
+// The server tells the window of the missile it launched with the camera on; the
+// window works the camera out from its own clock each frame (`native_camera_pose`,
+// API 402), and lets go once the missile is high or the player turns it off.
+
+/// The missile followed: the flight, the window's game time less the world's tick when it was told, and the
+/// player's eyes then, whose side the camera keeps.
+static CAMERA: Mutex<Option<(rules::Flight, f64, [f64; 3])>> = Mutex::new(None);
+
+fn follow(game: &Game<'_>, flight: rules::Flight, now: u64) {
+    let (Some(clock), Some(player)) = (game.native_clock(), game.native_player()) else { return };
+    let offset = clock.game_time as f64 - now as f64;
+    *lock(&CAMERA) = Some((flight, offset, [player.x, player.y + 1.62, player.z]));
+}
+
+pub(in crate::game) fn camera_pose(game: &Game<'_>, partial: f32, position: &mut [f64; 3], yaw: &mut f32, pitch: &mut f32) {
+    let Some((flight, offset, eye)) = lock(&CAMERA).clone() else { return };
+    if !CAMERA_ON.load(Ordering::Relaxed) || !game.native_on(rules::ID) {
+        return;
+    }
+    let (Some(clock), Some(player)) = (game.native_clock(), game.native_player()) else { return };
+    if flight.dimension != player.dimension {
+        return;
+    }
+    // The display glides its last ticks behind its place: the camera looks where it is seen.
+    let now = clock.game_time as f64 + f64::from(partial) - offset - f64::from(GLIDE);
+    match rules::launch_camera(&flight, now, eye) {
+        Some((at, y, p)) => {
+            *position = at;
+            *yaw = y;
+            *pitch = p;
+        }
+        None if now > flight.liftoff() as f64 => *lock(&CAMERA) = None,
+        None => {}
+    }
+}
+
+/// The window's level goes: so does the camera.
+pub(in crate::game) fn forget_camera() {
+    *lock(&CAMERA) = None;
 }

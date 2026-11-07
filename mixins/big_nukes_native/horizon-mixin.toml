@@ -531,6 +531,20 @@ bindings = [
   { name = "data", ty = "&[u8]", value = "data" },
 ]
 
+# The launch camera (plan 7): the camera of each frame, for the one who launched (API 402).
+[[injection]]
+id = "camera-pose"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_camera_pose"
+helper = "camera_pose.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "partial", ty = "f32", value = "partial" },
+  { name = "position", ty = "&mut [f64; 3]", value = "&mut *position" },
+  { name = "yaw", ty = "&mut f32", value = "&mut *yaw" },
+  { name = "pitch", ty = "&mut f32", value = "&mut *pitch" },
+]
+
 # Every frame, on any screen: the renderer's list of blasts.
 [[injection]]
 id = "frame"
