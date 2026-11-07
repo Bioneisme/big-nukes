@@ -869,8 +869,8 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
                 }
                 Change::HatchOpened(id) => {
                     if let Some(f) = st.saved.flights.iter_mut().find(|f| f.id == id) {
-                        changed |= !f.hatch_moved;
-                        f.hatch_moved = true;
+                        changed |= f.hatch_moved != Some(true);
+                        f.hatch_moved = Some(true);
                     }
                 }
                 Change::HatchShut(id) => {

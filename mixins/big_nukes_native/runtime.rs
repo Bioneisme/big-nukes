@@ -1722,9 +1722,10 @@ pub struct Flight {
     /// The hatch's height while it is to be opened or shut again.
     #[serde(default)]
     pub hatch: Option<i32>,
-    /// The hatch was taken away by the flight, which owes it back.
+    /// Whether the flight took the hatch away and owes it back; None for a flight saved before this was kept,
+    /// which puts a hatch back on the air as it used to.
     #[serde(default)]
-    pub hatch_moved: bool,
+    pub hatch_moved: Option<bool>,
     /// A bomber's: its bomb has been taken out of the beacon's slot.
     #[serde(default)]
     pub emptied: bool,
@@ -1805,9 +1806,9 @@ impl Flight {
         self.hatch?;
         let here = here?;
         if self.hatch_open(now) {
-            (!self.hatch_moved && here == SILO_HATCH).then_some(HatchAct::Open)
+            (self.hatch_moved != Some(true) && here == SILO_HATCH).then_some(HatchAct::Open)
         } else if now > self.liftoff() {
-            Some(if self.hatch_moved && is_air(here) { HatchAct::Shut } else { HatchAct::Forget })
+            Some(if self.hatch_moved != Some(false) && is_air(here) { HatchAct::Shut } else { HatchAct::Forget })
         } else {
             None
         }
@@ -2381,7 +2382,7 @@ impl Saved {
             surface: None,
             seed: mix(self.tick ^ mix(id)),
             hatch: Some(hatch),
-            hatch_moved: false,
+            hatch_moved: Some(false),
             emptied: false,
         };
         self.flights.push(flight.clone());
@@ -2645,7 +2646,7 @@ impl Saved {
             surface: None,
             seed: mix(self.tick ^ mix(id)),
             hatch: None,
-            hatch_moved: false,
+            hatch_moved: None,
             emptied: false,
         });
         Charge::Taken(kind)
@@ -7407,7 +7408,7 @@ mod flight_tests {
             surface: Some(70),
             seed: 7,
             hatch: Some(71),
-            hatch_moved: false,
+            hatch_moved: Some(false),
             emptied: false,
         }
     }
@@ -7494,7 +7495,7 @@ mod flight_tests {
         // It is taken while it stands open, once, where it is.
         assert_eq!(f.hatch_act(before, Some(SILO_HATCH)), None);
         assert_eq!(f.hatch_act(open, Some(SILO_HATCH)), Some(HatchAct::Open));
-        let taken = Flight { hatch_moved: true, ..f.clone() };
+        let taken = Flight { hatch_moved: Some(true), ..f.clone() };
         assert_eq!(taken.hatch_act(open + 1, Some("minecraft:air")), None);
         assert_eq!(taken.hatch_act(open + 1, Some(SILO_HATCH)), None, "a hatch put back by hand stays");
         // After, the one it took is put back on the air, and only that one.
@@ -7511,10 +7512,25 @@ mod flight_tests {
         assert_eq!(taken.hatch_act(after + 10_000, None), None);
         // A flight that forgot its hatch does nothing.
         assert_eq!(Flight { hatch: None, ..taken }.hatch_act(after, Some("minecraft:air")), None);
-        // Saved without it, it is a hatch not taken.
-        let mut v = serde_json::to_value(&f).unwrap();
-        v.as_object_mut().unwrap().remove("hatch_moved");
-        assert!(!serde_json::from_value::<Flight>(v).unwrap().hatch_moved);
+    }
+
+    #[test]
+    fn a_flight_saved_before_the_hatch_was_owed_puts_it_back_as_it_used_to() {
+        // Saved in the open window by a version that didn't keep whether it took the hatch.
+        let old = r#"{"id":4,"carrier":"Missile","dimension":"minecraft:overworld","from":[0,64,0],"to":[1000,0],
+            "kind":"Atomic","start":0,"surface":null,"seed":7,"hatch":71}"#;
+        let f: Flight = serde_json::from_str(old).unwrap();
+        assert_eq!((f.hatch, f.hatch_moved), (Some(71), None));
+        // As that version did: taken while it stands open, put back on the air after.
+        assert_eq!(f.hatch_act(60, Some(SILO_HATCH)), Some(HatchAct::Open));
+        assert_eq!(f.hatch_act(161, Some("minecraft:air")), Some(HatchAct::Shut));
+        assert_eq!(f.hatch_act(161, Some("minecraft:stone")), Some(HatchAct::Forget));
+        // A new launch keeps it, through a save.
+        let mut saved = Saved::default();
+        let launched = saved.launch(OVERWORLD, [0, 65, 0], [1000, 0], BombKind::Atomic, 72).unwrap();
+        assert_eq!(launched.hatch_moved, Some(false));
+        let back: Flight = serde_json::from_str(&serde_json::to_string(&launched).unwrap()).unwrap();
+        assert_eq!(back, launched);
     }
 
     #[test]
@@ -7734,7 +7750,7 @@ mod flight_tests {
             surface: Some(128),
             seed: 1,
             hatch: None,
-            hatch_moved: false,
+            hatch_moved: None,
             emptied: false,
         };
         assert_eq!(f.bomb_ground(), 123);
