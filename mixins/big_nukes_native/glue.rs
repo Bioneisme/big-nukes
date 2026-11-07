@@ -56,8 +56,9 @@ pub(in crate::game) struct State {
     /// Something changed since the last save. A wave whose far chunks never load
     /// never ends, so saving only on changes keeps it from costing forever.
     pub(in crate::game) dirty: bool,
-    /// Dimensions a remote's blast went off in, to be opened at the end of the
-    /// server's tick, where a command may run.
+    /// Dimensions to be opened at the end of the server's tick, where a command
+    /// may run: those a remote's blast went off in, and when the world opens, those
+    /// its flights and strikes are on their way in (`Saved::to_wake`).
     wake: Vec<String>,
     /// Each dimension's next pass over its mobs in the zones: its tick, and where
     /// it starts in their list.
@@ -95,11 +96,12 @@ pub(in crate::game) fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Opti
     let dir = game.native_world_dir()?.join(rules::DIR);
     let mut guard = lock(&STATE);
     if guard.as_ref().is_none_or(|s| s.dir != dir) {
-        let saved = fs::read(dir.join("waves.json"))
+        let saved: rules::Saved = fs::read(dir.join("waves.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).map_err(|e| log::warn!("[big_nukes] waves.json: {e}")).ok())
             .unwrap_or_default();
         log::info!("[big_nukes] Big Nukes {} in {}", rules::VERSION, dir.display());
+        let wake = saved.to_wake();
         *guard = Some(State {
             dir,
             saved,
@@ -107,7 +109,7 @@ pub(in crate::game) fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Opti
             opened: BTreeSet::new(),
             ash: None,
             dirty: false,
-            wake: Vec::new(),
+            wake,
             mobs: HashMap::new(),
             told: BTreeSet::new(),
         });

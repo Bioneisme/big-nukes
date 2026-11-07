@@ -2461,6 +2461,15 @@ impl Saved {
         }
     }
 
+    /// The dimensions to open when the world is opened again: those other than the overworld where a flight or a
+    /// strike is on its way, or a forced chunk waits for its wave. A level nobody has entered isn't open, and its
+    /// forced chunks don't tick until it is.
+    pub fn to_wake(&self) -> Vec<String> {
+        let dimensions = self.flights.iter().chain(&self.beacons).map(|f| &f.dimension).chain(self.forced.iter().map(|f| &f.dimension));
+        let set: BTreeSet<&String> = dimensions.filter(|d| d.as_str() != "minecraft:overworld").collect();
+        set.into_iter().cloned().collect()
+    }
+
     /// The chunks to let go now: their flights' waves have changed their centers' chunks. A chunk another flight
     /// still keeps stays forced.
     pub fn unforce(&mut self) -> Vec<(String, [i32; 2])> {
@@ -7402,6 +7411,26 @@ mod flight_tests {
         let mut v = serde_json::to_value(&f).unwrap();
         v.as_object_mut().unwrap().remove("hatch_moved");
         assert!(!serde_json::from_value::<Flight>(v).unwrap().hatch_moved);
+    }
+
+    #[test]
+    fn a_world_opened_again_wakes_the_dimensions_its_flights_are_in() {
+        let mut saved = Saved::default();
+        assert!(saved.to_wake().is_empty());
+        let nether = Flight { id: 2, dimension: "minecraft:the_nether".into(), ..missile() };
+        let end = Flight { id: 3, carrier: Carrier::Bomber, dimension: "minecraft:the_end".into(), hatch: None, ..missile() };
+        saved.flights.extend([missile(), nether.clone()]);
+        saved.beacons.push(end);
+        // The overworld ticks anyway; another level ticks its forced chunks only once it is open.
+        assert_eq!(saved.to_wake(), ["minecraft:the_end", "minecraft:the_nether"]);
+        // A flight gone off whose wave still keeps its chunk forced.
+        saved.flights.retain(|f| f.id != nether.id);
+        saved.beacons.clear();
+        assert!(saved.to_wake().is_empty());
+        saved.force(nether.id, &nether.dimension, [3, 3]);
+        saved.force(nether.id, &nether.dimension, [4, 4]);
+        saved.landed(nether.id, Some([60, 70, 60]));
+        assert_eq!(saved.to_wake(), ["minecraft:the_nether"]);
     }
 
     #[test]
