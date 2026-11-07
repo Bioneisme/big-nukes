@@ -2933,6 +2933,8 @@ pub fn cloud(age_ticks: f64, radius: u32) -> Cloud {
 // a bookmark per chapter down its left edge. Each chapter is laid out as lines (its
 // heading, a row of item icons, its text wrapped to the page, the assembly table's
 // recipes), the lines are cut into pages, and every chapter starts on a left page.
+// The first spread is the contents: a row a chapter, which opens it; Home and a button
+// in the footer lead back there.
 // Positions are GUI pixels from the book's top left corner unless they say otherwise.
 
 /// The message that opens the guide in a player's window.
@@ -3048,6 +3050,40 @@ pub const PREV_AT: [f32; 4] = [12.0, 176.0, 18.0, 10.0];
 pub const NEXT_AT: [f32; 4] = [258.0, 176.0, 18.0, 10.0];
 pub const NUMBER_Y: f32 = 177.0;
 
+/// The contents: the book's first spread, and the lang key of its heading and of the
+/// footer's button back to it.
+pub const CONTENTS_SPREAD: usize = 0;
+pub const CONTENTS: &str = "big_nukes.guide.contents";
+/// The contents' rows, under the heading, the first half of the chapters on the left
+/// page: a row is the chapter's bookmark item, its title, dots and the number of the
+/// spread it starts on, at the row's right end.
+pub const CONTENTS_TOP: f32 = PAGE_TOP + 2.0 * ROW;
+pub const CONTENTS_STEP: f32 = 22.0;
+pub const CONTENTS_ROW_H: f32 = 20.0;
+/// How far a row stays from its page's edges, and its parts from the row's left end.
+pub const CONTENTS_MARGIN: f32 = 3.0;
+pub const CONTENTS_ICON: [f32; 2] = [1.0, 2.0];
+pub const CONTENTS_TITLE: [f32; 2] = [19.0, 6.0];
+/// The room kept between a title and its number.
+pub const CONTENTS_GAP: f32 = 3.0;
+/// The footer's button back to the contents: its label's left end on the number's line,
+/// right of the arrow back, and the widest the label may be.
+pub const CONTENTS_BUTTON_X: f32 = 40.0;
+pub const CONTENTS_BUTTON_MAX: f32 = 72.0;
+
+/// Contents row `i`'s place, the mouse's too.
+pub fn contents_row(i: usize) -> [f32; 4] {
+    let left = CHAPTERS.len().div_ceil(2);
+    let (page, k) = if i < left { (PAGES[0], i) } else { (PAGES[1], i - left) };
+    [page[0] + CONTENTS_MARGIN, CONTENTS_TOP + k as f32 * CONTENTS_STEP, page[2] - 2.0 * CONTENTS_MARGIN, CONTENTS_ROW_H]
+}
+
+/// The footer's button for a label `width` wide, the mouse's place too. It covers the
+/// gold rule under it, as the page number's gap does.
+pub fn contents_button(width: f32) -> [f32; 4] {
+    [CONTENTS_BUTTON_X - 3.0, NUMBER_Y - 2.0, width + 6.0, 12.0]
+}
+
 /// The texture: the spread at its top left, then a row of closed bookmarks and a row
 /// of open ones (one colour a chapter), the arrows (lit ones below), a slot and a
 /// recipe's arrow; under them the bookmarks past the eighth, a closed and an open row.
@@ -3074,6 +3110,15 @@ pub fn arrow_src(next: bool, lit: bool) -> [f32; 4] {
 pub const GUIDE_TEXT: u32 = 0x3A_2A1A;
 pub const GUIDE_HEADING: u32 = 0x7A_1E12;
 pub const GUIDE_FOOTER: u32 = 0xE6_D3A0;
+/// The footer's button under the mouse: the lit arrows' gold.
+pub const GUIDE_FOOTER_LIT: u32 = 0xFF_E89C;
+/// The dots between a contents title and its number.
+pub const GUIDE_LEADER: u32 = 0x9A_8A6A;
+/// The contents row under the mouse: a wash of the headings' red.
+pub const CONTENTS_HOVER: u32 = 0x2A7A_1E12;
+/// The footer's leather behind its button, and lit under the mouse.
+pub const GUIDE_LEATHER: u32 = 0xFF4A_2C1A;
+pub const GUIDE_LEATHER_LIT: u32 = 0xFF70_482A;
 const TOOLTIP_TEXT: u32 = 0xFF_FFFF;
 const TOOLTIP_BACK: u32 = 0xF010_0010;
 const TOOLTIP_EDGE: u32 = 0xFF50_00A0;
@@ -3150,6 +3195,22 @@ pub fn wrap(text: &str, width: f32, measure: &dyn Fn(&str) -> f32) -> Vec<String
     lines
 }
 
+/// `text` as it fits in `width`: whole, or cut between letters and ended with "…".
+pub fn fit(text: &str, width: f32, measure: &dyn Fn(&str) -> f32) -> String {
+    if measure(text) <= width {
+        return text.to_owned();
+    }
+    let mut shown = "…".to_owned();
+    for (end, _) in text.char_indices().skip(1) {
+        let cut = format!("{}…", text[..end].trim_end());
+        if measure(&cut) > width {
+            break;
+        }
+        shown = cut;
+    }
+    shown
+}
+
 /// The lines cut into pages of `lines_per_page` rows. A picture is never cut: it
 /// starts the next page when it doesn't fit, and a blank line never starts a page.
 /// There is always one page, if an empty one.
@@ -3197,9 +3258,12 @@ pub fn recipe_cells(recipe: &Assembly) -> [Option<&'static str>; GRID_SLOTS] {
 /// What a click on the book does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GuideClick {
+    /// A bookmark, or a row of the contents.
     Chapter(usize),
     Prev,
     Next,
+    /// The footer's button back to the contents.
+    Contents,
 }
 
 fn within([x, y]: [f32; 2], [rx, ry, rw, rh]: [f32; 4]) -> bool {
@@ -3211,7 +3275,7 @@ fn tab_at(i: usize) -> [f32; 4] {
     [TAB_OPEN_X, TAB_TOP + i as f32 * TAB_STEP, -TAB_OPEN_X, TAB_SIZE[1]]
 }
 
-/// What is at `at`, from the book's top left corner: a bookmark or an arrow.
+/// What is at `at`, from the book's top left corner, on every spread: a bookmark or an arrow.
 pub fn guide_hit(at: [f32; 2]) -> Option<GuideClick> {
     if within(at, PREV_AT) {
         return Some(GuideClick::Prev);
@@ -3237,6 +3301,11 @@ pub enum GuideDraw {
 #[derive(Clone, Debug, Default)]
 pub struct Guide {
     pub titles: Vec<String>,
+    /// The footer button's label, cut to its room, and its width.
+    pub contents: String,
+    contents_width: f32,
+    /// The contents' two pages (the heading only: the rows are drawn over them), then
+    /// the chapters'.
     pub pages: Vec<Vec<GuideLine>>,
     /// Each chapter's first page, always a left one.
     pub starts: Vec<usize>,
@@ -3249,8 +3318,16 @@ pub struct Guide {
 }
 
 impl Guide {
+    /// A book open at its contents.
     pub fn new(tr: &dyn Fn(&str) -> String, measure: &dyn Fn(&str) -> f32) -> Guide {
-        let mut guide = Guide::default();
+        let label = tr(CONTENTS);
+        let contents = fit(&label, CONTENTS_BUTTON_MAX, measure);
+        let mut guide = Guide {
+            contents_width: measure(&contents),
+            contents,
+            pages: vec![vec![GuideLine::Heading(fit(&label, PAGE_WIDTH, measure))], Vec::new()],
+            ..Guide::default()
+        };
         for chapter in &CHAPTERS {
             guide.starts.push(guide.pages.len());
             guide.titles.push(tr(chapter.title));
@@ -3287,18 +3364,48 @@ impl Guide {
         }
     }
 
-    /// The chapter of the spread shown.
-    pub fn chapter(&self) -> usize {
-        self.starts.iter().rposition(|&s| s / 2 <= self.spread).unwrap_or(0)
+    /// Back to the contents.
+    pub fn home(&mut self) {
+        self.go(CONTENTS_SPREAD);
+    }
+
+    /// Opened again: at the spread the book before was left at, in its window.
+    pub fn keep(&mut self, old: &Guide) {
+        self.window = old.window;
+        self.go(old.spread);
+    }
+
+    /// The chapter of the spread shown; none on the contents.
+    pub fn chapter(&self) -> Option<usize> {
+        self.starts.iter().rposition(|&s| s / 2 <= self.spread)
+    }
+
+    /// The footer's button back to the contents, from the book's top left corner.
+    pub fn contents_button(&self) -> [f32; 4] {
+        contents_button(self.contents_width)
+    }
+
+    /// What is at `at`, from the book's top left corner, on the spread shown: the
+    /// contents' rows there, the button back to them elsewhere.
+    fn hit(&self, at: [f32; 2]) -> Option<GuideClick> {
+        if let Some(found) = guide_hit(at) {
+            return Some(found);
+        }
+        if self.spread == CONTENTS_SPREAD {
+            (0..self.starts.len()).find(|&i| within(at, contents_row(i))).map(GuideClick::Chapter)
+        } else {
+            within(at, self.contents_button()).then_some(GuideClick::Contents)
+        }
     }
 
     /// A left click at `mouse` in the window: whether it did something.
     pub fn click(&mut self, mouse: [f32; 2]) -> bool {
         let o = guide_origin(self.window);
-        match guide_hit([mouse[0] - o[0], mouse[1] - o[1]]) {
+        match self.hit([mouse[0] - o[0], mouse[1] - o[1]]) {
             Some(GuideClick::Chapter(i)) => self.open(i),
             Some(GuideClick::Prev) => self.prev(),
             Some(GuideClick::Next) => self.next(),
+            Some(GuideClick::Contents) => self.home(),
             None => return false,
         }
         true
@@ -3324,11 +3431,13 @@ impl Guide {
         }
     }
 
-    /// A key, by the game's name: whether it turned a page. Escape is left to the game, which closes the screen.
+    /// A key, by the game's name: whether it is the book's (it turns a page, or Home goes to the contents).
+    /// Escape is left to the game, which closes the screen.
     pub fn key(&mut self, key: &str) -> bool {
         match key {
             "key.keyboard.left" | "key.keyboard.page.up" => self.prev(),
             "key.keyboard.right" | "key.keyboard.page.down" => self.next(),
+            "key.keyboard.home" => self.home(),
             _ => return false,
         }
         true
@@ -3347,7 +3456,8 @@ impl Guide {
             if hovered {
                 tip = self.titles.get(i).cloned();
             }
-            let x = if i == open {
+            let open = open == Some(i);
+            let x = if open {
                 TAB_OPEN_X
             } else if hovered {
                 TAB_X - 2.0
@@ -3355,10 +3465,13 @@ impl Guide {
                 TAB_X
             };
             let [x, y] = [ox + x, oy + TAB_TOP + i as f32 * TAB_STEP];
-            out.push(GuideDraw::Sprite(tab_src(i, i == open), [x, y, TAB_SIZE[0], TAB_SIZE[1]]));
+            out.push(GuideDraw::Sprite(tab_src(i, open), [x, y, TAB_SIZE[0], TAB_SIZE[1]]));
             out.push(GuideDraw::Item(chapter.tab, [x + 4.0, y + 1.0]));
         }
         out.push(GuideDraw::Sprite([0.0, 0.0, BOOK_SIZE[0], BOOK_SIZE[1]], [ox, oy, BOOK_SIZE[0], BOOK_SIZE[1]]));
+        if self.spread == CONTENTS_SPREAD {
+            self.draw_contents(&mut out, rel, &mut tip, measure);
+        }
         let mut item = |out: &mut Vec<GuideDraw>, id: &'static str, at: [f32; 2]| {
             out.push(GuideDraw::Item(id, at));
             if within(mouse, [at[0], at[1], 16.0, 16.0]) {
@@ -3410,6 +3523,13 @@ impl Guide {
                 out.push(GuideDraw::Sprite(arrow_src(next, lit), [ox + x, oy + y, w, h]));
             }
         }
+        if self.spread != CONTENTS_SPREAD {
+            let [x, y, w, h] = self.contents_button();
+            let lit = within(rel, [x, y, w, h]);
+            out.push(GuideDraw::Fill([ox + x, oy + y, w, h], if lit { GUIDE_LEATHER_LIT } else { GUIDE_LEATHER }));
+            let colour = if lit { GUIDE_FOOTER_LIT } else { GUIDE_FOOTER };
+            out.push(GuideDraw::Text(self.contents.clone(), [ox + CONTENTS_BUTTON_X, oy + NUMBER_Y], colour));
+        }
         let number = format!("{} / {}", self.spread + 1, self.spreads());
         let at = [ox + ((BOOK_SIZE[0] - measure(&number)) / 2.0).floor(), oy + NUMBER_Y];
         out.push(GuideDraw::Text(number, at, GUIDE_FOOTER));
@@ -3417,6 +3537,39 @@ impl Guide {
             out.extend(tooltip(t, mouse, self.window, measure));
         }
         out
+    }
+
+    /// The contents' rows, the one under the mouse (`rel`, from the book's corner) lit;
+    /// a title cut to its row says itself whole in a tooltip.
+    fn draw_contents(&self, out: &mut Vec<GuideDraw>, rel: [f32; 2], tip: &mut Option<String>, measure: &dyn Fn(&str) -> f32) {
+        let [ox, oy] = guide_origin(self.window);
+        let dots = measure(" .");
+        for (i, ((chapter, start), title)) in CHAPTERS.iter().zip(&self.starts).zip(&self.titles).enumerate() {
+            let [x, y, w, h] = contents_row(i);
+            let hovered = within(rel, [x, y, w, h]);
+            let [x, y] = [ox + x, oy + y];
+            if hovered {
+                out.push(GuideDraw::Fill([x, y, w, h], CONTENTS_HOVER));
+            }
+            out.push(GuideDraw::Item(chapter.tab, [x + CONTENTS_ICON[0], y + CONTENTS_ICON[1]]));
+            let number = (start / 2 + 1).to_string();
+            let number_x = x + w - 1.0 - measure(&number);
+            let [title_x, text_y] = [x + CONTENTS_TITLE[0], y + CONTENTS_TITLE[1]];
+            let shown = fit(title, number_x - CONTENTS_GAP - title_x, measure);
+            if hovered && shown != *title {
+                *tip = Some(title.clone());
+            }
+            let title_end = title_x + measure(&shown);
+            out.push(GuideDraw::Text(shown, [title_x, text_y], if hovered { GUIDE_HEADING } else { GUIDE_TEXT }));
+            // Dots up to the number, ending clear of it; none when the font has no width to give them.
+            if dots >= 1.0 {
+                let n = ((number_x - 2.0 - title_end - 2.0) / dots).floor().clamp(0.0, 64.0) as usize;
+                if n > 0 {
+                    out.push(GuideDraw::Text(" .".repeat(n), [number_x - 2.0 - n as f32 * dots, text_y], GUIDE_LEADER));
+                }
+            }
+            out.push(GuideDraw::Text(number, [number_x, text_y], GUIDE_TEXT));
+        }
     }
 }
 
@@ -4334,24 +4487,27 @@ mod tests {
         assert_eq!(g.pages.len() % 2, 0);
         assert!(g.starts.iter().all(|s| s % 2 == 0), "{:?}", g.starts);
         assert!(g.starts.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(g.starts[0], 2, "the contents come first");
         assert!(g.starts[2] - g.starts[1] >= 4, "the long chapter takes two spreads at least");
         assert_eq!(g.spreads(), g.pages.len() / 2);
-        assert_eq!((g.spread, g.chapter()), (0, 0));
+        assert_eq!((g.spread, g.chapter()), (CONTENTS_SPREAD, None));
         g.prev();
-        assert_eq!(g.spread, 0, "nothing before the first page");
+        assert_eq!(g.spread, 0, "nothing before the contents");
         g.next();
-        assert_eq!((g.spread, g.chapter()), (1, 1));
+        assert_eq!((g.spread, g.chapter()), (1, Some(0)));
         g.next();
-        assert_eq!(g.chapter(), 1, "the long chapter's second spread");
+        assert_eq!((g.spread, g.chapter()), (2, Some(1)));
+        g.next();
+        assert_eq!(g.chapter(), Some(1), "the long chapter's second spread");
         g.open(6);
-        assert_eq!((g.spread, g.chapter()), (g.starts[6] / 2, 6));
+        assert_eq!((g.spread, g.chapter()), (g.starts[6] / 2, Some(6)));
         g.go(usize::MAX);
         assert_eq!(g.spread, g.spreads() - 1);
         g.next();
         assert_eq!(g.spread, g.spreads() - 1, "nothing past the last page");
-        assert_eq!(g.chapter(), CHAPTERS.len() - 1);
+        assert_eq!(g.chapter(), Some(CHAPTERS.len() - 1));
         g.open(99);
-        assert_eq!(g.chapter(), CHAPTERS.len() - 1, "no such chapter: the page stays");
+        assert_eq!(g.chapter(), Some(CHAPTERS.len() - 1), "no such chapter: the page stays");
         // The assembly chapter holds every recipe of the table, each once.
         let recipes: Vec<usize> = g.pages[g.starts[2]..g.starts[3]]
             .iter()
@@ -4430,17 +4586,20 @@ mod tests {
         let o = guide_origin(g.window);
         let at = |p: [f32; 2]| [o[0] + p[0], o[1] + p[1]];
         assert!(g.click(at(middle(tab(4)))));
-        assert_eq!(g.chapter(), 4);
+        assert_eq!(g.chapter(), Some(4));
         assert!(g.click(at(middle(NEXT_AT))));
         assert_eq!(g.spread, g.starts[4] / 2 + 1);
         assert!(g.click(at(middle(PREV_AT))));
         assert!(!g.click(at([PAGE_X[1] + 5.0, PAGE_TOP + 5.0])));
-        assert_eq!(g.chapter(), 4);
+        assert_eq!(g.chapter(), Some(4));
         // Every bookmark opens its chapter, the last one too.
         for i in (0..CHAPTERS.len()).rev() {
             assert!(g.click(at(middle(tab(i)))), "{i}");
-            assert_eq!((g.chapter(), g.spread), (i, g.starts[i] / 2), "{i}");
+            assert_eq!((g.chapter(), g.spread), (Some(i), g.starts[i] / 2), "{i}");
         }
+        // The first chapter's arrow back reaches the contents.
+        assert!(g.click(at(middle(PREV_AT))));
+        assert_eq!((g.spread, g.chapter()), (CONTENTS_SPREAD, None));
     }
 
     #[test]
@@ -4508,6 +4667,18 @@ mod tests {
         let o = guide_origin(g.window);
         let name = |id: &str| format!("name of {id}");
         let away = [0.0, 0.0];
+        // The contents: no bookmark sticks out, and no way back from there.
+        let draws = g.draw(away, &six, &name);
+        let sprites: Vec<([f32; 4], [f32; 4])> =
+            draws.iter().filter_map(|d| if let GuideDraw::Sprite(s, d) = d { Some((*s, *d)) } else { None }).collect();
+        for i in 0..CHAPTERS.len() {
+            let at = sprites.iter().position(|s| s.0 == tab_src(i, false)).unwrap_or_else(|| panic!("bookmark {i}"));
+            assert_eq!(sprites[at].1[..2], [o[0] + TAB_X, o[1] + TAB_TOP + i as f32 * TAB_STEP], "{i}");
+        }
+        assert!(!sprites.iter().any(|s| s.0 == arrow_src(false, false) || s.0 == arrow_src(false, true)));
+        assert!(sprites.iter().any(|s| s.0 == arrow_src(true, false)));
+        assert!(texts(&draws).contains(&format!("1 / {}", g.spreads()).as_str()), "{:?}", texts(&draws));
+        g.open(0);
         let draws = g.draw(away, &six, &name);
         let sprites: Vec<([f32; 4], [f32; 4])> =
             draws.iter().filter_map(|d| if let GuideDraw::Sprite(s, d) = d { Some((*s, *d)) } else { None }).collect();
@@ -4521,10 +4692,10 @@ mod tests {
             assert_eq!(sprites[at].1[..2], [x, o[1] + TAB_TOP + i as f32 * TAB_STEP], "{i}");
             assert!(at < book, "{i}");
         }
-        assert!(texts(&draws).contains(&format!("1 / {}", g.spreads()).as_str()), "{:?}", texts(&draws));
+        assert!(texts(&draws).contains(&format!("2 / {}", g.spreads()).as_str()), "{:?}", texts(&draws));
         assert!(texts(&draws).contains(&CHAPTERS[0].title), "the heading");
-        // No way back from the first page.
-        assert!(!sprites.iter().any(|s| s.0 == arrow_src(false, false) || s.0 == arrow_src(false, true)));
+        // The first chapter's way back leads to the contents.
+        assert!(sprites.iter().any(|s| s.0 == arrow_src(false, false)));
         assert!(sprites.iter().any(|s| s.0 == arrow_src(true, false)));
         let items: Vec<&str> = draws.iter().filter_map(|d| if let GuideDraw::Item(id, _) = d { Some(*id) } else { None }).collect();
         for id in CHAPTERS.iter().map(|c| c.tab).chain(CHAPTERS[0].icons.iter().copied()) {
@@ -4556,6 +4727,263 @@ mod tests {
             }
         }
         assert!(all.iter().filter(|d| matches!(d, GuideDraw::Sprite(s, _) if *s == SLOT_SRC)).count() >= ASSEMBLIES.len() * 10);
+    }
+
+    /// The game's font, near enough: a space is narrower than a letter.
+    fn mc(text: &str) -> f32 {
+        text.chars().map(|c| if c == ' ' { 4.0 } else { 6.0 }).sum()
+    }
+
+    /// The book in a language, as `mc` measures it, in a window of the smallest GUI.
+    fn book(code: &str) -> Guide {
+        let lang = language(code);
+        let tr = move |key: &str| lang.get(key).cloned().unwrap_or_else(|| key.to_owned());
+        let mut g = Guide::new(&tr, &mc);
+        g.window = MIN_GUI;
+        g
+    }
+
+    fn moved([x, y, w, h]: [f32; 4], [ox, oy]: [f32; 2]) -> [f32; 4] {
+        [x + ox, y + oy, w, h]
+    }
+
+    /// The texts drawn inside `rect` of the window, left to right.
+    fn texts_in(draws: &[GuideDraw], rect: [f32; 4]) -> Vec<(String, [f32; 2], u32)> {
+        let mut found: Vec<(String, [f32; 2], u32)> = draws
+            .iter()
+            .filter_map(|d| if let GuideDraw::Text(t, at, c) = d { Some((t.clone(), *at, *c)) } else { None })
+            .filter(|(_, at, _)| within(*at, rect))
+            .collect();
+        found.sort_by(|a, b| a.1[0].total_cmp(&b.1[0]));
+        found
+    }
+
+    #[test]
+    fn the_book_opens_on_its_contents_with_every_chapter_and_its_spread() {
+        for code in ["en_us", "ru_ru"] {
+            let lang = language(code);
+            let g = book(code);
+            assert_eq!((g.spread, g.chapter()), (CONTENTS_SPREAD, None), "{code}");
+            assert_eq!(g.pages[0], vec![GuideLine::Heading(lang[CONTENTS].clone())], "{code}: the heading");
+            assert!(g.pages[1].is_empty());
+            let o = guide_origin(g.window);
+            let draws = g.draw([0.0, 0.0], &mc, &|id: &str| id.to_owned());
+            let mut right_ends = BTreeSet::new();
+            for (i, c) in CHAPTERS.iter().enumerate() {
+                let row = moved(contents_row(i), o);
+                // Its bookmark's item, its title whole, and the number of the spread it starts on, at the right.
+                assert!(draws.iter().any(|d| matches!(d, GuideDraw::Item(id, at) if *id == c.tab && within(*at, row))), "{code} {i}");
+                let found = texts_in(&draws, row);
+                assert!(found.len() >= 2, "{code} {i}: {found:?}");
+                assert_eq!(found[0].0, lang[c.title], "{code} {i}: the title fits");
+                let (number, at, _) = found.last().unwrap();
+                assert_eq!(*number, (g.starts[i] / 2 + 1).to_string(), "{code} {i}");
+                right_ends.insert((at[0] + mc(number)) as i32);
+                assert!(at[0] + mc(number) <= row[0] + row[2] && found[0].1[0] + mc(&found[0].0) < at[0], "{code} {i}");
+            }
+            assert_eq!(right_ends.len(), 2, "{code}: the numbers end at one line a page: {right_ends:?}");
+            // The heading over the left page; the footer counts the contents as the first spread.
+            assert!(texts(&draws).contains(&lang[CONTENTS].as_str()));
+            assert!(texts(&draws).contains(&format!("1 / {}", g.spreads()).as_str()));
+        }
+    }
+
+    #[test]
+    fn the_contents_rows_lie_on_the_pages_under_the_heading() {
+        let left = CHAPTERS.len().div_ceil(2);
+        for i in 0..CHAPTERS.len() {
+            let [x, y, w, h] = contents_row(i);
+            let page = PAGES[usize::from(i >= left)];
+            assert!(x >= page[0] + 2.0 && x + w <= page[0] + page[2] - 2.0, "{i}");
+            assert!(y >= PAGE_TOP + 2.0 * ROW && y + h <= page[1] + page[3] - 4.0, "{i}");
+            assert!(h >= 18.0, "{i}: an icon's height");
+            if i > 0 && i != left {
+                let above = contents_row(i - 1);
+                assert!(above[1] + above[3] <= y && above[0] == x, "{i}");
+            }
+        }
+        // The two pages' rows side by side.
+        assert_eq!(contents_row(0)[1], contents_row(left)[1]);
+        // The button back sits in the footer, right of the arrow back and clear of the page number's gap.
+        let b = contents_button(CONTENTS_BUTTON_MAX);
+        assert!(b[0] >= PREV_AT[0] + PREV_AT[2] + 2.0 && b[0] + b[2] <= 120.0, "{b:?}");
+        assert!(b[1] >= PAGES[0][1] + PAGES[0][3] && b[1] + b[3] <= BOOK_SIZE[1], "{b:?}");
+        assert!(guide_hit(middle(b)).is_none(), "nothing else is there");
+    }
+
+    #[test]
+    fn a_click_on_a_contents_row_opens_its_chapter() {
+        let mut g = book("ru_ru");
+        let o = guide_origin(g.window);
+        for i in 0..CHAPTERS.len() {
+            g.home();
+            let [x, y] = middle(contents_row(i));
+            assert!(g.click([o[0] + x, o[1] + y]), "{i}");
+            assert_eq!((g.chapter(), g.spread), (Some(i), g.starts[i] / 2), "{i}");
+            // A row's edge counts too.
+            g.home();
+            let r = contents_row(i);
+            assert!(g.click([o[0] + r[0] + 0.5, o[1] + r[1] + 0.5]), "{i}");
+            assert_eq!(g.chapter(), Some(i), "{i}");
+        }
+        // Away from the contents the rows are gone: a click there is on a page.
+        g.open(3);
+        let [x, y] = middle(contents_row(0));
+        assert!(!g.click([o[0] + x, o[1] + y]));
+        assert_eq!(g.chapter(), Some(3));
+        // On the heading and between two rows, nothing.
+        g.home();
+        let (r, below) = (contents_row(0), contents_row(1));
+        assert!(!g.click([o[0] + r[0] + 10.0, o[1] + PAGE_TOP + 2.0]));
+        assert!(below[1] > r[1] + r[3], "a gap between the rows");
+        assert!(!g.click([o[0] + r[0] + 10.0, o[1] + r[1] + r[3] + 0.5]));
+        assert_eq!(g.spread, CONTENTS_SPREAD);
+    }
+
+    #[test]
+    fn a_hovered_contents_row_is_lit() {
+        let g = book("en_us");
+        let o = guide_origin(g.window);
+        let name = |id: &str| id.to_owned();
+        let lit = |draws: &[GuideDraw], i: usize| draws.contains(&GuideDraw::Fill(moved(contents_row(i), o), CONTENTS_HOVER));
+        let draws = g.draw([0.0, 0.0], &mc, &name);
+        assert!((0..CHAPTERS.len()).all(|i| !lit(&draws, i)));
+        assert!(texts_in(&draws, moved(contents_row(0), o)).iter().all(|t| t.2 != GUIDE_HEADING));
+        for i in [0, 4, 5, CHAPTERS.len() - 1] {
+            let [x, y] = middle(contents_row(i));
+            let draws = g.draw([o[0] + x, o[1] + y], &mc, &name);
+            assert!(lit(&draws, i), "{i}");
+            assert_eq!((0..CHAPTERS.len()).filter(|&j| lit(&draws, j)).count(), 1, "{i}");
+            // The fill goes under the row: before its icon and its title, which turns the headings' colour.
+            let row = moved(contents_row(i), o);
+            let fill = draws.iter().position(|d| matches!(d, GuideDraw::Fill(_, c) if *c == CONTENTS_HOVER)).unwrap();
+            let icon = draws.iter().position(|d| matches!(d, GuideDraw::Item(id, at) if *id == CHAPTERS[i].tab && within(*at, row))).unwrap();
+            assert!(fill < icon, "{i}");
+            assert_eq!(texts_in(&draws, row)[0].2, GUIDE_HEADING, "{i}");
+        }
+    }
+
+    #[test]
+    fn home_and_the_footer_button_lead_back_to_the_contents() {
+        let mut g = book("en_us");
+        let o = guide_origin(g.window);
+        let lang = language("en_us");
+        assert_eq!(g.contents, lang[CONTENTS]);
+        assert_eq!(g.contents_button(), contents_button(mc(&lang[CONTENTS])));
+        let button = moved(g.contents_button(), o);
+        let at = middle(button);
+        g.open(4);
+        assert!(g.key("key.keyboard.home"));
+        assert_eq!((g.spread, g.chapter()), (CONTENTS_SPREAD, None));
+        assert!(g.key("key.keyboard.home"), "the key is the book's on the contents too");
+        g.open(6);
+        g.next();
+        // The button is in the footer, in its colour, and lit under the mouse.
+        let draws = g.draw([0.0, 0.0], &mc, &|id: &str| id.to_owned());
+        let found = texts_in(&draws, button);
+        assert_eq!(found.iter().map(|t| (t.0.as_str(), t.2)).collect::<Vec<_>>(), [(lang[CONTENTS].as_str(), GUIDE_FOOTER)]);
+        let draws = g.draw(at, &mc, &|id: &str| id.to_owned());
+        assert_eq!(texts_in(&draws, button)[0].2, GUIDE_FOOTER_LIT);
+        assert!(g.click(at));
+        assert_eq!((g.spread, g.chapter()), (CONTENTS_SPREAD, None));
+        // On the contents there is no button: the click there does nothing.
+        let draws = g.draw(at, &mc, &|id: &str| id.to_owned());
+        assert!(texts_in(&draws, button).is_empty(), "{:?}", texts_in(&draws, button));
+        assert!(!g.click(at));
+        assert_eq!(g.spread, CONTENTS_SPREAD);
+        // The arrows and the keys reach the contents as the first spread.
+        g.open(0);
+        assert!(g.key("key.keyboard.left"));
+        assert_eq!(g.spread, CONTENTS_SPREAD);
+        assert!(g.key("key.keyboard.right"));
+        assert_eq!(g.chapter(), Some(0));
+        // A label too long for the footer is cut.
+        let tr = |key: &str| if key == CONTENTS { "very long word ".repeat(10) } else { key.to_owned() };
+        let long = Guide::new(&tr, &mc);
+        assert!(long.contents.ends_with('…') && mc(&long.contents) <= CONTENTS_BUTTON_MAX, "{}", long.contents);
+        assert_eq!(long.contents_button(), contents_button(mc(&long.contents)));
+        let heading = &long.pages[0][0];
+        assert!(matches!(heading, GuideLine::Heading(t) if mc(t) <= PAGE_WIDTH), "{heading:?}");
+    }
+
+    #[test]
+    fn the_footer_counts_spreads_with_the_contents() {
+        let mut g = long_guide();
+        g.window = [480.0, 270.0];
+        let chapters = (g.pages.len() - g.starts[0]) / 2;
+        assert_eq!(g.spreads(), chapters + 1);
+        let name = |id: &str| id.to_owned();
+        for s in 0..g.spreads() {
+            g.go(s);
+            assert!(texts(&g.draw([0.0, 0.0], &six, &name)).contains(&format!("{} / {}", s + 1, g.spreads()).as_str()), "{s}");
+        }
+    }
+
+    #[test]
+    fn a_title_too_wide_is_cut_with_an_ellipsis() {
+        assert_eq!(fit("short", 60.0, &six), "short");
+        assert_eq!(fit("abcdefghij", 30.0, &six), "abcd…");
+        assert_eq!(fit("abcdefghij", 60.0, &six), "abcdefghij");
+        assert_eq!(fit("абвгдежзик", 30.0, &six), "абвг…", "cut between letters, not bytes");
+        assert_eq!(fit("abc", 2.0, &six), "…");
+        // A long title in the contents: cut, and its tooltip says it whole.
+        let long = "Missile, Bomber and every other way there is".to_owned();
+        let tr = |key: &str| if key == CHAPTERS[6].title { long.clone() } else { key.to_owned() };
+        let mut g = Guide::new(&tr, &mc);
+        g.window = MIN_GUI;
+        let o = guide_origin(g.window);
+        let row = moved(contents_row(6), o);
+        let draws = g.draw([0.0, 0.0], &mc, &|id: &str| id.to_owned());
+        let title = &texts_in(&draws, row)[0].0;
+        assert!(title.ends_with('…') && long.starts_with(title.trim_end_matches('…')), "{title}");
+        let draws = g.draw(middle(row), &mc, &|id: &str| id.to_owned());
+        assert_eq!(texts(&draws).last(), Some(&long.as_str()));
+    }
+
+    #[test]
+    fn the_book_remembers_its_spread_and_a_new_one_opens_on_the_contents() {
+        let mut old = long_guide();
+        old.window = [480.0, 270.0];
+        old.open(5);
+        let mut g = long_guide();
+        assert_eq!(g.spread, CONTENTS_SPREAD);
+        g.keep(&old);
+        assert_eq!((g.spread, g.chapter(), g.window), (old.spread, Some(5), old.window));
+        // A shorter book than the one before: its last spread.
+        let mut short = Guide::new(&|k: &str| k.to_owned(), &six);
+        old.go(usize::MAX);
+        short.keep(&old);
+        assert_eq!(short.spread, short.spreads() - 1);
+        old.home();
+        short.keep(&old);
+        assert_eq!(short.spread, CONTENTS_SPREAD);
+    }
+
+    #[test]
+    fn nothing_breaks_in_a_tiny_window_or_an_empty_book() {
+        let name = |id: &str| id.to_owned();
+        let zero = |_: &str| 0.0;
+        for mut g in [long_guide(), Guide::default()] {
+            for window in [[0.0, 0.0], [1.0, 1.0], [10.0, 7.0], MIN_GUI] {
+                g.window = window;
+                for s in [0, 1, usize::MAX] {
+                    g.go(s);
+                    for mouse in [[0.0, 0.0], [-5.0, -5.0], [window[0] / 2.0, window[1] / 2.0], [1e6, 1e6]] {
+                        g.draw(mouse, &six, &name);
+                        g.draw(mouse, &zero, &name);
+                        g.click(mouse);
+                    }
+                    g.key("key.keyboard.home");
+                    g.wheel(-3.0);
+                    g.wheel(2.5);
+                    g.home();
+                    assert!(g.spread < g.spreads());
+                }
+            }
+        }
+        // A measure that finds no width doesn't fill the page with dots.
+        let g = Guide::new(&|k: &str| k.to_owned(), &zero);
+        assert!(g.draw([0.0, 0.0], &zero, &name).len() < 500);
     }
 
     #[test]

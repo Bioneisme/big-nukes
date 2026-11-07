@@ -230,3 +230,9 @@ Read in the source of 66f3981, not yet seen in the game:
   `big_nukes:gui/guide` (every namespace's `textures/gui` is packed); without the assets half
   `native_sprite_size` doesn't answer its size and the screen draws in plain colours.
 - The text is wrapped with `native_text_width` and laid out again at each opening, in the window's language.
+- The first spread is the contents (the footer counts it: «1 / N»): a row a chapter with its bookmark's item, its
+  title (cut with «…» only when `native_text_width` finds it wider than the row) and the number of the spread it
+  starts on; a click on a row opens the chapter, found from `guide_origin` as the bookmarks are. The way back is
+  Home (`key.keyboard.home`) and a «Contents» button in the footer, right of the arrow back, on every other spread.
+  A new book opens at the contents; one opened before in the window opens where it was left. Not yet seen in the
+  game.

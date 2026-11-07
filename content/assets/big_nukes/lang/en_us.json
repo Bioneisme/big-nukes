@@ -63,6 +63,7 @@
   "big_nukes.tip.anti_rad": "Drink it to take 300 rad off your dose.",
   "big_nukes.tip.guide": "Right-click to read. The bookmarks lead to the chapters.",
   "big_nukes.guide.given": "The guide is in your inventory.",
+  "big_nukes.guide.contents": "Contents",
   "big_nukes.guide.uranium": "Uranium",
   "big_nukes.guide.uranium.text": "Uranium ore lies deep, below y=16, in stone and deepslate. Mine it with an iron pickaxe or better: it drops raw uranium.\n\nRaw uranium is too weak for a bomb. Enrich it in a centrifuge first.",
   "big_nukes.guide.centrifuge": "Centrifuge",

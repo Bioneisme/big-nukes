@@ -2233,15 +2233,15 @@ fn read_guide(game: &mut Game<'_>, claimed: &mut bool) {
 static GUIDE_BOOK: Mutex<Option<rules::Guide>> = Mutex::new(None);
 static PAGE_TURNED: Mutex<bool> = Mutex::new(false);
 
-/// The server's message: the book is laid out in the window's language and opened.
+/// The server's message: the book is laid out in the window's language and opened, at the
+/// spread it was left at or, the first time, at its contents.
 pub(in crate::game) fn guide_asked(game: &mut Game<'_>, channel: &str) {
     if channel != rules::GUIDE_CHANNEL || !game.native_on(rules::ID) {
         return;
     }
     let mut guide = rules::Guide::new(&lang::get, &|text: &str| game.native_text_width(text));
     if let Some(old) = lock(&GUIDE_BOOK).take() {
-        guide.window = old.window;
-        guide.go(old.spread);
+        guide.keep(&old);
     }
     *lock(&GUIDE_BOOK) = Some(guide);
     if !game.native_mod_screen_open(rules::ID) {
@@ -2326,7 +2326,7 @@ pub(in crate::game) fn guide_wheel(game: &Game<'_>, screen: &NativeScreenView<'_
     }
 }
 
-/// The arrow keys turn the pages; Escape and the rest are the game's.
+/// The arrow keys turn the pages and Home goes to the contents; Escape and the rest are the game's.
 pub(in crate::game) fn guide_key(game: &Game<'_>, screen: &NativeScreenView<'_>, key: &str, canceled: &mut bool) {
     if guide_shown(game, screen)
         && let Some(guide) = lock(&GUIDE_BOOK).as_mut()

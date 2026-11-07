@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Checks the guide in the game: a player joining a world for the first time gets big_nukes:guide, a right click
-opens the mod's screen, the arrow keys, the wheel, the arrows and the bookmarks turn its pages (target/shots/guide-*.png
-show them), Escape closes it and it opens again where it was left, a second join gives no second guide, and
+opens the mod's screen at its contents, the arrow keys, the wheel, the arrows and the bookmarks turn its pages
+(target/shots/guide-*.png show them), Escape closes it and it opens again where it was left, the footer's button and
+Home lead back to the contents and a contents row opens its chapter, a second join gives no second guide, and
 /bignukes guide gives one more.
 
     python tools/guide_test.py GAME_FOLDER VERSION
@@ -25,6 +26,10 @@ SHOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target",
 # runtime.rs: BOOK_SIZE, TAB_OPEN_X, TAB_TOP, TAB_STEP, TAB_SIZE, NEXT_AT, PREV_AT.
 BOOK_W, BOOK_H, TAB_OPEN_X, TAB_TOP, TAB_STEP, TAB_H = 288, 192, -26, 11, 19, 18
 NEXT_AT, PREV_AT = (258, 176, 18, 10), (12, 176, 18, 10)
+# runtime.rs: PAGES, CONTENTS_MARGIN, CONTENTS_TOP, CONTENTS_STEP, CONTENTS_ROW_H, CONTENTS_BUTTON_X, NUMBER_Y;
+# the first five chapters' rows are on the left page.
+PAGE_LEFTS, PAGE_W, CONTENTS_MARGIN, CONTENTS_TOP, CONTENTS_STEP, CONTENTS_ROW_H = (6, 146), 136, 3, 30, 22, 20
+CONTENTS_LEFT, CONTENTS_BUTTON_X, NUMBER_Y = 5, 40, 177
 failed = []
 
 
@@ -67,6 +72,12 @@ def click(x, y):
     ctl("wait", 2)
 
 
+def contents_row(i):
+    """The middle of contents row i, as contents_row reckons it."""
+    side, k = (0, i) if i < CONTENTS_LEFT else (1, i - CONTENTS_LEFT)
+    return PAGE_LEFTS[side] + CONTENTS_MARGIN + (PAGE_W - 2 * CONTENTS_MARGIN) // 2, CONTENTS_TOP + k * CONTENTS_STEP + CONTENTS_ROW_H // 2
+
+
 def open_world():
     ctl("launch", "--world", WORLD, "--seed", "12345", "--creative", "--wait", "--offscreen", timeout=280)
     ctl("wait", 60)
@@ -81,6 +92,9 @@ ctl("select", GUIDE)
 ctl("use-item")
 ctl("wait", 5)
 check("a right click opens the guide's screen", screen() == "mod", json.dumps(ctl("screen"))[:300])
+# A new book opens on its contents, spread 1; the first chapter is the next spread.
+shot("0-contents")
+ctl("key", "right", "tap")
 shot("1-uranium")
 ctl("key", "right", "tap")
 shot("2-centrifuge")
@@ -107,6 +121,15 @@ ctl("use-item")
 ctl("wait", 5)
 shot("7-reopened")
 check("it opens again", screen() == "mod", str(screen()))
+# Back to the contents with the footer's button (its label starts at CONTENTS_BUTTON_X), then a row on the right
+# page: the missile and bomber's chapter; Home leads back again.
+click(CONTENTS_BUTTON_X + 8, NUMBER_Y + 4)
+shot("8-contents-button")
+click(*contents_row(6))
+shot("9-contents-row-carriers")
+ctl("key", "home", "tap")
+shot("10-home")
+check("the contents keep the screen open", screen() == "mod", str(screen()))
 ctl("key", "esc", "tap")
 ctl("quit")
 time.sleep(8)
