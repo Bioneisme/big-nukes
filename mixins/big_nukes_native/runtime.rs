@@ -4041,6 +4041,13 @@ pub fn damage_band(radius: u32, from: f64, to: f64) -> Vec<(f64, f64, f32)> {
         .collect()
 }
 
+/// Whether a place `pos` is within one of a tick's damage `bands` round `center`, as the damage's selector
+/// measures (3D), its bounds written to a tenth: a tenth of slack each side.
+pub fn in_band(bands: &[(f64, f64, f32)], center: [f64; 3], pos: [f64; 3]) -> bool {
+    let d = (0..3).map(|a| (pos[a] - center[a]).powi(2)).sum::<f64>().sqrt();
+    bands.iter().any(|(a, b, _)| d >= a - 0.1 && d <= b + 0.1)
+}
+
 /// Blocks thrown out of the crater at the start: where, how fast and what.
 pub fn debris(blast: &Blast) -> Vec<([f64; 3], [f64; 3], &'static str)> {
     const BLOCKS: [&str; 3] = ["minecraft:stone", "minecraft:cobblestone", "minecraft:dirt"];
@@ -5335,6 +5342,22 @@ mod tests {
         assert!((edge[0].1 - 112.0).abs() < 1e-9);
         assert!(edge[0].2 <= 4.0 && edge[0].2 >= 1.0);
         assert!(damage_band(100, 40.0, 40.0).is_empty());
+    }
+
+    #[test]
+    fn only_a_player_the_damage_reaches_this_tick_is_looked_at() {
+        let bands = damage_band(100, 30.0, 40.0);
+        let c = [0.5, 64.0, 0.5];
+        assert!(in_band(&bands, c, [30.5, 64.0, 0.5]));
+        assert!(in_band(&bands, c, [40.5, 64.0, 0.5]));
+        // In 3D, as the damage's selector measures.
+        assert!(in_band(&bands, c, [24.5, 64.0 + 24.0, 0.5]));
+        assert!(!in_band(&bands, c, [20.5, 64.0, 0.5]));
+        assert!(!in_band(&bands, c, [41.5, 64.0, 0.5]));
+        // The selector's bounds are written to a tenth: a player just past one, as it rounds, is looked at too.
+        assert!(in_band(&bands, c, [30.47, 64.0, 0.5]));
+        assert!(in_band(&bands, c, [40.55, 64.0, 0.5]));
+        assert!(!in_band(&[], c, c));
     }
 
     #[test]

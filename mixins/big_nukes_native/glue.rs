@@ -236,6 +236,10 @@ pub(in crate::game) fn logged_in(game: &mut Game<'_>, player: u128, name: &str) 
     if !game.native_on(rules::ID) {
         return;
     }
+    // A shelter tag left on by a game stopped mid-blow goes: theirs by name, as they may not be among `@a` yet,
+    // and anyone else's.
+    game.native_run_command(&format!("tag {name} remove {SHELTERED}"));
+    untag_sheltered(game);
     if world_items!(game).has_loot_table(rules::ASSETS_MARKER) {
         game.native_run_command(&format!("tag {name} add big_nukes.native"));
         // The guide, once a player: the tag says they had it.
@@ -449,12 +453,12 @@ fn effects(game: &mut Game<'_>, st: &mut State, dimension: &str) {
         if bands.is_empty() {
             continue;
         }
-        // A player under a roof of the bunker the wave leaves standing, or deep under the crater's floor, is spared
-        // its blow: tagged for the damage's selector to pass over.
-        let sheltered: Vec<String> = game
+        // A player the blow reaches this tick under a roof of the bunker the wave leaves standing, or deep under
+        // the crater's floor, is spared it: tagged, by their UUID, for the damage's selector to pass over.
+        let sheltered: Vec<u128> = game
             .native_server_players()
             .into_iter()
-            .filter(|p| p.dimension == blast.dimension)
+            .filter(|p| p.dimension == blast.dimension && rules::in_band(&bands, [cx, cy, cz], p.position))
             .filter(|p| {
                 let feet = p.position.map(|v| v.floor() as i32);
                 let head = [feet[0], feet[1] + 1, feet[2]];
@@ -462,10 +466,10 @@ fn effects(game: &mut Game<'_>, st: &mut State, dimension: &str) {
                 let walls = rules::walls_near(&st.saved.walls, &blast.dimension, chunk);
                 rules::below_crater(&blast, head) || rules::roofed(&blast, &walls, head, st.saved.waves.worked(blast.id, chunk))
             })
-            .map(|p| p.name)
+            .map(|p| p.uuid)
             .collect();
-        for name in &sheltered {
-            game.native_run_command(&format!("tag {name} add {SHELTERED}"));
+        for uuid in &sheltered {
+            game.native_run_command(&format!("tag {} add {SHELTERED}", rules::uuid_text(*uuid)));
         }
         for (a, b, amount) in bands {
             run_in(
@@ -476,10 +480,16 @@ fn effects(game: &mut Game<'_>, st: &mut State, dimension: &str) {
                 ),
             );
         }
-        for name in &sheltered {
-            game.native_run_command(&format!("tag {name} remove {SHELTERED}"));
+        if !sheltered.is_empty() {
+            untag_sheltered(game);
         }
     }
+}
+
+/// Every player's shelter tag taken off: after the damage, and as a player joins, so none is left on for good
+/// (the game stopped between tagging and untagging).
+fn untag_sheltered(game: &mut Game<'_>) {
+    game.native_run_command(&format!("tag @a[tag={SHELTERED}] remove {SHELTERED}"));
 }
 
 /// The tag a sheltered player wears while a wave's damage passes over them.
