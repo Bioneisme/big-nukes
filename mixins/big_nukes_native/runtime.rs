@@ -1114,6 +1114,15 @@ pub struct Saved {
     /// Each player's dose, by their UUID in hex (`dose_key`).
     #[serde(default)]
     pub doses: BTreeMap<String, Dose>,
+    /// The missiles launched and not yet gone off.
+    #[serde(default)]
+    pub flights: Vec<Flight>,
+    /// The launch consoles' codes, by `console_key`.
+    #[serde(default)]
+    pub consoles: BTreeMap<String, Console>,
+    /// The charged strike beacons, their bombers not yet come and gone.
+    #[serde(default)]
+    pub beacons: Vec<Flight>,
 }
 
 fn largest_radius() -> u32 {
@@ -1131,6 +1140,9 @@ impl Default for Saved {
             placed: Vec::new(),
             zones: Vec::new(),
             doses: BTreeMap::new(),
+            flights: Vec::new(),
+            consoles: BTreeMap::new(),
+            beacons: Vec::new(),
         }
     }
 }
@@ -1309,6 +1321,433 @@ impl Saved {
         self.forget(dimension, pos);
         self.unplace(dimension, pos);
         Ok(id)
+    }
+}
+
+// ---- flights -----------------------------------------------------------------
+//
+// A missile counts down in its silo, climbs out of it, flies unseen and falls
+// on its target; a bomber passes over a beacon and drops its bomb. Where each
+// is at a tick is a rule of the tick alone, so the glue only asks and moves a
+// display, and a flight saved mid-way goes on from the same tick.
+
+/// The missile, an item put on the launch pad.
+pub const MISSILE: &str = "big_nukes:missile";
+/// The block over the shaft, taken away while the missile goes out.
+pub const SILO_HATCH: &str = "big_nukes:silo_hatch";
+/// The shortest and longest flight across the ground.
+pub const MISSILE_MIN_RANGE: u32 = 100;
+pub const MISSILE_MAX_RANGE: u32 = 4096;
+/// The countdown after the launch, and the ticks before its end that the hatch opens.
+pub const LAUNCH_COUNTDOWN: u64 = 100;
+pub const HATCH_OPEN_AT: u64 = 40;
+/// The ticks into the climb that the hatch shuts again: the missile is 75 blocks up.
+pub const HATCH_SHUT_AT: u64 = 60;
+/// The climb: its ticks and its height.
+pub const ASCENT_TICKS: u64 = 120;
+pub const ASCENT_HEIGHT: f64 = 300.0;
+/// The last ticks of the climb lean the missile toward its target, this far from upright.
+const TILT_TICKS: u64 = 40;
+const TILT_DEGREES: f64 = 30.0;
+/// The unseen part: blocks a tick, and the fewest ticks it takes.
+pub const CRUISE_SPEED: f64 = 16.0;
+pub const CRUISE_MIN: u64 = 40;
+/// The fall: its ticks, from this far short of the target and this high over its ground.
+pub const DESCENT_TICKS: u64 = 80;
+pub const DESCENT_BACK: f64 = 200.0;
+pub const DESCENT_HEIGHT: f64 = 320.0;
+/// The air a shaft needs over its pad, under its hatch.
+pub const SHAFT_ROOM: u32 = 6;
+/// How far from a console its pad may be.
+#[allow(dead_code)] // plan 7: until the glue uses it
+pub const CONSOLE_REACH: i32 = 8;
+/// A charged beacon's countdown to the bomber's pass.
+#[allow(dead_code)] // plan 7: until the glue uses it
+pub const STRIKE_COUNTDOWN: u64 = 600;
+/// The bomber: how high over the beacon, blocks a tick, and how far out it comes in.
+pub const PLANE_HEIGHT: f64 = 120.0;
+pub const PLANE_SPEED: f64 = 3.0;
+pub const PLANE_START: f64 = 150.0;
+/// A dropped bomb: its speed kept a tick, and the speed down it gains a tick.
+pub const BOMB_DRAG: f64 = 0.9;
+pub const BOMB_GRAVITY: f64 = 0.08;
+/// The tag of every display a flight shows, so the ones a closed world left are found.
+#[allow(dead_code)] // plan 7: until the glue uses it
+pub const FLIGHT_TAG: &str = "big_nukes_flight";
+/// The farthest place from the world's middle, as `/summon` and `/forceload` take it.
+const WORLD_EDGE: i64 = 29_999_984;
+
+/// What carries a bomb to its target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Carrier {
+    Missile,
+    Bomber,
+}
+
+/// A bomb on its way, as the world keeps it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Flight {
+    pub id: u64,
+    pub carrier: Carrier,
+    pub dimension: String,
+    /// A missile's: the block over its pad, where its tail stands. A bomber's: its beacon.
+    pub from: [i32; 3],
+    pub to: [i32; 2],
+    pub kind: BombKind,
+    /// The tick of the launch, or of the beacon's charge.
+    pub start: u64,
+    /// The height of the target's ground, once its chunk has been read.
+    pub surface: Option<i32>,
+    pub seed: u64,
+    /// The hatch's height while it is to be opened or shut again.
+    #[serde(default)]
+    pub hatch: Option<i32>,
+}
+
+/// Where a missile is at a tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Leg {
+    Countdown { left: u64 },
+    /// `pos` is the missile's tail; `yaw` and `pitch` where its nose points, as the game reckons a look.
+    Ascent { pos: [f64; 3], yaw: f32, pitch: f32 },
+    Cruise,
+    Descent { pos: [f64; 3], yaw: f32, pitch: f32 },
+    Impact { at: [i32; 3] },
+}
+
+/// The yaw of a look along (`dx`, `dz`): 0 south, -90 east.
+fn yaw_of(dx: f64, dz: f64) -> f32 {
+    (-dx).atan2(dz).to_degrees() as f32
+}
+
+#[allow(dead_code)] // plan 7: until the glue uses it
+impl Flight {
+    /// The tick the missile leaves its pad.
+    pub fn liftoff(&self) -> u64 {
+        self.start + LAUNCH_COUNTDOWN
+    }
+
+    /// The tick its climb ends, out of sight.
+    pub fn climbed(&self) -> u64 {
+        self.liftoff() + ASCENT_TICKS
+    }
+
+    /// The blocks across the ground to the target.
+    fn range(&self) -> f64 {
+        f64::from(self.to[0] - self.from[0]).hypot(f64::from(self.to[1] - self.from[2]))
+    }
+
+    /// The way to the target across the ground, a unit; south when it is straight up.
+    fn heading(&self) -> [f64; 2] {
+        let r = self.range();
+        if r == 0.0 {
+            return [0.0, 1.0];
+        }
+        [f64::from(self.to[0] - self.from[0]) / r, f64::from(self.to[1] - self.from[2]) / r]
+    }
+
+    /// The tick it shows again over its target.
+    pub fn descends_at(&self) -> u64 {
+        self.climbed() + ((self.range() / CRUISE_SPEED).ceil() as u64).max(CRUISE_MIN)
+    }
+
+    /// The tick it hits, when its target's ground is known.
+    pub fn lands_at(&self) -> u64 {
+        self.descends_at() + DESCENT_TICKS
+    }
+
+    /// Whether the hatch stands open: from `HATCH_OPEN_AT` before the liftoff to `HATCH_SHUT_AT` after it.
+    pub fn hatch_open(&self, now: u64) -> bool {
+        (self.liftoff() - HATCH_OPEN_AT..=self.liftoff() + HATCH_SHUT_AT).contains(&now)
+    }
+
+    /// The target's ground, under the Nether's roof.
+    fn ground(&self) -> Option<i32> {
+        let surface = self.surface?;
+        Some(world_of(&self.dimension).map_or(surface, |w| surface.min(w.roof)))
+    }
+
+    /// The climb `t` ticks after the liftoff, between ticks too (the window's camera): the tail, yaw and pitch.
+    pub fn climb(&self, t: f64) -> ([f64; 3], f32, f32) {
+        let height = |t: f64| ASCENT_HEIGHT * ((t + 1.0) / ASCENT_TICKS as f64).clamp(0.0, 1.0).powi(2);
+        let lean_from = (ASCENT_TICKS - TILT_TICKS) as f64;
+        let tilt = |t: f64| TILT_DEGREES * ((t - lean_from) / TILT_TICKS as f64).clamp(0.0, 1.0);
+        // It drifts the way it leans, by what it climbs each tick.
+        let mut drift = 0.0;
+        let mut k = lean_from;
+        while k < t {
+            let next = (k + 1.0).min(t);
+            drift += (height(next) - height(k)) * tilt(k).to_radians().tan();
+            k = next;
+        }
+        let h = self.heading();
+        let pos = [
+            f64::from(self.from[0]) + 0.5 + h[0] * drift,
+            f64::from(self.from[1]) + height(t),
+            f64::from(self.from[2]) + 0.5 + h[1] * drift,
+        ];
+        (pos, yaw_of(h[0], h[1]), (tilt(t) - 90.0) as f32)
+    }
+
+    /// The fall `t` ticks after it shows over the target, straight to its ground.
+    fn fall(&self, ground: i32, t: u64) -> ([f64; 3], f32, f32) {
+        let h = self.heading();
+        let end = [f64::from(self.to[0]) + 0.5, f64::from(ground), f64::from(self.to[1]) + 0.5];
+        let top = [end[0] - h[0] * DESCENT_BACK, end[1] + DESCENT_HEIGHT, end[2] - h[1] * DESCENT_BACK];
+        let s = t as f64 / (DESCENT_TICKS - 1) as f64;
+        let pos = [0, 1, 2].map(|i| top[i] + (end[i] - top[i]) * s);
+        (pos, yaw_of(h[0], h[1]), DESCENT_HEIGHT.atan2(DESCENT_BACK).to_degrees() as f32)
+    }
+
+    /// Where the missile is at `now`. Without its target's ground it stays out of sight.
+    pub fn leg(&self, now: u64) -> Leg {
+        if now < self.liftoff() {
+            return Leg::Countdown { left: self.liftoff() - now };
+        }
+        if now < self.climbed() {
+            let (pos, yaw, pitch) = self.climb((now - self.liftoff()) as f64);
+            return Leg::Ascent { pos, yaw, pitch };
+        }
+        let Some(ground) = self.ground() else {
+            return Leg::Cruise;
+        };
+        if now < self.descends_at() {
+            return Leg::Cruise;
+        }
+        if now < self.lands_at() {
+            let (pos, yaw, pitch) = self.fall(ground, now - self.descends_at());
+            return Leg::Descent { pos, yaw, pitch };
+        }
+        Leg::Impact { at: [self.to[0], ground, self.to[1]] }
+    }
+}
+
+/// What a shaft lacks for a launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShaftProblem {
+    #[allow(dead_code)] // plan 7: until the glue uses it
+    NoPad,
+    /// Only this much air over the pad.
+    LowRoom(u32),
+    NoHatch,
+    NoSky,
+    NoMissile,
+    NoWarhead,
+}
+
+fn is_air(block: &str) -> bool {
+    matches!(block, "air" | "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air")
+}
+
+/// The blocks over a pad, from the one above it up to the sky (the Nether's roof): the hatch's height over the
+/// pad, or what is wrong. The shaft is `SHAFT_ROOM` or more of air under the hatch, and only air is above it.
+#[allow(dead_code)] // plan 7: until the glue uses it
+pub fn shaft(column_above_pad: &[&str]) -> Result<i32, ShaftProblem> {
+    let room = column_above_pad.iter().take_while(|b| is_air(b)).count();
+    let low = (room as u32) < SHAFT_ROOM;
+    match column_above_pad.get(room) {
+        Some(&b) if b == SILO_HATCH && !low => {
+            if column_above_pad[room + 1..].iter().all(|b| is_air(b)) {
+                Ok(room as i32 + 1)
+            } else {
+                Err(ShaftProblem::NoSky)
+            }
+        }
+        _ if low => Err(ShaftProblem::LowRoom(room as u32)),
+        _ => Err(ShaftProblem::NoHatch),
+    }
+}
+
+#[allow(dead_code)] // plan 7: until the glue uses it
+impl BombKind {
+    /// Whether it goes on a missile or a bomber: the demolition charge is too small for either.
+    pub fn flies(self) -> bool {
+        self != BombKind::Demolition
+    }
+}
+
+/// What a pad holds in its two slots: the warhead it launches, or what it lacks.
+#[allow(dead_code)] // plan 7: until the glue uses it
+pub fn pad_load(missile: Option<&str>, warhead: Option<&str>) -> Result<BombKind, ShaftProblem> {
+    if missile != Some(MISSILE) {
+        return Err(ShaftProblem::NoMissile);
+    }
+    warhead.and_then(BombKind::of_block).filter(|k| k.flies()).ok_or(ShaftProblem::NoWarhead)
+}
+
+/// A launch console's code and its wrong tries, as the world keeps them (`Saved.consoles`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Console {
+    /// Set by the first launch asked of it.
+    pub code: Option<String>,
+    pub tries: u8,
+    pub locked_until: u64,
+}
+
+/// Why a console doesn't launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaunchRefusal {
+    Empty,
+    NotANumber,
+    /// A code shorter than `CODE_MIN_DIGITS` or longer than `CODE_DIGITS`.
+    CodeLength,
+    OutsideWorld,
+    /// The target's distance across the ground.
+    TooNear(u32),
+    TooFar(u32),
+    /// The tries left before the lock.
+    WrongCode(u8),
+    /// The ticks left of the lock.
+    Locked(u64),
+    #[allow(dead_code)] // plan 7: until the glue uses it
+    Maxpower,
+}
+
+/// The key of a console in `Saved.consoles`.
+#[allow(dead_code)] // plan 7: until the glue uses it
+pub fn console_key(dimension: &str, pos: [i32; 3]) -> String {
+    format!("{dimension} {} {} {}", pos[0], pos[1], pos[2])
+}
+
+/// A code's digits: `CODE_MIN_DIGITS` to `CODE_DIGITS` of them.
+fn code_shape(code: &str) -> Result<(), LaunchRefusal> {
+    if code.is_empty() {
+        Err(LaunchRefusal::Empty)
+    } else if !code.bytes().all(|b| b.is_ascii_digit()) {
+        Err(LaunchRefusal::NotANumber)
+    } else if !(CODE_MIN_DIGITS..=CODE_DIGITS).contains(&code.len()) {
+        Err(LaunchRefusal::CodeLength)
+    } else {
+        Ok(())
+    }
+}
+
+/// A launch typed on a console whose pad stands at `from` (x, z): the target and the code, or why not.
+#[allow(dead_code)] // plan 7: until the glue uses it
+pub fn launch_request(from: [i32; 2], x: &str, z: &str, code: &str) -> Result<([i32; 2], String), LaunchRefusal> {
+    if x.is_empty() || z.is_empty() || code.is_empty() {
+        return Err(LaunchRefusal::Empty);
+    }
+    let coordinate = |s: &str| {
+        let digits = s.strip_prefix('-').unwrap_or(s);
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(LaunchRefusal::NotANumber);
+        }
+        match s.parse::<i64>() {
+            Ok(v) if v.abs() <= WORLD_EDGE => Ok(v as i32),
+            _ => Err(LaunchRefusal::OutsideWorld),
+        }
+    };
+    let to = [coordinate(x)?, coordinate(z)?];
+    let far = (f64::from(to[0]) - f64::from(from[0])).hypot(f64::from(to[1]) - f64::from(from[1])).round();
+    let far = far.min(f64::from(u32::MAX)) as u32;
+    if far < MISSILE_MIN_RANGE {
+        return Err(LaunchRefusal::TooNear(far));
+    }
+    if far > MISSILE_MAX_RANGE {
+        return Err(LaunchRefusal::TooFar(far));
+    }
+    code_shape(code)?;
+    Ok((to, code.to_owned()))
+}
+
+#[allow(dead_code)] // plan 7: until the glue uses it
+impl Console {
+    /// A launch's code. The first one a console is given becomes its code; then only that one passes, and
+    /// `TRIES` wrong ones in a row lock it for `LOCK_TICKS`.
+    pub fn check(&mut self, code: &str, now: u64) -> Result<(), LaunchRefusal> {
+        self.locked_until = self.locked_until.min(now + LOCK_TICKS);
+        if now < self.locked_until {
+            return Err(LaunchRefusal::Locked(self.locked_until - now));
+        }
+        code_shape(code)?;
+        match &self.code {
+            None => self.code = Some(code.to_owned()),
+            Some(c) if c == code => {}
+            Some(_) => {
+                self.tries += 1;
+                if self.tries < TRIES {
+                    return Err(LaunchRefusal::WrongCode(TRIES - self.tries));
+                }
+                self.tries = 0;
+                self.locked_until = now + LOCK_TICKS;
+                return Err(LaunchRefusal::Locked(LOCK_TICKS));
+            }
+        }
+        self.tries = 0;
+        Ok(())
+    }
+}
+
+/// A bomber's pass over its beacon, worked out tick by tick when it is made: the plane comes in from
+/// `PLANE_START` blocks out, from a way the seed picks, `PLANE_HEIGHT` over the beacon, and flies straight
+/// over it; the bomb leaves it at the tick whose fall ends nearest the beacon.
+#[allow(dead_code)] // plan 7: until the glue uses it
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pass {
+    start: u64,
+    /// The plane's place at each tick from `start`.
+    plane: Vec<[f64; 3]>,
+    yaw: f32,
+    /// The tick the bomb leaves the plane.
+    pub release: u64,
+    /// The bomb's place at each tick from `release`.
+    bomb: Vec<[f64; 3]>,
+}
+
+/// How far below the beacon a fall is worked out.
+const FALL_DEPTH: f64 = 256.0;
+
+#[allow(dead_code)] // plan 7: until the glue uses it
+impl Pass {
+    pub fn new(beacon: [i32; 3], start: u64, seed: u64) -> Pass {
+        let angle = (mix(seed ^ 0xb0b0) >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
+        let out = [angle.cos(), angle.sin()];
+        let over = [f64::from(beacon[0]) + 0.5, f64::from(beacon[1]) + PLANE_HEIGHT, f64::from(beacon[2]) + 0.5];
+        let v = [-out[0] * PLANE_SPEED, 0.0, -out[1] * PLANE_SPEED];
+        // Until it is PLANE_START past the beacon.
+        let ticks = (2.0 * PLANE_START / PLANE_SPEED).ceil() as usize;
+        let plane: Vec<[f64; 3]> = (0..ticks)
+            .map(|k| [over[0] + out[0] * PLANE_START + v[0] * k as f64, over[1], over[2] + out[1] * PLANE_START + v[2] * k as f64])
+            .collect();
+        // A fall from the plane, the same from any tick: its steps from where the bomb leaves.
+        let mut fall = vec![[0.0; 3]];
+        let (mut at, mut speed) = ([0.0; 3], v);
+        while at[1] > -(PLANE_HEIGHT + FALL_DEPTH) {
+            // As a falling item: the pull, the step, the drag.
+            speed[1] -= BOMB_GRAVITY;
+            at = [0, 1, 2].map(|i| at[i] + speed[i]);
+            speed = speed.map(|s| s * BOMB_DRAG);
+            fall.push(at);
+        }
+        let lands = fall.iter().find(|s| s[1] <= -PLANE_HEIGHT).copied().unwrap_or([0.0; 3]);
+        let miss = |k: usize| (plane[k][0] + lands[0] - over[0]).hypot(plane[k][2] + lands[2] - over[2]);
+        let best = (0..plane.len()).min_by(|a, b| miss(*a).total_cmp(&miss(*b))).unwrap_or(0);
+        let bomb = fall.iter().map(|s| [0, 1, 2].map(|i| plane[best][i] + s[i])).collect();
+        Pass { start, plane, yaw: yaw_of(v[0], v[2]), release: start + best as u64, bomb }
+    }
+
+    /// The plane's place and yaw at `now`, while it is in the sky.
+    pub fn plane(&self, now: u64) -> Option<([f64; 3], f32)> {
+        let k = usize::try_from(now.checked_sub(self.start)?).ok()?;
+        self.plane.get(k).map(|p| (*p, self.yaw))
+    }
+
+    /// The bomb's place at `now`, from its release.
+    pub fn bomb(&self, now: u64) -> Option<[f64; 3]> {
+        let k = usize::try_from(now.checked_sub(self.release)?).ok()?;
+        self.bomb.get(k).copied()
+    }
+
+    /// The tick the bomb reaches ground at height `surface`.
+    pub fn impact(&self, surface: i32) -> Option<u64> {
+        self.bomb.iter().position(|b| b[1] <= f64::from(surface)).map(|k| self.release + k as u64)
+    }
+
+    /// The last tick the plane is in the sky.
+    pub fn gone(&self) -> u64 {
+        self.start + self.plane.len() as u64
     }
 }
 
@@ -3868,5 +4307,301 @@ mod tests {
         assert!(close(one, two) && one > 0.0 && one < 0.5, "{one} {two}");
         assert!(ease(0.0, 1.0, 5.0) > 0.99);
         assert_eq!(ease(0.3, 0.3, 1.0), 0.3);
+    }
+}
+
+// ---- flights (plan 7) ---------------------------------------------------------------
+
+#[cfg(test)]
+mod flight_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    const OVERWORLD: &str = "minecraft:overworld";
+
+    fn missile() -> Flight {
+        Flight {
+            id: 1,
+            carrier: Carrier::Missile,
+            dimension: OVERWORLD.into(),
+            from: [0, 64, 0],
+            to: [1000, 0],
+            kind: BombKind::Atomic,
+            start: 0,
+            surface: Some(70),
+            seed: 7,
+            hatch: Some(71),
+        }
+    }
+
+    fn near(a: f64, b: f64, by: f64) -> bool {
+        (a - b).abs() <= by
+    }
+
+    /// How far apart two places are, across the ground.
+    fn flat(a: [f64; 3], b: [f64; 3]) -> f64 {
+        (a[0] - b[0]).hypot(a[2] - b[2])
+    }
+
+    fn ascent(f: &Flight, now: u64) -> ([f64; 3], f32, f32) {
+        match f.leg(now) {
+            Leg::Ascent { pos, yaw, pitch } => (pos, yaw, pitch),
+            other => panic!("{now}: {other:?}"),
+        }
+    }
+
+    fn descent(f: &Flight, now: u64) -> ([f64; 3], f32, f32) {
+        match f.leg(now) {
+            Leg::Descent { pos, yaw, pitch } => (pos, yaw, pitch),
+            other => panic!("{now}: {other:?}"),
+        }
+    }
+
+    /// Where yaw and pitch point, as the game reckons them: yaw 0 south, pitch -90 up.
+    fn looks(yaw: f32, pitch: f32) -> [f64; 3] {
+        let (y, p) = (f64::from(yaw).to_radians(), f64::from(pitch).to_radians());
+        [-y.sin() * p.cos(), -p.sin(), y.cos() * p.cos()]
+    }
+
+    #[test]
+    fn a_missile_counts_down_climbs_cruises_and_falls_on_its_target() {
+        let f = missile();
+        assert_eq!(f.leg(0), Leg::Countdown { left: 100 });
+        assert_eq!(f.leg(99), Leg::Countdown { left: 1 });
+        let (pos, _, _) = ascent(&f, 100);
+        assert!(near(pos[1], 64.0, 0.5) && flat(pos, [0.5, 0.0, 0.5]) < 0.01, "{pos:?}");
+        let (pos, _, _) = ascent(&f, 219);
+        assert!(near(pos[1], 364.0, 0.5), "{pos:?}");
+        // Faster and faster.
+        let y = |t| ascent(&f, t).0[1];
+        assert!(y(200) - y(199) > y(120) - y(119));
+        let cruise = 1000_u64.div_ceil(16).max(40);
+        assert_eq!(cruise, 63);
+        assert_eq!(f.leg(220), Leg::Cruise);
+        assert_eq!(f.leg(220 + cruise - 1), Leg::Cruise);
+        let target = [1000.5, 0.0, 0.5];
+        let (pos, yaw, pitch) = descent(&f, 220 + cruise);
+        assert!(near(flat(pos, target), 200.0, 1.0) && pos[0] < 1000.0, "{pos:?}");
+        assert!(near(pos[1], 390.0, 0.5), "{pos:?}");
+        // Nose down, toward the target.
+        let d = looks(yaw, pitch);
+        assert!(d[0] > 0.0 && d[1] < 0.0 && d[2].abs() < 1e-6, "{d:?}");
+        let last = 220 + cruise + 79;
+        let (pos, _, _) = descent(&f, last);
+        assert!(flat(pos, target) < 1.0 && near(pos[1], 70.0, 0.5), "{pos:?}");
+        assert_eq!(f.leg(last + 1), Leg::Impact { at: [1000, 70, 0] });
+        assert_eq!(f.leg(last + 5000), Leg::Impact { at: [1000, 70, 0] });
+        // A flight started later keeps the same legs, later.
+        let later = Flight { start: 1000, ..missile() };
+        assert_eq!(later.leg(1000 + 150), f.leg(150));
+        assert_eq!(later.leg(999), Leg::Countdown { left: 101 });
+    }
+
+    #[test]
+    fn the_hatch_opens_forty_ticks_before_the_climb_and_closes_after() {
+        let f = missile();
+        assert!(!f.hatch_open(0) && !f.hatch_open(59));
+        for t in 60..=160 {
+            assert!(f.hatch_open(t), "{t}");
+        }
+        assert!(!f.hatch_open(161) && !f.hatch_open(5000));
+        // By then the missile is well clear of any hatch a shaft has.
+        assert!(ascent(&f, 160).0[1] > 64.0 + 40.0);
+    }
+
+    #[test]
+    fn the_missile_tilts_toward_its_target_only_late_in_the_climb() {
+        for (to, toward) in [([1000, 0], [1.0, 0.0]), ([0, -1000], [0.0, -1.0]), ([-700, 700], [-0.7071, 0.7071])] {
+            let f = Flight { to, ..missile() };
+            for t in 100..180 {
+                assert_eq!(ascent(&f, t).2, -90.0, "{t}");
+            }
+            let (pos, yaw, pitch) = ascent(&f, 219);
+            let tilt = f64::from(pitch) + 90.0;
+            assert!(tilt > 20.0 && tilt <= 30.0, "{tilt}");
+            let d = looks(yaw, pitch);
+            let across = d[0].hypot(d[2]);
+            assert!(near(d[0] / across, toward[0], 1e-3) && near(d[2] / across, toward[1], 1e-3), "{to:?}: {d:?}");
+            // It drifts the way it leans.
+            let drift = [pos[0] - 0.5, pos[2] - 0.5];
+            assert!(drift[0] * toward[0] + drift[1] * toward[1] > 5.0, "{to:?}: {pos:?}");
+        }
+    }
+
+    #[test]
+    fn a_descent_waits_for_the_targets_surface() {
+        let f = Flight { surface: None, ..missile() };
+        assert!(matches!(f.leg(150), Leg::Ascent { .. }));
+        assert_eq!(f.leg(220 + 63), Leg::Cruise);
+        assert_eq!(f.leg(100_000), Leg::Cruise);
+    }
+
+    #[test]
+    fn a_flight_goes_on_by_the_clock_whatever_the_display_does() {
+        let f = missile();
+        let back: Flight = serde_json::from_slice(&serde_json::to_vec(&f).unwrap()).unwrap();
+        for t in 0..600 {
+            assert_eq!(f.leg(t), f.leg(t), "{t}");
+            assert_eq!(back.leg(t), f.leg(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn flights_survive_a_save_and_load() {
+        let mut saved = Saved::default();
+        saved.flights.push(missile());
+        saved.beacons.push(Flight { carrier: Carrier::Bomber, id: 2, ..missile() });
+        saved.consoles.insert(console_key(OVERWORLD, [1, 2, 3]), Console { code: Some("1234".into()), tries: 1, locked_until: 40 });
+        let back: Saved = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(back.flights, saved.flights);
+        assert_eq!(back.beacons, saved.beacons);
+        assert_eq!(back.consoles, saved.consoles);
+        // A world from before the silo.
+        let old: Saved = serde_json::from_str(r#"{"tick":5,"next_id":2,"waves":{"waves":[]}}"#).unwrap();
+        assert!(old.flights.is_empty() && old.beacons.is_empty() && old.consoles.is_empty());
+        // A flight saved without its hatch.
+        let mut v = serde_json::to_value(missile()).unwrap();
+        v.as_object_mut().unwrap().remove("hatch");
+        let f: Flight = serde_json::from_value(v).unwrap();
+        assert_eq!(f.hatch, None);
+        assert_ne!(console_key(OVERWORLD, [1, 2, 3]), console_key("minecraft:the_nether", [1, 2, 3]));
+    }
+
+    #[test]
+    fn a_shaft_needs_room_a_hatch_and_the_sky() {
+        let with = |air: usize, top: &[&'static str]| -> Vec<&'static str> {
+            let mut c = vec!["air"; air];
+            c.extend(top);
+            c
+        };
+        assert_eq!(shaft(&with(6, &[SILO_HATCH, "air"])), Ok(7));
+        assert_eq!(shaft(&with(5, &[SILO_HATCH])), Err(ShaftProblem::LowRoom(5)));
+        assert_eq!(shaft(&with(8, &[])), Err(ShaftProblem::NoHatch));
+        assert_eq!(shaft(&with(6, &[SILO_HATCH, "air", "minecraft:stone"])), Err(ShaftProblem::NoSky));
+        // The game's names for air.
+        let mut named = vec!["minecraft:air", "minecraft:cave_air"];
+        named.extend(["minecraft:air"; 5]);
+        named.extend([SILO_HATCH, "minecraft:air", "minecraft:void_air"]);
+        assert_eq!(shaft(&named), Ok(8));
+        // Something in the shaft below the hatch.
+        assert_eq!(shaft(&with(3, &["minecraft:stone", "air", "air", "air", SILO_HATCH])), Err(ShaftProblem::LowRoom(3)));
+        assert_eq!(shaft(&with(7, &["minecraft:stone", SILO_HATCH])), Err(ShaftProblem::NoHatch));
+        assert_eq!(shaft(&[]), Err(ShaftProblem::LowRoom(0)));
+        // What the pad holds.
+        let atomic = Some(BombKind::Atomic.id());
+        assert_eq!(pad_load(Some(MISSILE), atomic), Ok(BombKind::Atomic));
+        assert_eq!(pad_load(Some(MISSILE), Some(BombKind::Tactical.id())), Ok(BombKind::Tactical));
+        assert_eq!(pad_load(None, atomic), Err(ShaftProblem::NoMissile));
+        assert_eq!(pad_load(Some("minecraft:stick"), atomic), Err(ShaftProblem::NoMissile));
+        assert_eq!(pad_load(Some(MISSILE), None), Err(ShaftProblem::NoWarhead));
+        assert_eq!(pad_load(Some(MISSILE), Some(BombKind::Demolition.id())), Err(ShaftProblem::NoWarhead));
+    }
+
+    #[test]
+    fn the_console_refuses_with_a_reason() {
+        use LaunchRefusal::*;
+        let at = [0, 0];
+        assert_eq!(launch_request(at, "", "5", "123"), Err(Empty));
+        assert_eq!(launch_request(at, "500", "", "123"), Err(Empty));
+        assert_eq!(launch_request(at, "500", "5", ""), Err(Empty));
+        assert_eq!(launch_request(at, "1a", "5", "123"), Err(NotANumber));
+        assert_eq!(launch_request(at, "500", "5-", "123"), Err(NotANumber));
+        assert_eq!(launch_request(at, "-", "500", "123"), Err(NotANumber));
+        assert_eq!(launch_request(at, "+500", "5", "123"), Err(NotANumber));
+        assert_eq!(launch_request(at, "40000000", "0", "123"), Err(OutsideWorld));
+        assert_eq!(launch_request(at, "0", "-99999999999999999999999", "123"), Err(OutsideWorld));
+        assert_eq!(launch_request(at, "30", "40", "123"), Err(TooNear(50)));
+        assert_eq!(launch_request(at, "3000", "4000", "123"), Err(TooFar(5000)));
+        assert_eq!(launch_request([100, 100], "130", "140", "123"), Err(TooNear(50)));
+        assert_eq!(launch_request(at, "500", "5", "12a"), Err(NotANumber));
+        assert_eq!(launch_request(at, "500", "5", "12"), Err(CodeLength));
+        assert_eq!(launch_request(at, "500", "5", "123456789"), Err(CodeLength));
+        assert_eq!(launch_request([100, 100], "-500", "-1000", "123"), Ok(([-500, -1000], "123".to_owned())));
+        assert_eq!(launch_request(at, "4096", "0", "12345678"), Ok(([4096, 0], "12345678".to_owned())));
+        assert_eq!(launch_request(at, "-100", "0", "000"), Ok(([-100, 0], "000".to_owned())));
+    }
+
+    #[test]
+    fn a_console_takes_its_first_code_then_only_that_code() {
+        use LaunchRefusal::*;
+        let mut c = Console::default();
+        assert_eq!(c.check("12", 0), Err(CodeLength));
+        assert_eq!(c.check("", 0), Err(Empty));
+        assert_eq!(c.check("12a4", 0), Err(NotANumber));
+        assert_eq!(c.code, None);
+        assert_eq!(c.check("1234", 0), Ok(()));
+        assert_eq!(c.code.as_deref(), Some("1234"));
+        assert_eq!(c.check("1234", 1), Ok(()));
+        assert_eq!(c.check("9999", 2), Err(WrongCode(2)));
+        assert_eq!(c.check("1234", 3), Ok(()), "the right code clears the wrong ones");
+        assert_eq!(c.check("9999", 4), Err(WrongCode(2)));
+        assert_eq!(c.check("9999", 5), Err(WrongCode(1)));
+        assert_eq!(c.check("9999", 6), Err(Locked(LOCK_TICKS)));
+        assert_eq!(c.check("1234", 7), Err(Locked(LOCK_TICKS - 1)));
+        assert_eq!(c.check("1234", 6 + LOCK_TICKS), Ok(()));
+        // A lock read from a world whose clock went back is cut to its own length.
+        let mut c = Console { locked_until: 1_000_000, ..c };
+        assert_eq!(c.check("1234", 10), Err(Locked(LOCK_TICKS)));
+    }
+
+    #[test]
+    fn a_target_in_the_nether_is_under_the_roof() {
+        let f = Flight { dimension: "minecraft:the_nether".into(), surface: Some(128), ..missile() };
+        let Leg::Impact { at } = f.leg(10_000) else { panic!("{:?}", f.leg(10_000)) };
+        assert!(at[1] <= 123, "{at:?}");
+        let (pos, _, _) = descent(&f, f.lands_at() - 1);
+        assert!(pos[1] <= 123.5, "{pos:?}");
+        let low = Flight { dimension: "minecraft:the_nether".into(), surface: Some(40), ..missile() };
+        assert_eq!(low.leg(10_000), Leg::Impact { at: [1000, 40, 0] });
+    }
+
+    #[test]
+    fn a_plane_flies_over_the_beacon_and_drops_its_bomb_close_to_it() {
+        let beacon = [0.5, 64.0, 0.5];
+        let mut ways = BTreeSet::new();
+        for seed in [1, 2, 3, 99, 12345, u64::MAX] {
+            let p = Pass::new([0, 64, 0], 1000, seed);
+            assert!(p.plane(999).is_none());
+            let (first, _) = p.plane(1000).unwrap();
+            assert!(near(flat(first, beacon), 150.0, 1.0) && near(first[1], 184.0, 1e-9), "{first:?}");
+            ways.insert([((first[0] - 0.5) / 15.0).round() as i64, ((first[2] - 0.5) / 15.0).round() as i64]);
+            let closest = (1000..1300).filter_map(|t| p.plane(t)).map(|(at, _)| flat(at, beacon)).fold(f64::MAX, f64::min);
+            assert!(closest <= 1.6, "{seed}: {closest}");
+            // It faces the way it flies, level.
+            let ((a, yaw), (b, _)) = (p.plane(1010).unwrap(), p.plane(1011).unwrap());
+            let d = looks(yaw, 0.0);
+            let step = [b[0] - a[0], b[2] - a[2]];
+            assert!(near(step[0].hypot(step[1]), 3.0, 1e-9) && near(d[0] * step[0] + d[2] * step[1], 3.0, 1e-6), "{seed}");
+            // The bomb leaves the plane and falls.
+            assert!(p.release >= 1000 && p.plane(p.release).is_some());
+            assert!(p.bomb(p.release - 1).is_none());
+            assert!(flat(p.bomb(p.release).unwrap(), p.plane(p.release).unwrap().0) < 1e-9);
+            for k in 1..60 {
+                let (now, before) = (p.bomb(p.release + k).unwrap(), p.bomb(p.release + k - 1).unwrap());
+                assert!(now[1] < before[1], "{seed}: {k}");
+            }
+            let t = p.impact(64).unwrap();
+            let at = p.bomb(t).unwrap();
+            assert!(flat(at, beacon) <= 4.0 && at[1] <= 64.0, "{seed}: {at:?}");
+            assert!(p.bomb(t - 1).unwrap()[1] > 64.0);
+            // Lower ground is met later.
+            assert!(p.impact(40).unwrap() > t);
+        }
+        assert!(ways.len() > 3, "the planes come from different ways: {ways:?}");
+    }
+
+    #[test]
+    fn a_plane_leaves_and_is_gone() {
+        let beacon = [0.5, 64.0, 0.5];
+        for seed in [4, 5, 6] {
+            let p = Pass::new([0, 64, 0], 0, seed);
+            let last = (0..1000).filter(|t| p.plane(*t).is_some()).max().unwrap();
+            assert!((0..=last).all(|t| p.plane(t).is_some()));
+            let ((start, _), (end, _)) = (p.plane(0).unwrap(), p.plane(last).unwrap());
+            // Out on the other side of the beacon, not yet 150 blocks past it.
+            assert!((start[0] - 0.5) * (end[0] - 0.5) + (start[2] - 0.5) * (end[2] - 0.5) < 0.0);
+            assert!(flat(end, beacon) < 150.0 && flat(end, beacon) > 140.0, "{end:?}");
+            assert!(p.plane(last + 1).is_none() && p.plane(last + 1000).is_none());
+        }
     }
 }
