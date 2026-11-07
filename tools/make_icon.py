@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Draws the catalog's picture: a yellow bomb with a black trefoil, a mushroom cloud behind it.
+"""Draws the catalogue's picture: a mushroom cloud with the radiation sign in its cap, on a hazard-yellow tile.
 
     python tools/make_icon.py
 
-Original pixel art, the same every time: drawn on a 64x64 grid and written 4x as icon.png, 256x256.
+Original pixel art, the same every time: drawn on a 64x64 grid and written 8x as icon.png, 512x512. The design
+is a silhouette first, so it still reads at the 48 px of the catalogue's lists: a black cloud on the yellow of
+the mod's atomic bomb, the trefoil cut out of the cap, the flash at its foot throwing rays across the tile, and a
+band of hazard stripes along the ground.
 """
 import math
 from pathlib import Path
@@ -12,151 +15,139 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 N = 64
-SCALE = 4
+SCALE = 8
 
-SKY = [(46, 28, 46), (70, 34, 50), (104, 42, 50), (146, 60, 48), (194, 94, 52), (232, 146, 70)]
-GROUND = (50, 42, 38)
-GROUND_DARK = (36, 30, 28)
-ASH = (112, 104, 96)
-CLOUD_LIGHT = (250, 222, 170)
-CLOUD = (230, 170, 104)
-CLOUD_SHADE = (176, 102, 62)
-STEM = (204, 132, 80)
-STEM_SHADE = (150, 84, 54)
-FIREBALL = (255, 206, 92)
-OUTLINE = (30, 24, 24)
-YELLOW = (240, 200, 40)
-YELLOW_LIGHT = (255, 238, 128)
-YELLOW_SHADE = (198, 150, 22)
-YELLOW_DEEP = (150, 106, 12)
-STEEL = (76, 80, 90)
-STEEL_LIGHT = (122, 128, 140)
-TREFOIL = (24, 20, 20)
+INK = (22, 18, 26)
+# The bomb's yellow, dark to light; the sky gets lighter toward the flash.
+YELLOW = [(170, 120, 18), (226, 176, 32), (255, 214, 48), (255, 238, 130), (255, 252, 210)]
+FLASH = (255, 255, 242)
+FLASH_RING = (255, 200, 92)
+FLASH_LINE = (250, 140, 52)
+RIM = (150, 70, 26)
+CLEAR = (0, 0, 0, 0)
+
+FLASH_AT = (32.0, 52.0)  # the foot of the cloud, where the bomb went off
+RING = (33, 11, 3)       # centre y, half width and half height of the ring round the stem
+RAY = 30                 # degrees from one ray of light to the next
+CORNER = 4               # radius of the tile's rounded corners
+N4 = ((1, 0), (-1, 0), (0, 1), (0, -1))
+N8 = N4 + ((1, 1), (1, -1), (-1, 1), (-1, -1))
 
 
-def ellipse(x, y, cx, cy, rx, ry):
-    return ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1.0
+def cells():
+    for y in range(N):
+        for x in range(N):
+            yield x, y
+
+
+def disc(cx, cy, r):
+    return {(x, y) for x, y in cells() if (x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 <= r * r}
+
+
+def ellipse(cx, cy, rx, ry):
+    return {(x, y) for x, y in cells() if ((x + 0.5 - cx) / rx) ** 2 + ((y + 0.5 - cy) / ry) ** 2 <= 1}
+
+
+def outside(shape, nb=N4):
+    return {(x + dx, y + dy) for x, y in shape for dx, dy in nb if (x + dx, y + dy) not in shape}
 
 
 def sky(p):
-    band = (N - 14) / len(SKY)
-    for y in range(N):
-        for x in range(N):
-            p[x, y] = SKY[min(len(SKY) - 1, int(y / band))]
+    """Bands of yellow round the flash, darker toward the corners, every other ray a band lighter."""
+    fx, fy = FLASH_AT
+    for x, y in cells():
+        dx, dy = x + 0.5 - fx, y + 0.5 - fy
+        band = sum(math.hypot(dx / 1.2, dy) > b for b in (12, 22, 35, 50))
+        if band >= 2 and math.degrees(math.atan2(dy, dx)) % RAY < RAY / 2:
+            band -= 1
+        p[x, y] = YELLOW[4 - band]
 
 
-def cloud(p):
-    """A mushroom cloud far off on the right: a stem from the ground, a cap with a darker underside."""
-    for y in range(N):
-        for x in range(N):
-            c = None
-            # The stem widens at its foot, where the fireball still glows.
-            half = 3 + max(0, y - 40) * 0.35
-            if 20 <= y <= 50 and abs(x - 48 + 0.5) <= half:
-                c = STEM_SHADE if x >= 49 else STEM
-                if y >= 46:
-                    c = FIREBALL if abs(x - 48 + 0.5) <= half - 2 else STEM
-            # The ring round the stem, under the cap.
-            if ellipse(x, y, 48, 25, 9, 2.5):
-                c = CLOUD_SHADE
-            # The cap: lit on top, shaded below.
-            if ellipse(x, y, 48, 17, 13, 7.5):
-                c = CLOUD_SHADE if y >= 20 else CLOUD
-                if ellipse(x, y, 45, 14, 8, 4):
-                    c = CLOUD_LIGHT
-            if c is not None:
-                p[x, y] = c
+def cloud():
+    """The cloud's silhouette: a lumpy cap, a ring of condensation round the stem below it, the stem widening to
+    a skirt of dust at its foot. Returns the whole silhouette and the ring and the stem in it, as pixel sets."""
+    cx = 32
+    cap = set()
+    for x, y, r in ((0, 15, 10), (-10, 16, 8), (10, 16, 8), (-18, 20, 6), (18, 20, 6), (-5, 11, 6), (5, 11, 6),
+                    (-20.5, 24, 3.8), (20.5, 24, 3.8), (-14, 24.5, 4.6), (14, 24.5, 4.6), (-6, 24, 5.2),
+                    (6, 24, 5.2), (0, 20, 9)):
+        cap |= disc(cx + x, y, r)
+    stem = set()
+    for x, y in cells():
+        if 26 <= y <= 50:
+            t = (y + 0.5 - 26) / 24
+            if abs(x + 0.5 - cx) <= 3.4 + 2.2 * t * t:
+                stem.add((x, y))
+    ring = ellipse(cx, *RING)
+    skirt = disc(cx, 48, 6.5) | disc(cx - 7, 50, 4.6) | disc(cx + 7, 50, 4.6) | disc(cx - 13, 51.5, 3.4) \
+        | disc(cx + 13, 51.5, 3.4)
+    return cap | stem | ring | skirt, ring, stem
 
 
-def ground(p):
-    for y in range(N - 14, N):
-        for x in range(N):
-            p[x, y] = GROUND_DARK if (x * 7 + y * 3) % 11 == 0 else GROUND
-    for x in range(N):
-        p[x, N - 14] = ASH
-
-
-def in_body(x, y):
-    """The bomb's body: a round nose on the left, a cylinder, a taper to the tail."""
-    cy = 39.5
-    if ellipse(x, y, 17, cy, 11, 10):
+def trefoil(x, y, cx=32.0, cy=15.5, r=1.8):
+    """The radiation sign: a dot and three blades 60 degrees wide, centred on 30, 150 and 270 degrees."""
+    dx, dy = x + 0.5 - cx, cy - (y + 0.5)
+    d = math.hypot(dx, dy)
+    if d <= r:
         return True
-    if 17 <= x <= 38 and abs(y - cy) <= 10:
-        return True
-    if 38 < x <= 46:
-        half = 10 - (x - 38) * 0.75
-        return abs(y - cy) <= half
-    return False
-
-
-def in_fins(x, y):
-    """Two fins and the box round them, at the tail."""
-    cy = 39.5
-    if 44 <= x <= 54 and abs(y - cy) <= 2.5:
-        return True
-    for sign in (-1, 1):
-        d = (y - cy) * sign
-        if 46 <= x <= 54 and 2 <= d <= 4 + (x - 46) * 0.9:
-            return True
-    return False
-
-
-def bomb(p):
-    body = {(x, y) for y in range(N) for x in range(N) if in_body(x, y)}
-    fins = {(x, y) for y in range(N) for x in range(N) if in_fins(x, y)} - body
-    for x, y in fins:
-        p[x, y] = STEEL_LIGHT if y < 39.5 else STEEL
-    for x, y in body:
-        top = y - 29.5
-        if top < 4:
-            c = YELLOW_LIGHT
-        elif top < 13:
-            c = YELLOW
-        elif top < 17:
-            c = YELLOW_SHADE
-        else:
-            c = YELLOW_DEEP
-        p[x, y] = c
-    # The seams between the nose, the body and the tail.
-    for y in range(N):
-        for x in (20, 42):
-            if (x, y) in body and (x, y - 1) in body and (x, y + 1) in body:
-                p[x, y] = YELLOW_SHADE
-    # A dark outline round the whole bomb.
-    shape = body | fins
-    for x, y in shape:
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            q = (x + dx, y + dy)
-            if q not in shape and 0 <= q[0] < N and 0 <= q[1] < N:
-                p[q] = OUTLINE
-
-
-def trefoil(p, cx=31.0, cy=39.5, inner=2.8, outer=8.4):
-    """The radiation sign: three blades 60 degrees wide round a dot."""
-    for y in range(N):
-        for x in range(N):
-            dx, dy = x + 0.5 - cx - 0.5, cy - (y + 0.5) + 0.5
-            r = math.hypot(dx, dy)
-            if r <= 1.8:
-                p[x, y] = TREFOIL
-                continue
-            if not inner <= r <= outer:
-                continue
-            a = math.degrees(math.atan2(dy, dx)) % 360
-            # Blades centred on 30, 150 and 270 degrees: up-right, up-left, down.
-            if any(abs((a - c + 180) % 360 - 180) <= 30 for c in (30, 150, 270)):
-                p[x, y] = TREFOIL
+    if not 1.6 * r <= d <= 5.2 * r:
+        return False
+    a = math.degrees(math.atan2(dy, dx)) % 360
+    return any(abs((a - c + 180) % 360 - 180) <= 30 for c in (30, 150, 270))
 
 
 def main():
-    im = Image.new("RGB", (N, N))
+    im = Image.new("RGBA", (N, N))
     p = im.load()
     sky(p)
-    cloud(p)
-    ground(p)
-    bomb(p)
-    trefoil(p)
-    im.convert("RGBA").resize((N * SCALE, N * SCALE), Image.NEAREST).save(ROOT / "icon.png", optimize=True)
+
+    shape, ring, stem = cloud()
+    # A line of sky above the ring either side of the stem, so it stands apart from the cap.
+    gap = {(x, y) for x, y in outside(ring) - ring - stem if y < 32}
+    shape -= gap
+    for x, y in shape:
+        p[x, y] = INK
+    for x, y in gap:
+        p[x, y] = YELLOW[3]
+    # The flash lights the underside of the cap and the ring from below.
+    for x, y in shape:
+        if y >= 20 and (x, y + 1) not in shape:
+            p[x, y] = RIM
+
+    # The ground, the flash on it and the shock running out along it.
+    fx, fy = FLASH_AT
+    for x, y in cells():
+        if y >= 53:
+            p[x, y] = INK
+        e = ((x + 0.5 - fx) / 8) ** 2 + ((y + 0.5 - (fy + 1)) / 3.2) ** 2
+        if e <= 1:
+            p[x, y] = FLASH if e < 0.35 else FLASH_RING
+        elif y == 53 and 3 <= x <= 60:
+            p[x, y] = FLASH_RING if abs(x + 0.5 - fx) <= 20 else FLASH_LINE
+
+    for x, y in cells():
+        if trefoil(x, y):
+            p[x, y] = YELLOW[3]
+    # Hazard stripes along the bottom.
+    for x in range(N):
+        for y in range(56, 61):
+            if (x + y) // 4 % 2 == 0:
+                p[x, y] = YELLOW[2]
+
+    # Round the corners and ring the tile in ink.
+    tile = set()
+    for x, y in cells():
+        cx = min(max(x + 0.5, CORNER), N - CORNER)
+        cy = min(max(y + 0.5, CORNER), N - CORNER)
+        if (x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 <= CORNER * CORNER:
+            tile.add((x, y))
+    for x, y in cells():
+        if (x, y) not in tile:
+            p[x, y] = CLEAR
+        elif any((x + dx, y + dy) not in tile for dx, dy in N8):
+            p[x, y] = INK
+
+    im.resize((N * SCALE, N * SCALE), Image.NEAREST).save(ROOT / "icon.png", optimize=True)
 
 
 if __name__ == "__main__":
