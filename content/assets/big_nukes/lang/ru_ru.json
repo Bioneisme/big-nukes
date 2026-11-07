@@ -212,5 +212,13 @@
   "big_nukes.tip.air_filter": "С питанием от генератора не пускает 95% радиации в свою закрытую комнату.",
   "big_nukes.tip.air_filter.2": "Комната: кругом стены и закрытые двери, не больше 4096 блоков воздуха, ни одной щели к небу.",
   "big_nukes.tip.bunker_lamp": "Светит, пока в 16 блоках горит генератор.",
-  "big_nukes.tip.ration": "Сытный и съедается быстро: еда для долгого сидения в бункере."
+  "big_nukes.tip.ration": "Сытный и съедается быстро: еда для долгого сидения в бункере.",
+  "big_nukes.screen.fuel_generator": "Топливный генератор",
+  "big_nukes.screen.fuel_generator.burning": "Питает всё в %s блоках",
+  "big_nukes.screen.fuel_generator.idle": "Положите печное топливо",
+  "big_nukes.screen.air_filter": "Фильтр воздуха",
+  "big_nukes.screen.air_filter.powered": "Питание есть",
+  "big_nukes.screen.air_filter.unpowered": "Нет горящего генератора в %s блоках",
+  "big_nukes.screen.air_filter.sealed": "Закрытая комната: %s блоков воздуха",
+  "big_nukes.screen.air_filter.open": "Комната не закрыта или больше %s блоков"
 }

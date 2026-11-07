@@ -679,6 +679,7 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     if !matches!(phase, ServerTickPhase::ServerTickEnd { world_running: true }) || !game.native_on(rules::ID) {
         return;
     }
+    bunker::server_tick();
     let Some(mut guard) = state(game) else { return };
     let st = guard.as_mut().expect("opened");
     st.saved.tick += 1;
@@ -953,6 +954,7 @@ fn has_entity(block: &str) -> bool {
         || rules::BombKind::of_block(block).is_some()
         || is_part(block)
         || silo::has_entity(block)
+        || bunker::has_entity(block)
 }
 
 pub(in crate::game) fn block_entity(block: &str, entity: &mut Option<(String, Compound)>) {
@@ -974,6 +976,7 @@ pub(in crate::game) fn container(block: &str, container: &mut Option<ModContaine
         rules::ASSEMBLY_TABLE => *container = Some(assembly_container()),
         rules::DECONTAMINATOR => *container = Some(decon::container()),
         block if silo::has_entity(block) => *container = Some(silo::container(block)),
+        block if bunker::has_entity(block) => *container = bunker::container(block),
         block if is_part(block) => *container = Some(bomb_container(rules::BombKind::Sunbreaker)),
         _ => {
             if let Some(kind) = rules::BombKind::of_block(block) {
@@ -993,6 +996,7 @@ pub(in crate::game) fn tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut Mod
         rules::DECONTAMINATOR => decon::tick(game, pos, entity),
         id if rules::BombKind::of_block(id).is_some() => bomb_tick(game, pos, entity),
         id if silo::has_entity(id) => silo::tick(game, pos, entity),
+        id if bunker::has_entity(id) => bunker::tick(game, pos, entity),
         _ => {}
     }
 }
@@ -1017,6 +1021,7 @@ pub(in crate::game) fn screen(block: &str, screen: &mut Option<NativeScreen>) {
         block if keypad_bomb(block) || is_part(block) => *screen = Some(keypad_screen()),
         rules::LAUNCH_PAD => *screen = Some(silo::pad_screen()),
         rules::LAUNCH_CONSOLE => *screen = Some(silo::console_screen()),
+        block if bunker::has_entity(block) => *screen = bunker::screen(block),
         _ => {}
     }
 }
@@ -1031,6 +1036,7 @@ pub(in crate::game) fn screen_draw(game: &Game<'_>, block: &str, data: &[i32], b
         block if is_part(block) => keypad_draw(game, rules::SUNBREAKER_CORE, data, batch, origin),
         rules::LAUNCH_PAD => silo::pad_draw(game, batch, origin),
         rules::LAUNCH_CONSOLE => silo::console_draw(game, data, batch, origin),
+        block if bunker::has_entity(block) => bunker::screen_draw(game, block, data, batch, origin),
         _ => {}
     }
 }
@@ -1070,6 +1076,9 @@ fn centrifuge_container() -> ModContainer {
 
 /// What a hopper may put in: uranium the centrifuge works in its slot, fuel in the other.
 pub(in crate::game) fn accepts(game: &Game<'_>, entity: &ModBlockEntity, slot: usize, stack: &ItemStack, cancel: &mut bool) {
+    if !*cancel && bunker::accepts(game, &entity.id, slot, stack, cancel) {
+        return;
+    }
     if entity.id == rules::LAUNCH_PAD && !*cancel {
         *cancel = !rules::pad_takes(slot, &stack.item);
         return;
@@ -1178,6 +1187,9 @@ fn centrifuge_tick(game: &mut Game<'_>, entity: &mut ModBlockEntity) {
 /// A shift-click from the inventory: uranium it works to its slot, fuel to its slot,
 /// nothing else. One from the centrifuge goes the game's way, to the inventory.
 pub(in crate::game) fn quick_move(game: &Game<'_>, entity: &mut ModBlockEntity, container_slots: usize, slot: usize, stack: &mut ItemStack, handled: &mut bool) {
+    if bunker::quick_move(game, entity, container_slots, slot, stack, handled) {
+        return;
+    }
     // Nothing moves into or out of a bomb's hidden slot, nor a console's, a beacon's or a Sunbreaker's block's.
     if rules::BombKind::of_block(&entity.id).is_some()
         || is_part(&entity.id)
@@ -1511,7 +1523,7 @@ fn keypad_menu_known() -> bool {
 /// One with no core near opens nothing, and takes a block placed against it only
 /// from a sneaking player, as the core does.
 pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
-    if *canceled || !game.native_on(rules::ID) || silo::right_click(game, pos, canceled) {
+    if *canceled || !game.native_on(rules::ID) || silo::right_click(game, pos, canceled) || bunker::right_click(game, pos, canceled) {
         return;
     }
     let block = game.native_block(pos);
@@ -1757,11 +1769,13 @@ pub(in crate::game) fn player_tick(game: &mut Game<'_>) {
     let worn = [EquipmentSlot::Head, EquipmentSlot::Chest, EquipmentSlot::Legs, EquipmentSlot::Feet]
         .map(|slot| game.native_equipment(slot));
     let suit: [bool; 4] = std::array::from_fn(|i| worn[i].as_ref().is_some_and(|s| &*s.item == rules::HAZMAT[i].0));
+    // A roof halves the background, a powered filter's sealed room keeps out most of it.
+    let shelter = bunker::shelter(game, &who);
     let Some(mut guard) = state(game) else { return };
     let st = guard.as_mut().expect("opened");
     let had = st.saved.doses.contains_key(&rules::dose_key(who.uuid));
     let protection = rules::shielded(rules::protection(suit[0], suit[1], suit[2], suit[3]), iodine);
-    let Some(background) = st.saved.expose(who.uuid, &who.dimension, who.position, protection) else {
+    let Some(background) = st.saved.expose(who.uuid, &who.dimension, who.position, protection, shelter) else {
         return;
     };
     st.dirty |= had || background > 0.0;
@@ -1817,7 +1831,8 @@ fn rad_news(game: &Game<'_>, st: &mut State) -> Vec<(u128, Vec<u8>)> {
     }
     let mut news = Vec::new();
     for p in game.native_server_players() {
-        let rad = st.saved.rad_for(p.uuid, &p.dimension, p.position);
+        let mut rad = st.saved.rad_for(p.uuid, &p.dimension, p.position);
+        rad.shelter = bunker::shelter_of(p.uuid);
         if rad.is_empty() {
             if !st.told.remove(&p.uuid) {
                 continue;

@@ -2813,10 +2813,27 @@ impl Saved {
 
     /// A second of the player's exposure at `pos`, with `protection` kept out:
     /// the background there, or None when a second hasn't passed since the last.
-    /// A player with no dose is looked at on the second's ticks; one with a
-    /// dose a second after the last time, which holds while the clock stands.
-    pub fn expose(&mut self, uuid: u128, dimension: &str, pos: [f64; 3], protection: f64) -> Option<f64> {
-        self.expose_sheltered(uuid, dimension, pos, protection, 1.0)
+
+    /// A second of the player's exposure at `pos`, with `protection` kept out and the share `shelter`
+    /// (`shelter`) of the background let in where they are: the background they take, or None when a
+    /// second hasn't passed since the last.
+    pub fn expose(&mut self, uuid: u128, dimension: &str, pos: [f64; 3], protection: f64, shelter: f64) -> Option<f64> {
+        let (now, key) = (self.tick, dose_key(uuid));
+        // A player with no dose is looked at on the second's ticks; one with a
+        // dose a second after the last time, which holds while the clock stands.
+        match self.doses.get(&key) {
+            Some(d) if now < d.stepped + SECOND => return None,
+            None if now % SECOND != 0 => return None,
+            _ => {}
+        }
+        let bg = background(&self.zones, &self.cleans, dimension, pos, now) * shelter.clamp(0.0, 1.0);
+        let dose = self.doses.entry(key.clone()).or_default();
+        dose.rad = dose_step(dose.rad, bg, protection);
+        dose.stepped = now;
+        if dose.rad <= 0.0 {
+            self.doses.remove(&key);
+        }
+        Some(bg)
     }
 
     /// The player's stage and the damage due now, once a second; the damage's
@@ -3635,25 +3652,6 @@ impl Saved {
         }
         changed
     }
-
-    /// A second of the player's exposure, as `expose`, under a `shelter` (`shelter`): the background they
-    /// take, the shelter's share of what is outside.
-    pub fn expose_sheltered(&mut self, uuid: u128, dimension: &str, pos: [f64; 3], protection: f64, shelter: f64) -> Option<f64> {
-        let (now, key) = (self.tick, dose_key(uuid));
-        match self.doses.get(&key) {
-            Some(d) if now < d.stepped + SECOND => return None,
-            None if now % SECOND != 0 => return None,
-            _ => {}
-        }
-        let bg = background(&self.zones, &self.cleans, dimension, pos, now) * shelter.clamp(0.0, 1.0);
-        let dose = self.doses.entry(key.clone()).or_default();
-        dose.rad = dose_step(dose.rad, bg, protection);
-        dose.stepped = now;
-        if dose.rad <= 0.0 {
-            self.doses.remove(&key);
-        }
-        Some(bg)
-    }
 }
 
 // ---- the shelter ----
@@ -3769,10 +3767,6 @@ impl Generator {
         self.burn -= 1;
         step.made = true;
         step
-    }
-
-    pub fn burning(&self) -> bool {
-        self.burn > 0
     }
 
     /// The menu's data slots, `[burn, burn_max]`, within a data slot's 16 bits.
@@ -7132,11 +7126,11 @@ mod tests {
         saved.blast(OW, [0, 64, 0], 120).unwrap();
         let mid = [0.5, 64.5, 0.5];
         // Once a second, however often the player ticks.
-        assert!(saved.expose(me, OW, mid, 0.0).is_some());
-        assert!(saved.expose(me, OW, mid, 0.0).is_none());
+        assert!(saved.expose(me, OW, mid, 0.0, 1.0).is_some());
+        assert!(saved.expose(me, OW, mid, 0.0, 1.0).is_none());
         for _ in 0..59 {
             saved.tick += SECOND;
-            let bg = saved.expose(me, OW, mid, 0.0).unwrap();
+            let bg = saved.expose(me, OW, mid, 0.0, 1.0).unwrap();
             assert!(bg > 9.0, "the zone fades a little in a minute: {bg}");
         }
         let rad = saved.doses[&key].rad;
@@ -7148,7 +7142,7 @@ mod tests {
         // Away from the zone it heals.
         let away = [1000.5, 64.5, 0.5];
         saved.tick += SECOND;
-        assert_eq!(saved.expose(me, OW, away, 0.0), Some(0.0));
+        assert_eq!(saved.expose(me, OW, away, 0.0, 1.0), Some(0.0));
         assert!(close(saved.doses[&key].rad, rad - 0.5));
         // The drug takes some off, never below 0, and the entry goes at 0.
         assert!(saved.take_dose(me, 300.0));
@@ -7158,11 +7152,11 @@ mod tests {
         assert!(!saved.take_dose(me, 300.0));
         // Nothing builds where there is nothing, and no entry is made.
         saved.tick += SECOND;
-        assert_eq!(saved.expose(me, OW, away, 0.0), Some(0.0));
+        assert_eq!(saved.expose(me, OW, away, 0.0, 1.0), Some(0.0));
         assert!(saved.doses.is_empty());
         // Death clears it.
         saved.tick += SECOND;
-        saved.expose(me, OW, mid, 0.0).unwrap();
+        saved.expose(me, OW, mid, 0.0, 1.0).unwrap();
         assert!(saved.died(me));
         assert!(saved.doses.is_empty());
         assert!(!saved.died(me));
@@ -9372,8 +9366,8 @@ mod bunker_tests {
         let mut open = Saved { zones: vec![zone.clone()], ..Saved::default() };
         let mut inside = Saved { zones: vec![zone], ..Saved::default() };
         let (me, at) = (7u128, [0.5, 64.5, 0.5]);
-        let bg = open.expose(me, OW, at, 0.0).unwrap();
-        let sheltered = inside.expose_sheltered(me, OW, at, 0.0, shelter(false, true)).unwrap();
+        let bg = open.expose(me, OW, at, 0.0, 1.0).unwrap();
+        let sheltered = inside.expose(me, OW, at, 0.0, shelter(false, true)).unwrap();
         assert!((sheltered - bg / 20.0).abs() < 1e-9, "{bg} {sheltered}");
         let dose = |s: &Saved| s.doses[&dose_key(me)].rad;
         assert!(((dose(&open) + HEAL) / (dose(&inside) + HEAL) - 20.0).abs() < 1e-9);
@@ -9419,17 +9413,17 @@ mod bunker_tests {
     #[test]
     fn the_generator_burns_fuel_twice_as_long_as_a_furnace() {
         let mut g = Generator::default();
-        assert!(!g.burning());
+        assert_eq!(g.burn, 0);
         assert_eq!(g.step(None), Step::IDLE);
         let step = g.step(Some(1600));
-        assert!(step.took_fuel && step.made && g.burning());
+        assert!(step.took_fuel && step.made && g.burn > 0);
         assert_eq!(g.burn_max, 3200);
         let mut ticks = 1;
         while g.step(None).made {
             ticks += 1;
         }
         assert_eq!(ticks, 3200);
-        assert!(!g.burning());
+        assert_eq!(g.burn, 0);
         assert_eq!(g.step(Some(0)), Step::IDLE, "nothing that burns");
         assert_eq!(g.data(), [0, 3200]);
     }
@@ -9543,5 +9537,24 @@ mod bunker_tests {
                 assert!(lang.contains_key(k), "{k}");
             }
         }
+    }
+
+    #[test]
+    fn the_generator_and_the_filter_have_their_menus() {
+        for (block, slots, data) in [(FUEL_GENERATOR, GENERATOR_SLOTS, Generator::default().data().len()), (AIR_FILTER, FILTER_SLOTS, filter_data(true, Some(9)).len())] {
+            let (ns, name) = block.split_once(':').unwrap();
+            let menu = json(&format!("content/data/{ns}/horizon/menu/{name}.json"));
+            assert_eq!(menu["slots"], slots, "{block}");
+            assert_eq!(menu["data_slots"], data, "{block}");
+            assert_eq!(menu["results"], serde_json::json!([]), "{block}");
+        }
+        // The generator's fuel slot is laid out as the decontaminator's, whose shift-click it shares.
+        assert_eq!((GENERATOR_FUEL_SLOT, GENERATOR_SLOTS), (DECON_FUEL_SLOT, DECON_SLOTS));
+        assert_eq!(filter_data(true, Some(120)), [1, 1, 120]);
+        assert_eq!(filter_data(true, None), [1, 0, 0]);
+        assert_eq!(filter_data(false, None), [0, 0, 0]);
+        assert_eq!(filter_data(true, Some(100_000))[2], i16::MAX as i32);
+        let big = Generator { burn: 40_000, burn_max: 40_000 };
+        assert_eq!(big.data(), [i16::MAX as i32, i16::MAX as i32]);
     }
 }

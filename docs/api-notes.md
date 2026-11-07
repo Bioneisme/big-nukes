@@ -272,3 +272,24 @@ Read in the source of 66f3981, not yet seen in the game:
   its columns is in a chunk not loaded, as the edit would skip it for good.
 - The decontaminator's block entity ticks only in a loaded chunk; its circle is the world's (`Saved.cleans`), so the
   background is cleaned there with the chunk unloaded or the block broken.
+
+## The bunker
+
+Read in the source of 66f3981, not yet seen in the game:
+- `native_edit_blocks` (API 126) ignores hardness and explosion resistance, and its filters can't say "all but": only the
+  core's run is unfiltered, so the walls are a registry by chunk (`Saved.walls`). `GameLevel::native_block_changed`
+  (API 7) feeds it: it hears `Level.setBlock` (a player's placing, `/setblock`, `/fill`, pistons, vanilla explosions),
+  not the bulk edits nor chunk loads. Its plan answers what it cracked and broke; when the wave works a chunk the glue
+  also reads that chunk's registered walls with `native_block` (API 20) and corrects the registry.
+- `explosion_resistance` on the declared walls is vanilla's (600 and 1200, as obsidian's 1200): TNT and creepers.
+- The hermetic door copies `minecraft:iron_door`: its two halves, its placing and redstone are the template's. A hand
+  opens it in `native_right_click_block` (API 21): `native_set_block_property` (API 18) sets `open` on both halves,
+  the click heard once for both hands.
+- The lamp copies `minecraft:waxed_copper_bulb`, whose light follows `lit`; its block entity sets `lit` once a second
+  (API 18). The generator, the filter and the lamp tick as mod block entities on templates of their own (furnace,
+  copper bulb), as the assembly table does on the crafting table.
+- `native_light` (API 97) is `(block, sky)` at a place, `(0, 0)` in a chunk not loaded. A player's eyes with sky
+  light 0 are under a roof. A filter's room is filled through air (and open doors, trapdoors, gates) with
+  `native_block`/`native_block_property` (API 20); air with sky light is the sky, so a glass window unseals a room.
+  An unloaded chunk reads as dark air: the fill runs into the 4096 limit and the room isn't sealed.
+- The filter's menu has one hidden slot, as the launch console's: a mod menu has 1 slot at least.

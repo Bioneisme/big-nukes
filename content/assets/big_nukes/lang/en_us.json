@@ -212,5 +212,13 @@
   "big_nukes.tip.air_filter": "Powered by a generator, it keeps 95% of the radiation out of its sealed room.",
   "big_nukes.tip.air_filter.2": "The room: walls and closed doors all round, up to 4096 blocks of air, no gap to the sky.",
   "big_nukes.tip.bunker_lamp": "Shines while a burning generator is within 16 blocks.",
-  "big_nukes.tip.ration": "Filling and eaten fast: food for a long wait in the bunker."
+  "big_nukes.tip.ration": "Filling and eaten fast: food for a long wait in the bunker.",
+  "big_nukes.screen.fuel_generator": "Fuel Generator",
+  "big_nukes.screen.fuel_generator.burning": "Powers what is within %s blocks",
+  "big_nukes.screen.fuel_generator.idle": "Put furnace fuel in",
+  "big_nukes.screen.air_filter": "Air Filter",
+  "big_nukes.screen.air_filter.powered": "Powered",
+  "big_nukes.screen.air_filter.unpowered": "No burning generator within %s blocks",
+  "big_nukes.screen.air_filter.sealed": "Sealed room: %s blocks of air",
+  "big_nukes.screen.air_filter.open": "Room not sealed, or over %s blocks"
 }
