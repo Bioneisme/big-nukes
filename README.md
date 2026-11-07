@@ -131,7 +131,7 @@ alone is weak. TNT and creepers can't break any of these walls.
 - **Fuel Generator:** burns furnace fuel twice as long as a furnace and powers the air filters and lamps within 16
   blocks.
 - **Air Filter:** a powered filter goes round its room every 5 seconds. Shut by walls and closed doors, with up to 4096
-  blocks of air and no gap to the sky, the room is sealed and lets in only 5% of the radiation. An open door unseals it.
+  blocks of air and no gap to the sky or to the open air outside, the room is sealed and lets in only 5% of the radiation. An open door unseals it.
 - **Bunker Lamp:** shines while a burning generator is within 16 blocks.
 - **Ration:** filling and eaten fast, for the long wait.
 
@@ -206,7 +206,9 @@ Anyone can type `/bignukes guide`.
 - A lit fuse burns only while its chunk is loaded.
 - The crater stops under the Nether's roof. Blasts work in the Overworld, the Nether and the End, not in other
   dimensions.
-- A glass window lets the sky into a room, and a filter's room that reaches a chunk not loaded isn't sealed.
+- Only an opening to the open sky unseals a filter's room: a glass window in a wall doesn't, but a skylight does, and so
+  does a gap filled with something that lets air through (a fence, a pane, iron bars, a torch, leaves). A room that
+  reaches a chunk not loaded isn't sealed.
 - A remote sets off a Sunbreaker whose chunk isn't loaded with the radius its core last read. One never read refuses:
   come near it once.
 - A blast hurts as an ordinary explosion.
