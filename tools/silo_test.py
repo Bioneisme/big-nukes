@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Checks the silo in the game: a shaft of a launch pad, air and a hatch under the open sky, a console beside it;
-the console refuses a target too near, a wrong code and a shaft with no hatch, each with its reason; a launch opens
-the hatch, the missile climbs out as a display (target/shots/silo-*.png), the hatch shuts, and the missile comes
-down 1500 blocks off and goes off there, its target's chunk let go after; a launch survives the world closing
-mid-flight.
+a loaded pad shows its missile standing in the shaft, with or without its warhead, and stops when it is taken out;
+the console refuses a target too near, a wrong code and a shaft with no hatch, each with its reason; through the
+countdown the one missile stands in the shaft, then a launch opens the hatch, the missile climbs out as a display
+(target/shots/silo-*.png), the hatch shuts, and the missile comes down 1500 blocks off and goes off there, its
+target's chunk let go after; a launch survives the world closing mid-flight.
 
     python tools/silo_test.py GAME_FOLDER VERSION
 """
@@ -64,10 +65,15 @@ def messages():
     return json.dumps(ctl("messages", 20), ensure_ascii=False)
 
 
-def displays():
-    said = chat("execute if entity @e[type=minecraft:item_display]")
+def displays(where=""):
+    said = chat(f"execute if entity @e[type=minecraft:item_display{where}]")
     digits = "".join(c for c in said.split(":")[-1] if c.isdigit())
     return int(digits) if "passed" in said.lower() and digits else 0
+
+
+def at_pad(sx, sy, sz, tag=""):
+    """The displays standing in the shaft over the pad, with `tag` if given."""
+    return displays(f",x={sx + 0.5},y={sy + 1},z={sz + 0.5},distance=..2" + (f",tag={tag}" if tag else ""))
 
 
 def open_world():
@@ -156,6 +162,21 @@ at = (sx + 2, sy, sz)
 ctl("look-at", "block", *at)
 held = load(sx, sy, sz)
 check("the pad takes a missile and an atomic bomb", "big_nukes:missile" in held and "atomic_bomb" in held, held[:300])
+check("a loaded pad shows its missile in the shaft", at_pad(sx, sy, sz, "big_nukes_pad") == 1 and displays() == 1,
+      chat("execute if entity @e[type=minecraft:item_display]"))
+ctl("screenshot", os.path.join(SHOTS, "silo-loaded.png"))
+chat(f"item replace block {sx} {sy} {sz} container.0 with minecraft:air")
+ctl("wait", 2)
+check("taking the missile out takes it away", displays() == 0, chat("execute if entity @e[type=minecraft:item_display]"))
+chat(f"item replace block {sx} {sy} {sz} container.1 with minecraft:air")
+chat(f"item replace block {sx} {sy} {sz} container.0 with big_nukes:missile")
+ctl("wait", 2)
+check("a missile without its warhead shows too", at_pad(sx, sy, sz, "big_nukes_pad") == 1 and displays() == 1,
+      chat("execute if entity @e[type=minecraft:item_display]"))
+held = load(sx, sy, sz)
+ctl("wait", 40)
+check("it stays one display a few seconds on", at_pad(sx, sy, sz) == 1 and displays() == 1,
+      chat("execute if entity @e[type=minecraft:item_display]"))
 
 # The console says why it won't launch.
 console(at, sx + 50, sz, CODE, typed=True)
@@ -177,10 +198,16 @@ check("E doesn't close the console", ctl("screen").get("screen") == "container",
 said = messages()
 flights = saved().get("flights", [])
 check("Launch starts a flight", len(flights) == 1, f"{flights} / {said[-300:]}")
+check("in the countdown one missile stands in the shaft, the flight's",
+      at_pad(sx, sy, sz, "big_nukes_flight") == 1 and displays() == 1,
+      chat("execute if entity @e[type=minecraft:item_display]") + " / " + chat("execute if entity @e[type=minecraft:item_display,tag=big_nukes_pad]"))
 ctl("key", "esc", "tap")
 ctl("wait", 2)
 check("Escape closes it", ctl("screen").get("screen") == "playing", str(ctl("screen"))[:100])
-ctl("wait", 68)
+ctl("wait", 50)
+check("still one missile in the shaft late in the countdown", at_pad(sx, sy, sz, "big_nukes_flight") == 1 and displays() == 1,
+      chat("execute if entity @e[type=minecraft:item_display]"))
+ctl("wait", 18)
 check("the hatch opens in the countdown", "air" in json.dumps(ctl("block", sx, sy + 7, sz)), str(ctl("block", sx, sy + 7, sz)))
 ctl("wait", 40)
 ctl("screenshot", os.path.join(SHOTS, "silo-liftoff.png"))
@@ -230,6 +257,17 @@ zones = saved().get("zones", [])
 check("a flight goes on after the world reopens", len(zones) >= 2, json.dumps(zones)[:300])
 ctl("wait", 220)
 check("no display is left without its flight", displays() == 0, chat("execute if entity @e[type=minecraft:item_display]"))
+# A loaded pad's display goes with the world too: after it reopens there is one, and none once the pad is broken.
+load(sx, sy, sz)
+ctl("quit")
+time.sleep(8)
+open_world()
+ctl("wait", 40)
+check("a loaded pad shows one missile after the world reopens", at_pad(sx, sy, sz, "big_nukes_pad") == 1 and displays() == 1,
+      chat("execute if entity @e[type=minecraft:item_display]"))
+chat(f"setblock {sx} {sy} {sz} minecraft:air destroy")
+ctl("wait", 2)
+check("a broken pad takes its missile's display away", displays() == 0, chat("execute if entity @e[type=minecraft:item_display]"))
 ctl("quit")
 time.sleep(6)
 print(f"== failed: {failed}" if failed else "== all passed", flush=True)

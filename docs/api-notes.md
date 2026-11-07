@@ -200,6 +200,12 @@ Read in the source of 66f3981, not yet seen in the game:
   3 blocks) and moves the missile forward so its tail is the display's place.
 - The displays are saved with their chunks: each carries `big_nukes_flight`, its flight's and its session's tag,
   and the mod kills the tagged ones that belong to no flight of this session.
+- A loaded pad shows its missile the same way, standing in the pose the flight's climb starts in. The pad's
+  `native_block_entity_tick` only notes what its missile slot holds; the display is made, taken away and checked
+  once a second at the end of the level's tick. It carries `big_nukes_pad`, its pad's place, its session's and a
+  serial of its own, so a copy that comes back with its chunk is killed, and one a closed world left goes as the
+  flights' do. A launch takes it away in the same tick the flight's display is first made, which stands at the
+  pad's pose through the countdown.
 - A mod menu has 1 to 64 slots (`content.rs`): the console's menu has one hidden slot, as a keypad's.
 - `native_screen_key_pressed_pre` and `native_screen_char_typed_pre` (API 104) tell a block's mod menu apart by
   `screen.menu` (`big_nukes:console`). A cancelled key still sends its characters, so the digits come through the

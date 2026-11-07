@@ -24,7 +24,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -154,18 +154,21 @@ pub(in crate::game) fn pad_draw(game: &Game<'_>, batch: &mut HudBatch, origin: [
 
 // ---- the shared hooks --------------------------------------------------------------
 
-/// The end of a level's tick: the launches asked of its consoles, its missiles' flights and its bombers' passes.
-/// Only here do the helpers reach the level, the displays and the commands.
+/// The end of a level's tick: the launches asked of its consoles, its missiles' flights, its bombers' passes and
+/// the missiles its pads hold. Only here do the helpers reach the level, the displays and the commands.
 pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     launches(game, dimension);
     flights(game, dimension);
     strikes(game, dimension);
+    pads(game, dimension);
 }
 
 /// The silo's block entities' ticks.
 pub(in crate::game) fn tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity) {
-    if entity.id == rules::LAUNCH_CONSOLE {
-        console_tick(game, pos, entity);
+    match entity.id.as_str() {
+        rules::LAUNCH_CONSOLE => console_tick(game, pos, entity),
+        rules::LAUNCH_PAD => pad_tick(game, pos, entity),
+        _ => {}
     }
 }
 
@@ -199,6 +202,7 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
 pub(in crate::game) fn forget() {
     lock(&LAUNCHES).clear();
     lock(&DISPLAYS).clear();
+    lock(&PADS).clear();
     lock(&SWEEPS).clear();
     *lock(&SESSION) = None;
     lock(&TAKEN).clear();
@@ -347,6 +351,8 @@ fn launch(game: &mut Game<'_>, dimension: &str, who: &NativeServerPlayer, m: &ru
             }
         }
     });
+    // The flight's display takes its place at the end of this tick (`flights`).
+    hide_pad(game, dimension, pad);
     log::info!("[big_nukes] missile {}: {:?} from {pad:?} to {to:?} in {dimension}, by {}", flight.id, kind, who.name);
     if m.camera {
         news(game, who.uuid, &rules::ConsoleNews { now: flight.start, missile: Some(flight.clone()), ..Default::default() });
@@ -719,24 +725,30 @@ fn play(game: &mut Game<'_>, dimension: &str, sound: &str, at: [f64; 3], volume:
     run_in(game, dimension, &format!("playsound {sound} block @a {:.1} {:.1} {:.1} {volume:.1} {pitch:.2}", at[0], at[1], at[2]));
 }
 
-fn session_tag() -> String {
-    let session = *lock(&SESSION).get_or_insert_with(|| {
+fn session() -> u64 {
+    *lock(&SESSION).get_or_insert_with(|| {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64 % 1_000_000_000)
-    });
-    format!("{}_s{session}", rules::FLIGHT_TAG)
+    })
+}
+
+fn session_tag() -> String {
+    format!("{}_s{}", rules::FLIGHT_TAG, session())
 }
 
 fn flight_tag(id: u64) -> String {
     format!("{}_{id}", rules::FLIGHT_TAG)
 }
 
-/// An item display of `item`, tagged as the flight's, lit as by day, seen from afar and gliding between its
-/// places. Its model lies along z: `scale` makes it its size and `lift` moves it forward along its look.
-fn display_nbt(item: &str, scale: f32, lift: f32, yaw: f32, pitch: f32, flight: u64) -> Compound {
+fn flight_tags(flight: u64) -> [String; 3] {
+    [rules::FLIGHT_TAG.to_owned(), flight_tag(flight), session_tag()]
+}
+
+/// An item display of `item` with `tags`, lit as by day, seen from afar and gliding between its places. Its model
+/// lies along z: `scale` makes it its size and `lift` moves it forward along its look.
+fn display_nbt(item: &str, scale: f32, lift: f32, yaw: f32, pitch: f32, tags: &[String]) -> Compound {
     let float = |v: f32| Tag::Float(v.to_bits());
     let floats = |v: [f32; 4]| Tag::List(v.into_iter().map(float).collect());
     let three = |v: [f32; 3]| Tag::List(v.into_iter().map(float).collect());
-    let tags = [rules::FLIGHT_TAG.to_owned(), flight_tag(flight), session_tag()];
     [
         ("item", Tag::compound([("id", Tag::String(JavaString::from(item))), ("count", Tag::Int(1))])),
         ("item_display", Tag::String(JavaString::from("none"))),
@@ -770,7 +782,7 @@ fn show(game: &mut Game<'_>, dimension: &str, key: (u64, u8), item: &str, scale:
         lock(&DISPLAYS).remove(&key);
     }
     // None in a chunk that isn't loaded: it is tried again the next tick.
-    if let Some(id) = game.native_summon(dimension, "minecraft:item_display", pos, display_nbt(item, scale, lift, yaw, pitch, key.0)) {
+    if let Some(id) = game.native_summon(dimension, "minecraft:item_display", pos, display_nbt(item, scale, lift, yaw, pitch, &flight_tags(key.0))) {
         game.native_move_entity(dimension, id, pos, yaw, pitch);
         lock(&DISPLAYS).insert(key, id);
     }
@@ -784,7 +796,8 @@ fn hide(game: &mut Game<'_>, dimension: &str, key: (u64, u8)) {
 }
 
 /// The displays no flight owns: on a dimension's first tick this session every tagged one (a closed world's),
-/// then now and again those of another session or of a flight that is over.
+/// then now and again those of another session or of a flight that is over. The pads' too, a closed world's or
+/// another session's; this session's are each kept alone at its pad (`alone`).
 fn sweep(game: &mut Game<'_>, dimension: &str, now: u64, live: &[u64]) {
     let first = {
         let mut sweeps = lock(&SWEEPS);
@@ -797,12 +810,14 @@ fn sweep(game: &mut Game<'_>, dimension: &str, now: u64, live: &[u64]) {
             }
         }
     };
-    let tag = rules::FLIGHT_TAG;
+    let (tag, pads) = (rules::FLIGHT_TAG, rules::PAD_TAG);
     if first {
         run_in(game, dimension, &format!("kill @e[type=minecraft:item_display,tag={tag}]"));
+        run_in(game, dimension, &format!("kill @e[type=minecraft:item_display,tag={pads}]"));
         return;
     }
     run_in(game, dimension, &format!("kill @e[type=minecraft:item_display,tag={tag},tag=!{}]", session_tag()));
+    run_in(game, dimension, &format!("kill @e[type=minecraft:item_display,tag={pads},tag=!{}]", pad_session_tag()));
     let keep: String = live.iter().map(|id| format!(",tag=!{}", flight_tag(*id))).collect();
     run_in(game, dimension, &format!("kill @e[type=minecraft:item_display,tag={tag}{keep}]"));
 }
@@ -954,6 +969,9 @@ fn missile(game: &mut Game<'_>, dimension: &str, f: &rules::Flight, now: u64, ch
     }
     match leg {
         rules::Leg::Countdown { left } => {
+            // It stands in the shaft where the pad showed it, turning to face its target.
+            let (pos, yaw, pitch) = f.standing(now);
+            show(game, dimension, key, rules::MISSILE_MODEL, rules::MISSILE_SCALE, rules::MISSILE_LIFT, pos, yaw, pitch);
             if left % rules::SECOND == 0 {
                 let pitch = 1.0 + (rules::LAUNCH_COUNTDOWN.saturating_sub(left) as f32) / 200.0;
                 play(game, dimension, "minecraft:block.note_block.pling", pad, 3.0, pitch);
@@ -1052,6 +1070,137 @@ fn hatch(game: &mut Game<'_>, dimension: &str, f: &rules::Flight, now: u64, chan
     }
 }
 
+// ---- the missile on its pad ----------------------------------------------------------
+//
+// A pad with a missile in its slot shows it standing in the shaft, as a display in
+// the very pose its flight's starts the climb in (`rules::pad_pose`). The pad's tick
+// tells what its slot holds; the display is made, taken away and checked at the end
+// of its level's tick. A launch takes it away as the flight's own takes its place,
+// and none shows while a flight stands in the shaft. Each display is tagged with its
+// pad, this session and a serial of its own, so a copy that comes back with its
+// chunk, or one a closed world left, goes.
+
+/// A pad as its tick last saw it.
+#[derive(Default)]
+struct Pad {
+    /// What its missile slot holds.
+    missile: Option<String>,
+    /// The tick its block entity last ticked.
+    seen: u64,
+    /// Its display: the entity and its serial.
+    display: Option<(u32, u64)>,
+}
+
+/// The pads seen this session, by dimension and place.
+static PADS: Mutex<BTreeMap<String, BTreeMap<[i32; 3], Pad>>> = Mutex::new(BTreeMap::new());
+/// The serial the next pad's display is tagged with.
+static PAD_SERIAL: AtomicU64 = AtomicU64::new(0);
+
+fn pad_session_tag() -> String {
+    format!("{}_s{}", rules::PAD_TAG, session())
+}
+
+fn pad_serial_tag(serial: u64) -> String {
+    format!("{}_{serial}", pad_session_tag())
+}
+
+/// The pad's tick: what its missile slot holds, written down when it changes.
+fn pad_tick(game: &mut Game<'_>, pos: [i32; 3], entity: &ModBlockEntity) {
+    let Some((now, _)) = glue::clock(game) else { return };
+    let slot = entity.items.get(rules::PAD_MISSILE_SLOT).and_then(Option::as_ref).filter(|s| s.count > 0).map(|s| &*s.item);
+    let dimension = game.native_dimension();
+    let mut pads = lock(&PADS);
+    if !pads.contains_key(dimension) {
+        pads.insert(dimension.to_owned(), BTreeMap::new());
+    }
+    let pad = pads.get_mut(dimension).expect("inserted").entry(pos).or_default();
+    if pad.missile.as_deref() != slot {
+        pad.missile = slot.map(str::to_owned);
+    }
+    pad.seen = now;
+}
+
+/// The pads of `dimension` at the end of its tick: each one's display made, taken away or checked.
+fn pads(game: &mut Game<'_>, dimension: &str) {
+    let mine: Vec<([i32; 3], Option<String>, u64, bool)> = match lock(&PADS).get(dimension) {
+        Some(pads) if !pads.is_empty() => pads.iter().map(|(pos, p)| (*pos, p.missile.clone(), p.seen, p.display.is_some())).collect(),
+        _ => return,
+    };
+    let (now, busy) = {
+        let Some(guard) = glue::state(game) else { return };
+        let st = guard.as_ref().expect("opened");
+        let now = st.saved.tick;
+        let busy: Vec<bool> = mine.iter().map(|(p, ..)| st.saved.pad_busy(dimension, [p[0], p[1] + 1, p[2]], now)).collect();
+        (now, busy)
+    };
+    for ((pos, missile, seen, shown), busy) in mine.into_iter().zip(busy) {
+        if seen + rules::SECOND < now {
+            // Its block entity stopped ticking. With its chunk gone, so did the display, and a pad that is no
+            // more takes it along; one only left without its ticks keeps it.
+            if !glue::loaded(dimension, pos) {
+                forget_pad(dimension, pos);
+            } else if &*game.native_block(pos) != rules::LAUNCH_PAD {
+                hide_pad(game, dimension, pos);
+                forget_pad(dimension, pos);
+            }
+            continue;
+        }
+        match rules::pad_act(shown, rules::pad_shows(missile.as_deref(), busy), now) {
+            Some(rules::PadAct::Show) => show_pad(game, dimension, pos),
+            Some(rules::PadAct::Hide) => hide_pad(game, dimension, pos),
+            Some(rules::PadAct::Check) => check_pad(game, dimension, pos),
+            None => {}
+        }
+    }
+}
+
+fn with_pad<R>(dimension: &str, pos: [i32; 3], f: impl FnOnce(&mut Pad) -> R) -> Option<R> {
+    lock(&PADS).get_mut(dimension).and_then(|pads| pads.get_mut(&pos)).map(f)
+}
+
+fn forget_pad(dimension: &str, pos: [i32; 3]) {
+    if let Some(pads) = lock(&PADS).get_mut(dimension) {
+        pads.remove(&pos);
+    }
+}
+
+/// The pad's display made, and any other at the pad taken away; tried again the next tick if it couldn't be made.
+fn show_pad(game: &mut Game<'_>, dimension: &str, pos: [i32; 3]) {
+    let serial = PAD_SERIAL.fetch_add(1, Ordering::Relaxed);
+    let (at, yaw, pitch) = rules::pad_pose(pos);
+    let tags = [rules::PAD_TAG.to_owned(), rules::pad_tag(pos), pad_session_tag(), pad_serial_tag(serial)];
+    let nbt = display_nbt(rules::MISSILE_MODEL, rules::MISSILE_SCALE, rules::MISSILE_LIFT, yaw, pitch, &tags);
+    let Some(id) = game.native_summon(dimension, "minecraft:item_display", at, nbt) else { return };
+    game.native_move_entity(dimension, id, at, yaw, pitch);
+    with_pad(dimension, pos, |p| p.display = Some((id, serial)));
+    alone(game, dimension, pos, serial);
+}
+
+/// Every display at the pad but the one of `serial` taken away: one that came back with its chunk, say.
+fn alone(game: &mut Game<'_>, dimension: &str, pos: [i32; 3], serial: u64) {
+    run_in(game, dimension, &format!("kill @e[type=minecraft:item_display,tag={},tag=!{}]", rules::pad_tag(pos), pad_serial_tag(serial)));
+}
+
+/// Once a second: the pad's display still there, else made again, and alone.
+fn check_pad(game: &mut Game<'_>, dimension: &str, pos: [i32; 3]) {
+    let Some(Some((id, serial))) = with_pad(dimension, pos, |p| p.display) else { return };
+    let (at, yaw, pitch) = rules::pad_pose(pos);
+    if game.native_move_entity(dimension, id, at, yaw, pitch) {
+        alone(game, dimension, pos, serial);
+    } else {
+        with_pad(dimension, pos, |p| p.display = None);
+        show_pad(game, dimension, pos);
+    }
+}
+
+/// The pad's display taken away, and any other at the pad.
+fn hide_pad(game: &mut Game<'_>, dimension: &str, pos: [i32; 3]) {
+    if let Some(Some((id, _))) = with_pad(dimension, pos, |p| p.display.take()) {
+        game.native_remove_entity(dimension, id);
+    }
+    run_in(game, dimension, &format!("kill @e[type=minecraft:item_display,tag={}]", rules::pad_tag(pos)));
+}
+
 // ---- the launch camera, in the window -------------------------------------------------
 //
 // The server tells the window of the missile it launched with the camera on; the
@@ -1116,7 +1265,7 @@ static SAME_TICK: Mutex<Option<(u128, [i32; 3], u64)>> = Mutex::new(None);
 /// The clicks heard on the beacons: the player, the beacon and the item in hand. A click held down, which the
 /// game repeats, is answered once.
 static LAST_CHARGE: Mutex<rules::Clicks<(u128, [i32; 3], Option<String>)>> = Mutex::new(rules::Clicks::new(rules::HELD_CLICK_TICKS));
-/// Beacons and consoles taken away, heard from the level, which may change a block while the state is locked.
+/// Beacons, consoles and pads taken away, heard from the level, which may change a block while the state is locked.
 static TAKEN: Mutex<Vec<(String, [i32; 3])>> = Mutex::new(Vec::new());
 
 /// The game's name of a level's dimension.
@@ -1128,14 +1277,15 @@ pub(in crate::game) fn dimension_id(dimension: LevelDimension) -> &'static str {
     }
 }
 
-/// A beacon or a console taken away (broken, blown up, replaced): its strike or its code goes the next time the
-/// state opens at the end of its level's tick.
+/// A beacon, a console or a pad taken away (broken, blown up, replaced): its strike, its code or its missile's
+/// display goes at the end of its level's tick.
 pub(in crate::game) fn taken(dimension: &str, pos: [i32; 3]) {
     lock(&TAKEN).push((dimension.to_owned(), pos));
 }
 
-/// The beacons and consoles of `dimension` taken away since its last tick: a beacon's strike is called off before
-/// its drop (its bomb dropped with the beacon), a console's code is forgotten, so a new one starts afresh.
+/// The beacons, consoles and pads of `dimension` taken away since its last tick: a beacon's strike is called off
+/// before its drop (its bomb dropped with the beacon), a console's code is forgotten, so a new one starts afresh,
+/// and a pad's missile no longer shows.
 fn take_away(game: &mut Game<'_>, dimension: &str) {
     let gone: Vec<[i32; 3]> = {
         let mut taken = lock(&TAKEN);
@@ -1145,6 +1295,12 @@ fn take_away(game: &mut Game<'_>, dimension: &str) {
     };
     if gone.is_empty() {
         return;
+    }
+    for &pos in &gone {
+        if with_pad(dimension, pos, |_| ()).is_some() {
+            hide_pad(game, dimension, pos);
+            forget_pad(dimension, pos);
+        }
     }
     let Some(mut guard) = glue::state(game) else { return };
     let st = guard.as_mut().expect("opened");
