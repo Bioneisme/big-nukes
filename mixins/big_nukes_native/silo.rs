@@ -113,7 +113,7 @@ pub(in crate::game) fn pad_quick_move(
             entity.items[to] = Some(stack.clone());
             stack.count = 0;
         }
-        Some(have) if have.item == stack.item => {
+        Some(have) if glue::stacks_with(have, stack) => {
             let moved = most.saturating_sub(have.count).min(stack.count);
             have.count += moved;
             stack.count -= moved;

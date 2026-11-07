@@ -1108,6 +1108,12 @@ pub(in crate::game) fn burn_time(game: &Game<'_>, stack: &ItemStack) -> i32 {
 }
 // --- end of internals ---
 
+/// Whether `stack` goes onto `have`: the same item with the same components (its name, its damage...), as the
+/// game stacks them. Only the count may differ.
+pub(in crate::game) fn stacks_with(have: &ItemStack, stack: &ItemStack) -> bool {
+    *have == ItemStack { count: have.count, ..stack.clone() }
+}
+
 fn stack_of(item: &str) -> ItemStack {
     ItemStack { item: item.into(), count: 1, damage: 0, extra: None }
 }
@@ -1207,7 +1213,7 @@ pub(in crate::game) fn quick_move(game: &Game<'_>, entity: &mut ModBlockEntity, 
             entity.items[to] = Some(stack.clone());
             stack.count = 0;
         }
-        Some(have) if have.item == stack.item => {
+        Some(have) if stacks_with(have, stack) => {
             let moved = most.saturating_sub(have.count).min(stack.count);
             have.count += moved;
             stack.count -= moved;

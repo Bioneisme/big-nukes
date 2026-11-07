@@ -72,7 +72,7 @@ pub(in crate::game) fn quick_move(game: &Game<'_>, entity: &mut ModBlockEntity, 
             entity.items[rules::DECON_FUEL_SLOT] = Some(stack.clone());
             stack.count = 0;
         }
-        Some(have) if have.item == stack.item => {
+        Some(have) if glue::stacks_with(have, stack) => {
             let moved = most.saturating_sub(have.count).min(stack.count);
             have.count += moved;
             stack.count -= moved;
