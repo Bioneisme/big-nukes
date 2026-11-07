@@ -31,26 +31,45 @@ pub enum BombKind {
     Demolition,
     Tactical,
     Atomic,
+    /// The superbomb built in the world round its core (see "the sunbreaker" below).
+    Sunbreaker,
 }
 
 impl BombKind {
-    pub const ALL: [BombKind; 3] = [BombKind::Demolition, BombKind::Tactical, BombKind::Atomic];
+    pub const ALL: [BombKind; 4] = [BombKind::Demolition, BombKind::Tactical, BombKind::Atomic, BombKind::Sunbreaker];
 
     pub fn id(self) -> &'static str {
         match self {
             BombKind::Demolition => "big_nukes:demolition_charge",
             BombKind::Tactical => "big_nukes:tactical_warhead",
             BombKind::Atomic => "big_nukes:atomic_bomb",
+            BombKind::Sunbreaker => SUNBREAKER_CORE,
         }
     }
 
-    /// How far the blast reaches, before the operator's limit.
+    /// How far the blast reaches, before the operator's limit: the Sunbreaker's with its whole
+    /// structure, which `power` reads.
     pub fn radius(self) -> u32 {
         match self {
             BombKind::Demolition => 16,
             BombKind::Tactical => 50,
             BombKind::Atomic => 250,
+            BombKind::Sunbreaker => SUNBREAKER_BASE + SUNBREAKER_REFLECTOR,
         }
+    }
+
+    /// How far the blast of the bomb at `core` reaches now: the Sunbreaker's by the
+    /// structure round it as `block` reads it, any other's its own radius.
+    pub fn power(self, core: [i32; 3], block: &dyn Fn([i32; 3]) -> String) -> Result<u32, StructureProblem> {
+        match self {
+            BombKind::Sunbreaker => read_structure(core, block).radius(),
+            _ => Ok(self.radius()),
+        }
+    }
+
+    /// How long its lit fuse burns: the Sunbreaker's long enough to start running.
+    pub fn fuse(self) -> u64 {
+        if self == BombKind::Sunbreaker { SUNBREAKER_FUSE } else { FUSE_TICKS }
     }
 
     /// The bomb a block is, if it is one.
@@ -66,9 +85,10 @@ impl BombKind {
 
 /// The items: id, how many stack, and whether they are rare. Each copies its
 /// `template` with the `components` patch.
-pub const ITEMS: [(&str, u8, bool); 16] = [
+pub const ITEMS: [(&str, u8, bool); 17] = [
     ("big_nukes:raw_uranium", 64, false),
     ("big_nukes:enriched_uranium", 64, true),
+    (WEAPONS_GRADE_URANIUM, 64, true),
     ("big_nukes:nuclear_charge", 16, true),
     ("big_nukes:bomb_casing", 16, false),
     ("big_nukes:fuse_detonator", 16, false),
@@ -96,7 +116,7 @@ pub fn guide_give(name: &str) -> String {
 }
 
 /// What each block and item says under its name about how to use it: lang keys, one line each.
-const TIPS: [(&str, &[&str]); 27] = [
+const TIPS: [(&str, &[&str]); 31] = [
     ("big_nukes:demolition_charge", &["big_nukes.tip.demolition_charge", "big_nukes.tip.demolition_charge.2"]),
     ("big_nukes:tactical_warhead", &["big_nukes.tip.tactical_warhead", "big_nukes.tip.tactical_warhead.2"]),
     ("big_nukes:atomic_bomb", &["big_nukes.tip.atomic_bomb", "big_nukes.tip.atomic_bomb.2"]),
@@ -124,6 +144,10 @@ const TIPS: [(&str, &[&str]); 27] = [
     (LAUNCH_CONSOLE, &["big_nukes.tip.launch_console", "big_nukes.tip.launch_console.2"]),
     (STRIKE_BEACON, &["big_nukes.tip.strike_beacon", "big_nukes.tip.strike_beacon.2"]),
     ("big_nukes:guide", &["big_nukes.tip.guide"]),
+    (SUNBREAKER_CORE, &["big_nukes.tip.sunbreaker_core", "big_nukes.tip.sunbreaker_core.2"]),
+    (IMPLOSION_SHELL, &["big_nukes.tip.implosion_shell", "big_nukes.tip.sunbreaker_part"]),
+    (NEUTRON_REFLECTOR, &["big_nukes.tip.neutron_reflector", "big_nukes.tip.sunbreaker_part"]),
+    (WEAPONS_GRADE_URANIUM, &["big_nukes.tip.weapons_grade_uranium"]),
 ];
 
 /// The tip lines of `id`, empty for anything else.
@@ -204,7 +228,7 @@ pub fn anti_rad_amount(effect: &serde_json::Value) -> Option<f64> {
 
 pub const RAW_URANIUM: &str = "big_nukes:raw_uranium";
 pub const ENRICHED_URANIUM: &str = "big_nukes:enriched_uranium";
-/// Its slots: raw uranium in, fuel, enriched uranium out. Its menu type is
+/// Its slots: uranium in, fuel, the richer uranium out. Its menu type is
 /// content/data/big_nukes/horizon/menu/centrifuge.json, named as the block.
 pub const INPUT_SLOT: usize = 0;
 pub const FUEL_SLOT: usize = 1;
@@ -212,18 +236,41 @@ pub const OUTPUT_SLOT: usize = 2;
 pub const CENTRIFUGE_SLOTS: usize = 3;
 /// Ticks of work that turn one raw uranium into one enriched.
 pub const SPIN_TICKS: u32 = 400;
+
+/// A step of the centrifuge: `takes` of `input` make one `output` in `ticks` of work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Enrichment {
+    pub input: &'static str,
+    pub takes: u32,
+    pub output: &'static str,
+    pub ticks: u32,
+}
+
+/// What the centrifuge makes, by what lies in its input: raw uranium is enriched, and four
+/// enriched make one weapons-grade, three times slower.
+pub const ENRICHMENTS: [Enrichment; 2] = [
+    Enrichment { input: RAW_URANIUM, takes: 1, output: ENRICHED_URANIUM, ticks: SPIN_TICKS },
+    Enrichment { input: ENRICHED_URANIUM, takes: 4, output: WEAPONS_GRADE_URANIUM, ticks: SPIN_TICKS * 3 },
+];
+
+/// The step an item in the input starts: its index in `ENRICHMENTS`.
+pub fn enrichment(item: &str) -> Option<usize> {
+    ENRICHMENTS.iter().position(|e| e.input == item)
+}
 /// The screen's flame is this tall and its arrow this wide, in GUI pixels.
 pub const FLAME_HEIGHT: i32 = 14;
 pub const ARROW_WIDTH: i32 = 24;
 
 /// A centrifuge's state, kept in its block entity: the ticks left of the fuel
-/// it burns and that fuel's whole burn, and the ticks of work on the current input.
+/// it burns and that fuel's whole burn, the ticks of work on the current input,
+/// and the step (`ENRICHMENTS`) that work is on: one saved without it was enriching.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Centrifuge {
     pub burn: u32,
     pub burn_max: u32,
     pub spin: u32,
+    pub stage: u8,
 }
 
 /// What a tick asks of the slots: one fuel taken, one input made into one output.
@@ -239,19 +286,37 @@ impl Step {
 }
 
 impl Centrifuge {
-    /// One tick. `input` is the raw uranium in its slot, `fuel` the burn ticks of
-    /// the fuel in its slot (none, or 0, when nothing there burns), `output_room`
-    /// whether the output slot takes one more enriched uranium.
+    /// One tick. `input` and `output` are what their slots hold, `fuel` the burn
+    /// ticks of the fuel in its slot (none, or 0, when nothing there burns), and
+    /// `max_stack` how many of an item stack. `Step::made` takes the step's
+    /// (`ENRICHMENTS[stage]`) input and gives its output.
     ///
-    /// The fire burns only while it spins: an empty input or a full output keeps
-    /// the rest of the burning fuel, and takes no new fuel. Taking the input out
-    /// loses the progress, as a furnace does.
-    pub fn step(&mut self, input: u32, fuel: Option<u32>, output_room: bool) -> Step {
-        if input == 0 {
+    /// The fire burns only while it spins: an input it can't work (too little of
+    /// it, or nothing it takes) or a full output keeps the rest of the burning
+    /// fuel, and takes no new fuel. Taking the input out or changing it for
+    /// another loses the progress, as a furnace does.
+    pub fn step(
+        &mut self,
+        input: Option<(&str, u32)>,
+        fuel: Option<u32>,
+        output: Option<(&str, u32)>,
+        max_stack: &dyn Fn(&str) -> u32,
+    ) -> Step {
+        let stage = input.and_then(|(item, count)| enrichment(item).filter(|&i| count >= ENRICHMENTS[i].takes));
+        let Some(stage) = stage else {
             self.spin = 0;
             return Step::IDLE;
+        };
+        if usize::from(self.stage) != stage {
+            self.stage = stage as u8;
+            self.spin = 0;
         }
-        if !output_room {
+        let e = ENRICHMENTS[stage];
+        let room = match output {
+            None => true,
+            Some((item, count)) => item == e.output && count < max_stack(e.output),
+        };
+        if !room {
             return Step::IDLE;
         }
         let mut step = Step::IDLE;
@@ -267,18 +332,23 @@ impl Centrifuge {
         }
         self.burn -= 1;
         self.spin += 1;
-        if self.spin >= SPIN_TICKS {
+        if self.spin >= e.ticks {
             self.spin = 0;
             step.made = true;
         }
         step
     }
 
-    /// The menu's data slots: `[burn, burn_max, spin, SPIN_TICKS]`, kept within
-    /// the 16 bits a data slot has on the wire.
+    /// The step its work is on.
+    pub fn enrichment(&self) -> Enrichment {
+        ENRICHMENTS.get(usize::from(self.stage)).copied().unwrap_or(ENRICHMENTS[0])
+    }
+
+    /// The menu's data slots: `[burn, burn_max, spin, the step's ticks]`, kept
+    /// within the 16 bits a data slot has on the wire.
     pub fn data(&self) -> [i32; 4] {
         let short = |v: u32| v.min(i16::MAX as u32) as i32;
-        [short(self.burn), short(self.burn_max), short(self.spin), short(SPIN_TICKS)]
+        [short(self.burn), short(self.burn_max), short(self.spin), short(self.enrichment().ticks)]
     }
 }
 
@@ -311,22 +381,26 @@ pub const ASSEMBLY_SLOTS: usize = 10;
 /// The menu button id of Assemble.
 pub const ASSEMBLE_BUTTON: i32 = 0;
 
-/// A recipe of the assembly table: its result, and how many of each item it takes.
+/// A recipe of the assembly table: its result and how many it makes, and how many of
+/// each item it takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Assembly {
     pub result: &'static str,
+    pub count: u32,
     pub parts: &'static [(&'static str, u32)],
 }
 
-pub const ASSEMBLIES: [Assembly; 7] = [
-    Assembly { result: "big_nukes:nuclear_charge", parts: &[(ENRICHED_URANIUM, 1), ("minecraft:tnt", 4)] },
-    Assembly { result: "big_nukes:bomb_casing", parts: &[("minecraft:iron_block", 4), ("minecraft:redstone", 4)] },
+pub const ASSEMBLIES: [Assembly; 10] = [
+    Assembly { result: "big_nukes:nuclear_charge", count: 1, parts: &[(ENRICHED_URANIUM, 1), ("minecraft:tnt", 4)] },
+    Assembly { result: "big_nukes:bomb_casing", count: 1, parts: &[("minecraft:iron_block", 4), ("minecraft:redstone", 4)] },
     Assembly {
         result: "big_nukes:demolition_charge",
+        count: 1,
         parts: &[("minecraft:tnt", 4), ("minecraft:iron_ingot", 4), ("minecraft:redstone", 1)],
     },
     Assembly {
         result: "big_nukes:tactical_warhead",
+        count: 1,
         parts: &[
             ("big_nukes:nuclear_charge", 1),
             ("big_nukes:bomb_casing", 1),
@@ -336,23 +410,38 @@ pub const ASSEMBLIES: [Assembly; 7] = [
     },
     Assembly {
         result: "big_nukes:atomic_bomb",
+        count: 1,
         parts: &[("big_nukes:nuclear_charge", 4), ("big_nukes:bomb_casing", 4), ("minecraft:redstone_block", 1)],
     },
     Assembly {
         result: MISSILE,
+        count: 1,
         parts: &[("big_nukes:bomb_casing", 2), ("minecraft:iron_block", 3), ("minecraft:blaze_powder", 4)],
     },
     Assembly {
         result: STRIKE_BEACON,
+        count: 1,
         parts: &[("minecraft:iron_ingot", 4), ("minecraft:redstone", 4), ("minecraft:compass", 1)],
     },
+    Assembly {
+        result: SUNBREAKER_CORE,
+        count: 1,
+        parts: &[(WEAPONS_GRADE_URANIUM, 4), ("big_nukes:nuclear_charge", 4), ("minecraft:diamond_block", 1)],
+    },
+    Assembly {
+        result: IMPLOSION_SHELL,
+        count: 1,
+        parts: &[("minecraft:tnt", 4), ("minecraft:iron_block", 2), ("minecraft:redstone", 2)],
+    },
+    Assembly { result: NEUTRON_REFLECTOR, count: 4, parts: &[("minecraft:iron_block", 4), (ENRICHED_URANIUM, 1)] },
 ];
 
-/// What Assemble does: the result to add to the output, and how many to take
-/// from which grid slots.
+/// What Assemble does: the result and how many of it to add to the output, and how
+/// many to take from which grid slots.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Assembled {
     pub result: &'static str,
+    pub count: u32,
     pub take: Vec<(usize, u32)>,
 }
 
@@ -374,7 +463,7 @@ pub fn assemble(grid: &[Option<(&str, u32)>], output: Option<(&str, u32)>, max_s
     let recipe = &ASSEMBLIES[assembly_in(grid)?];
     let room = match output {
         None => true,
-        Some((item, count)) => item == recipe.result && count < max_stack(recipe.result),
+        Some((item, count)) => item == recipe.result && count + recipe.count <= max_stack(recipe.result),
     };
     if !room {
         return None;
@@ -396,7 +485,7 @@ pub fn assemble(grid: &[Option<(&str, u32)>], output: Option<(&str, u32)>, max_s
             }
         }
     }
-    Some(Assembled { result: recipe.result, take })
+    Some(Assembled { result: recipe.result, count: recipe.count, take })
 }
 
 /// The screen's data slot: 0 for no recipe, else the recipe's index plus one.
@@ -409,10 +498,12 @@ pub fn assembly_of_data(data: i32) -> Option<&'static Assembly> {
     usize::try_from(data).ok()?.checked_sub(1).and_then(|i| ASSEMBLIES.get(i))
 }
 
-/// The language key of a block's or an item's name: the bombs and the silo's blocks are blocks.
+/// The language key of a block's or an item's name: the bombs, the Sunbreaker's parts and
+/// the silo's blocks are blocks.
 pub fn name_key(id: &str) -> String {
     let (namespace, name) = id.split_once(':').unwrap_or(("minecraft", id));
-    let kind = if BombKind::ALL.iter().any(|k| k.id() == id) || SILO_BLOCKS.contains(&id) { "block" } else { "item" };
+    let block = BombKind::ALL.iter().any(|k| k.id() == id) || SUNBREAKER_PARTS.contains(&id) || SILO_BLOCKS.contains(&id);
+    let kind = if block { "block" } else { "item" };
     format!("{kind}.{namespace}.{name}")
 }
 
@@ -570,7 +661,7 @@ impl Bomb {
 
     /// Lights the fuse: false without one, or when it's already lit.
     pub fn light(&mut self, now: u64) -> bool {
-        self.detonator == Some(Detonator::Fuse) && self.arm(now, FUSE_TICKS)
+        self.detonator == Some(Detonator::Fuse) && self.arm(now, self.kind.fuse())
     }
 
     /// A key of the keypad. The first code entered becomes the code; then the
@@ -625,7 +716,7 @@ impl Bomb {
     /// world whose clock went back is cut to its own length.
     pub fn tick(&mut self, now: u64) -> bool {
         self.locked_until = self.locked_until.min(now + LOCK_TICKS);
-        self.fires_at = self.fires_at.map(|at| at.min(now + FUSE_TICKS.max(COUNTDOWN_TICKS)));
+        self.fires_at = self.fires_at.map(|at| at.min(now + self.kind.fuse().max(COUNTDOWN_TICKS)));
         match self.fires_at {
             Some(at) if at <= now => {
                 self.fires_at = None;
@@ -649,6 +740,97 @@ impl Bomb {
             [PAD_ENTER, self.entry.len() as i32, 0, tries_left]
         }
     }
+}
+
+// ---- the sunbreaker ---------------------------------------------------------------
+//
+// The largest bomb is built in the world: its core, a shell round it and a
+// reflector round that, each a cube's surface. Its radius is read from the
+// blocks when it goes off, so a broken part weakens it, and without a whole
+// shell it doesn't go off. Hidden in its shell, the core is reached through any
+// block of its structure (`core_near`).
+
+pub const SUNBREAKER_CORE: &str = "big_nukes:sunbreaker_core";
+pub const IMPLOSION_SHELL: &str = "big_nukes:implosion_shell";
+pub const NEUTRON_REFLECTOR: &str = "big_nukes:neutron_reflector";
+/// The structure's blocks, declared in code beside the core.
+pub const SUNBREAKER_PARTS: [&str; 2] = [IMPLOSION_SHELL, NEUTRON_REFLECTOR];
+/// The core's uranium, from the centrifuge's second step.
+pub const WEAPONS_GRADE_URANIUM: &str = "big_nukes:weapons_grade_uranium";
+/// The shell: the 26 neighbours of the core, the 3×3×3 cube round it.
+pub const SHELL_BLOCKS: u32 = 26;
+/// The reflector: the surface of the 5×5×5 cube round the core.
+pub const REFLECTOR_BLOCKS: u32 = 98;
+/// The radius of a whole shell, and what a whole reflector adds, a block's share each.
+pub const SUNBREAKER_BASE: u32 = 600;
+pub const SUNBREAKER_REFLECTOR: u32 = 400;
+/// A blast this large takes the bedrock at its center, in a circle this wide, down to the
+/// world's floor: under it is the void.
+pub const BEDROCK_RADIUS: u32 = 1000;
+pub const BEDROCK_HOLE: u32 = 24;
+/// The Sunbreaker's fuse, and its last ticks, when an alarm sounds over the hiss.
+pub const SUNBREAKER_FUSE: u64 = 300;
+#[allow(dead_code)] // plan 8: until the glue uses it
+pub const ALARM_TICKS: u64 = 100;
+
+/// Why a Sunbreaker doesn't go off: its shell has only so many of its blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StructureProblem {
+    Shell(u32),
+}
+
+/// A Sunbreaker's structure as it stands: the right blocks of each layer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Structure {
+    pub shell: u32,
+    pub reflector: u32,
+}
+
+impl Structure {
+    /// Its blast's radius: `SUNBREAKER_BASE` for a whole shell and the reflector's share of
+    /// `SUNBREAKER_REFLECTOR`, rounded down; none without a whole shell.
+    pub fn radius(&self) -> Result<u32, StructureProblem> {
+        if self.shell < SHELL_BLOCKS {
+            return Err(StructureProblem::Shell(self.shell));
+        }
+        Ok(SUNBREAKER_BASE + SUNBREAKER_REFLECTOR * self.reflector.min(REFLECTOR_BLOCKS) / REFLECTOR_BLOCKS)
+    }
+}
+
+/// The places of a structure round `core` and their layer: 1 the shell, 2 the reflector.
+pub fn structure_cells(core: [i32; 3]) -> impl Iterator<Item = ([i32; 3], u8)> {
+    (-2..=2i32).flat_map(move |dx| {
+        (-2..=2i32).flat_map(move |dy| {
+            (-2..=2i32).filter_map(move |dz| {
+                let layer = dx.abs().max(dy.abs()).max(dz.abs()) as u8;
+                (layer > 0).then_some(([core[0] + dx, core[1] + dy, core[2] + dz], layer))
+            })
+        })
+    })
+}
+
+/// The structure round `core`, its blocks read with `block`: a wrong block, or one
+/// that can't be read (air, where nothing is loaded), counts as missing.
+pub fn read_structure(core: [i32; 3], block: &dyn Fn([i32; 3]) -> String) -> Structure {
+    let mut s = Structure::default();
+    for (pos, layer) in structure_cells(core) {
+        match (layer, block(pos).as_str()) {
+            (1, IMPLOSION_SHELL) => s.shell += 1,
+            (2, NEUTRON_REFLECTOR) => s.reflector += 1,
+            _ => {}
+        }
+    }
+    s
+}
+
+/// The core whose structure has a place at `pos`, or the core at `pos` itself: the
+/// nearest within 2 blocks on each axis.
+#[allow(dead_code)] // plan 8: until the glue uses it
+pub fn core_near(pos: [i32; 3], block: &dyn Fn([i32; 3]) -> String) -> Option<[i32; 3]> {
+    std::iter::once(pos)
+        .chain(structure_cells(pos).filter(|c| c.1 == 1).map(|c| c.0))
+        .chain(structure_cells(pos).filter(|c| c.1 == 2).map(|c| c.0))
+        .find(|&p| block(p) == SUNBREAKER_CORE)
 }
 
 // ---- blast geometry ----------------------------------------------------------
@@ -765,8 +947,12 @@ pub fn ring(d: f64) -> Ring {
 }
 
 /// The crater's floor under a column at distance `d`: a bowl, deepest at the
-/// center, never into bedrock.
+/// center, never into bedrock, but for the hole a blast of `BEDROCK_RADIUS` or more
+/// makes at its center, down to the world's floor.
 pub fn crater_floor(blast: &Blast, d: f64) -> i32 {
+    if blast.radius >= BEDROCK_RADIUS && d * f64::from(blast.radius) <= f64::from(BEDROCK_HOLE) {
+        return blast.world.min_y;
+    }
     let depth = if d < CORE { CRATER_DEPTH * blast.radius as f64 * (1.0 - (d / CORE).powi(2)) } else { 0.0 };
     (blast.center[1] - depth as i32).max(blast.world.min_y + ABOVE_FLOOR)
 }
@@ -1165,6 +1351,8 @@ pub enum Refused {
     Maxpower { radius: u32, maxpower: u32 },
     /// A remote's bomb that isn't there any more: broken, or already gone off.
     Gone,
+    /// A Sunbreaker whose structure isn't whole enough.
+    Structure(StructureProblem),
 }
 
 impl Saved {
@@ -1194,8 +1382,8 @@ impl Saved {
     }
 }
 
-/// The limits `/bignukes maxpower` takes: each bomb's radius, then the largest blast.
-pub const MAXPOWER_STEPS: [u32; 4] = [16, 50, 250, 1024];
+/// The limits `/bignukes maxpower` takes: each bomb's radius (the Sunbreaker's whole), then the largest blast.
+pub const MAXPOWER_STEPS: [u32; 5] = [16, 50, 250, 1000, 1024];
 
 /// `maxpower [limit]`, after the command's name: Some(None) asks for the limit,
 /// Some(Some(limit)) sets one of the steps, None is anything else.
@@ -1307,9 +1495,19 @@ impl Saved {
 
     /// The bomb at `pos`, reached by another blast, goes off with its own radius
     /// and is forgotten, its remote's record too. One over the operator's limit stays.
-    pub fn set_off(&mut self, dimension: &str, pos: [i32; 3]) -> Result<u64, Refused> {
+    /// A Sunbreaker's radius is its structure's as `block` reads it; without a whole
+    /// shell it fizzles: it is forgotten, and the glue takes it away.
+    pub fn set_off(&mut self, dimension: &str, pos: [i32; 3], block: &dyn Fn([i32; 3]) -> String) -> Result<u64, Refused> {
         let kind = self.placed.iter().find(|b| b.dimension == dimension && b.pos == pos).map(|b| b.kind).ok_or(Refused::Gone)?;
-        let id = self.fire(dimension, pos, kind.radius())?;
+        let radius = match kind.power(pos, block) {
+            Ok(radius) => radius,
+            Err(problem) => {
+                self.unplace(dimension, pos);
+                self.forget(dimension, pos);
+                return Err(Refused::Structure(problem));
+            }
+        };
+        let id = self.fire(dimension, pos, radius)?;
         self.unplace(dimension, pos);
         self.forget(dimension, pos);
         Ok(id)
@@ -1325,10 +1523,12 @@ impl Saved {
     }
 
     /// A remote's press: the recorded bomb at `pos` goes off, within the
-    /// operator's limit, and is forgotten. One over the limit stays recorded.
-    pub fn fire_bomb(&mut self, dimension: &str, pos: [i32; 3]) -> Result<u64, Refused> {
+    /// operator's limit, and is forgotten. One over the limit stays recorded, as
+    /// does a Sunbreaker whose structure, read with `block`, has no whole shell.
+    pub fn fire_bomb(&mut self, dimension: &str, pos: [i32; 3], block: &dyn Fn([i32; 3]) -> String) -> Result<u64, Refused> {
         let kind = self.recorded(dimension, pos).ok_or(Refused::Gone)?;
-        let id = self.fire(dimension, pos, kind.radius())?;
+        let radius = kind.power(pos, block).map_err(Refused::Structure)?;
+        let id = self.fire(dimension, pos, radius)?;
         self.forget(dimension, pos);
         self.unplace(dimension, pos);
         Ok(id)
@@ -1594,9 +1794,10 @@ pub fn shaft(column_above_pad: &[&str]) -> Result<i32, ShaftProblem> {
 }
 
 impl BombKind {
-    /// Whether it goes on a missile or a bomber: the demolition charge is too small for either.
+    /// Whether it goes on a missile or a bomber: the demolition charge is too small for
+    /// either, and the Sunbreaker is built where it stands.
     pub fn flies(self) -> bool {
-        self != BombKind::Demolition
+        matches!(self, BombKind::Tactical | BombKind::Atomic)
     }
 }
 
@@ -2966,7 +3167,7 @@ pub const CHAPTERS: [Chapter; 9] = [
         title: "big_nukes.guide.centrifuge",
         text: "big_nukes.guide.centrifuge.text",
         tab: CENTRIFUGE,
-        icons: &[CENTRIFUGE, RAW_URANIUM, "minecraft:coal", ENRICHED_URANIUM],
+        icons: &[CENTRIFUGE, RAW_URANIUM, "minecraft:coal", ENRICHED_URANIUM, WEAPONS_GRADE_URANIUM],
         recipes: false,
     },
     Chapter {
@@ -2980,7 +3181,14 @@ pub const CHAPTERS: [Chapter; 9] = [
         title: "big_nukes.guide.bombs",
         text: "big_nukes.guide.bombs.text",
         tab: "big_nukes:atomic_bomb",
-        icons: &["big_nukes:demolition_charge", "big_nukes:tactical_warhead", "big_nukes:atomic_bomb"],
+        icons: &[
+            "big_nukes:demolition_charge",
+            "big_nukes:tactical_warhead",
+            "big_nukes:atomic_bomb",
+            SUNBREAKER_CORE,
+            IMPLOSION_SHELL,
+            NEUTRON_REFLECTOR,
+        ],
         recipes: false,
     },
     Chapter {
@@ -3512,6 +3720,10 @@ impl Guide {
                         let at = [x + RECIPE_RESULT_X, top + 18.0];
                         out.push(GuideDraw::Sprite(SLOT_SRC, [at[0], at[1], 18.0, 18.0]));
                         item(&mut out, recipe.result, [at[0] + 1.0, at[1] + 1.0]);
+                        if recipe.count > 1 {
+                            let count = recipe.count.to_string();
+                            out.push(GuideDraw::Text(count.clone(), [at[0] + 17.0 - measure(&count), at[1] + 9.0], GUIDE_HEADING));
+                        }
                     }
                 }
                 y += line.rows() as f32 * ROW;
@@ -4381,6 +4593,7 @@ mod tests {
             .map(|i| i.0)
             .chain(BombKind::ALL.map(BombKind::id))
             .chain([CENTRIFUGE, ASSEMBLY_TABLE])
+            .chain(SUNBREAKER_PARTS)
             .chain(SILO_BLOCKS)
             .chain(FILE_BLOCKS)
             .collect();
@@ -4427,6 +4640,58 @@ mod tests {
         }
         // The written book's numbered pages are gone.
         assert!(!en.contains_key("big_nukes.guide.1"));
+    }
+
+    #[test]
+    fn the_bombs_chapter_tells_of_the_sunbreaker() {
+        let (en, ru) = (language("en_us"), language("ru_ru"));
+        let bombs = CHAPTERS.iter().find(|c| c.title == "big_nukes.guide.bombs").expect("the bombs' chapter");
+        assert_eq!(
+            bombs.icons,
+            ["big_nukes:demolition_charge", "big_nukes:tactical_warhead", "big_nukes:atomic_bomb", SUNBREAKER_CORE, IMPLOSION_SHELL, NEUTRON_REFLECTOR]
+        );
+        let numbers = [
+            SHELL_BLOCKS.to_string(),
+            REFLECTOR_BLOCKS.to_string(),
+            SUNBREAKER_BASE.to_string(),
+            BEDROCK_RADIUS.to_string(),
+            (SUNBREAKER_FUSE / 20).to_string(),
+            (ALARM_TICKS / 20).to_string(),
+        ];
+        for lang in [&en, &ru] {
+            let text = &lang[bombs.text];
+            for n in &numbers {
+                assert!(text.split(|c: char| !c.is_ascii_digit()).any(|w| w == n), "{n} in {text}");
+            }
+        }
+        // Where its uranium comes from: the centrifuge's chapter pictures it and tells its numbers.
+        let centrifuge = CHAPTERS.iter().find(|c| c.title == "big_nukes.guide.centrifuge").expect("the centrifuge's chapter");
+        assert!(centrifuge.icons.contains(&WEAPONS_GRADE_URANIUM));
+        for lang in [&en, &ru] {
+            let text = &lang[centrifuge.text];
+            for n in [ENRICHMENTS[1].takes.to_string(), (ENRICHMENTS[1].ticks / 20).to_string()] {
+                assert!(text.split(|c: char| !c.is_ascii_digit()).any(|w| w == n), "{n} in {text}");
+            }
+        }
+        // The core and its parts are made at the assembly table: their recipes show in its chapter.
+        assert!([SUNBREAKER_CORE, IMPLOSION_SHELL, NEUTRON_REFLECTOR].iter().all(|id| ASSEMBLIES.iter().any(|a| a.result == *id)));
+        // Four reflectors to a recipe: the chapter shows the count by the result.
+        let g = Guide::new(&|k| k.to_owned(), &|t| t.len() as f32 * 6.0);
+        let assembly = CHAPTERS.iter().position(|c| c.recipes).unwrap();
+        let mut g = g;
+        g.open(assembly);
+        let mut counts = 0;
+        while g.spread < g.starts[assembly + 1] / 2 {
+            let drawn = g.draw([0.0, 0.0], &|t| t.len() as f32 * 6.0, &|k| k.to_owned());
+            counts += drawn.iter().filter(|d| matches!(d, GuideDraw::Text(t, _, GUIDE_HEADING) if t == "4")).count();
+            g.next();
+        }
+        assert_eq!(counts, 1);
+        // The commands' chapter names every limit.
+        for lang in [&en, &ru] {
+            let steps: Vec<String> = MAXPOWER_STEPS.iter().map(u32::to_string).collect();
+            assert!(lang["big_nukes.guide.commands.text"].contains(&steps.join("|")));
+        }
     }
 
     #[test]
@@ -4988,7 +5253,7 @@ mod tests {
 
     #[test]
     fn every_block_and_item_says_how_to_use_it() {
-        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SILO_BLOCKS).chain(FILE_BLOCKS).collect();
+        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).chain(FILE_BLOCKS).collect();
         all.extend(ITEMS.iter().map(|i| i.0));
         let (en, ru) = (language("en_us"), language("ru_ru"));
         for id in all.into_iter().filter(|id| *id != "big_nukes:ash") {
@@ -5005,7 +5270,7 @@ mod tests {
     fn every_block_and_item_is_in_the_creative_tab() {
         let tab: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/horizon/creative_tab/big_nukes.json")).unwrap();
         let listed: Vec<&str> = tab["items"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SILO_BLOCKS).chain(FILE_BLOCKS).collect();
+        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).chain(FILE_BLOCKS).collect();
         all.extend(ITEMS.iter().map(|i| i.0));
         let (listed_set, all_set): (BTreeSet<&str>, BTreeSet<&str>) = (listed.iter().copied().collect(), all.iter().copied().collect());
         assert_eq!(listed.len(), listed_set.len(), "an id is listed twice");
@@ -5017,7 +5282,8 @@ mod tests {
 
     #[test]
     fn every_block_and_item_is_declared_once_with_its_assets() {
-        let code_blocks: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SILO_BLOCKS).collect();
+        let code_blocks: Vec<&str> =
+            [CENTRIFUGE, ASSEMBLY_TABLE].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).collect();
         let blocks: Vec<&str> = code_blocks.iter().copied().chain(FILE_BLOCKS).collect();
         let items: Vec<&str> = ITEMS.iter().map(|i| i.0).collect();
         let all: BTreeSet<&str> = blocks.iter().chain(&items).copied().collect();
@@ -5100,6 +5366,7 @@ mod tests {
             .map(|i| i.0)
             .chain(BombKind::ALL.map(BombKind::id))
             .chain([CENTRIFUGE, ASSEMBLY_TABLE])
+            .chain(SUNBREAKER_PARTS)
             .chain(SILO_BLOCKS)
             .collect();
         let known_id = |id: &str| id.starts_with("minecraft:") || known.contains(id);
@@ -5144,7 +5411,7 @@ mod tests {
             made.insert(a.result.to_owned());
         }
         // Mined, or made in the centrifuge.
-        let not_crafted = ["big_nukes:raw_uranium", "big_nukes:enriched_uranium"];
+        let not_crafted = ["big_nukes:raw_uranium", "big_nukes:enriched_uranium", WEAPONS_GRADE_URANIUM];
         let crafted: BTreeSet<String> = known.iter().filter(|id| !not_crafted.contains(id)).map(|id| id.to_string()).collect();
         assert_eq!(made, crafted);
     }
@@ -5248,7 +5515,7 @@ mod tests {
         let known: BTreeSet<&str> = ITEMS.iter().map(|i| i.0).chain(BombKind::ALL.map(BombKind::id)).collect();
         let results: BTreeSet<&str> = ASSEMBLIES.iter().map(|a| a.result).collect();
         let wanted: BTreeSet<&str> =
-            [CHARGE, "big_nukes:bomb_casing", MISSILE, STRIKE_BEACON].into_iter().chain(BombKind::ALL.map(BombKind::id)).collect();
+            [CHARGE, "big_nukes:bomb_casing", MISSILE, STRIKE_BEACON].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).collect();
         assert_eq!(results, wanted);
         assert_eq!(results.len(), ASSEMBLIES.len(), "a result is made twice");
         let en = language("en_us");
@@ -5326,35 +5593,42 @@ mod tests {
     // ---- the centrifuge (plan 4, Task 3) -------------------------------------
 
     const COAL: Option<u32> = Some(1600);
+    /// An output slot full of enriched uranium (`most` stacks 16).
+    const FULL: Option<(&'static str, u32)> = Some((ENRICHED_URANIUM, 64));
+
+    /// `n` raw uranium in the input, none for 0.
+    fn raw(n: u32) -> Option<(&'static str, u32)> {
+        (n > 0).then_some((RAW_URANIUM, n))
+    }
 
     #[test]
     fn no_fuel_no_spin() {
         let mut c = Centrifuge::default();
         for _ in 0..20 {
-            assert_eq!(c.step(5, None, true), Step::IDLE);
-            assert_eq!(c.step(5, Some(0), true), Step::IDLE, "what doesn't burn isn't fuel");
+            assert_eq!(c.step(raw(5), None, None, &most), Step::IDLE);
+            assert_eq!(c.step(raw(5), Some(0), None, &most), Step::IDLE, "what doesn't burn isn't fuel");
         }
         assert_eq!(c, Centrifuge::default());
         // Fuel but nothing to spin: the fuel stays in its slot.
-        assert_eq!(c.step(0, COAL, true), Step::IDLE);
+        assert_eq!(c.step(raw(0), COAL, None, &most), Step::IDLE);
         assert_eq!(c, Centrifuge::default());
     }
 
     #[test]
     fn fuel_burns_down_and_refills() {
         let mut c = Centrifuge::default();
-        assert_eq!(c.step(3, Some(10), true), Step { took_fuel: true, made: false });
-        assert_eq!(c, Centrifuge { burn: 9, burn_max: 10, spin: 1 });
+        assert_eq!(c.step(raw(3), Some(10), None, &most), Step { took_fuel: true, made: false });
+        assert_eq!(c, Centrifuge { burn: 9, burn_max: 10, spin: 1, stage: 0 });
         for left in (0..9).rev() {
-            assert_eq!(c.step(3, Some(10), true), Step { took_fuel: false, made: false });
+            assert_eq!(c.step(raw(3), Some(10), None, &most), Step { took_fuel: false, made: false });
             assert_eq!(c.burn, left);
         }
         // Burnt out: the next tick takes one more fuel.
-        assert_eq!(c.step(3, Some(7), true), Step { took_fuel: true, made: false });
-        assert_eq!(c, Centrifuge { burn: 6, burn_max: 7, spin: 11 });
+        assert_eq!(c.step(raw(3), Some(7), None, &most), Step { took_fuel: true, made: false });
+        assert_eq!(c, Centrifuge { burn: 6, burn_max: 7, spin: 11, stage: 0 });
         // Out of fuel: it stops where it is.
         c.burn = 0;
-        assert_eq!(c.step(3, None, true), Step::IDLE);
+        assert_eq!(c.step(raw(3), None, None, &most), Step::IDLE);
         assert_eq!(c.spin, 11);
     }
 
@@ -5363,7 +5637,7 @@ mod tests {
         let mut c = Centrifuge::default();
         let mut made = 0;
         for tick in 1..=SPIN_TICKS {
-            let step = c.step(1, COAL, true);
+            let step = c.step(raw(1), COAL, None, &most);
             assert_eq!(step.took_fuel, tick == 1);
             if step.made {
                 made += 1;
@@ -5374,34 +5648,34 @@ mod tests {
         assert_eq!(c.spin, 0);
         // A coal's burn is four enrichments.
         for _ in 0..3 * SPIN_TICKS {
-            assert!(!c.step(1, COAL, true).took_fuel);
+            assert!(!c.step(raw(1), COAL, None, &most).took_fuel);
         }
         assert_eq!(c.burn, 0);
         // The last tick of the fuel and the first of the next one can coincide with an output.
-        let mut c = Centrifuge { burn: 0, burn_max: 1600, spin: SPIN_TICKS - 1 };
-        assert_eq!(c.step(1, COAL, true), Step { took_fuel: true, made: true });
+        let mut c = Centrifuge { burn: 0, burn_max: 1600, spin: SPIN_TICKS - 1, stage: 0 };
+        assert_eq!(c.step(raw(1), COAL, None, &most), Step { took_fuel: true, made: true });
         // Taking the input out loses the progress, as a furnace does.
-        let mut c = Centrifuge { burn: 50, burn_max: 100, spin: 200 };
-        assert_eq!(c.step(0, COAL, true), Step::IDLE);
-        assert_eq!(c, Centrifuge { burn: 50, burn_max: 100, spin: 0 });
+        let mut c = Centrifuge { burn: 50, burn_max: 100, spin: 200, stage: 0 };
+        assert_eq!(c.step(raw(0), COAL, None, &most), Step::IDLE);
+        assert_eq!(c, Centrifuge { burn: 50, burn_max: 100, spin: 0, stage: 0 });
     }
 
     #[test]
     fn a_full_output_waits() {
-        let mut c = Centrifuge { burn: 30, burn_max: 100, spin: 250 };
+        let mut c = Centrifuge { burn: 30, burn_max: 100, spin: 250, stage: 0 };
         for _ in 0..50 {
-            assert_eq!(c.step(4, COAL, false), Step::IDLE);
+            assert_eq!(c.step(raw(4), COAL, FULL, &most), Step::IDLE);
         }
         // Neither the progress nor the burning fuel is lost while it waits.
-        assert_eq!(c, Centrifuge { burn: 30, burn_max: 100, spin: 250 });
+        assert_eq!(c, Centrifuge { burn: 30, burn_max: 100, spin: 250, stage: 0 });
         let mut c = Centrifuge::default();
-        assert_eq!(c.step(4, COAL, false), Step::IDLE, "no fuel is taken for nothing");
+        assert_eq!(c.step(raw(4), COAL, FULL, &most), Step::IDLE, "no fuel is taken for nothing");
         assert_eq!(c, Centrifuge::default());
     }
 
     #[test]
     fn state_round_trips() {
-        let c = Centrifuge { burn: 1234, burn_max: 1600, spin: 321 };
+        let c = Centrifuge { burn: 1234, burn_max: 1600, spin: 321, stage: 0 };
         let back: Centrifuge = serde_json::from_slice(&serde_json::to_vec(&c).unwrap()).unwrap();
         assert_eq!(back, c);
         // What an older or empty entity holds reads as a cold centrifuge.
@@ -5410,10 +5684,10 @@ mod tests {
 
     #[test]
     fn the_screen_shows_the_fire_and_the_spin() {
-        let c = Centrifuge { burn: 800, burn_max: 1600, spin: 100 };
+        let c = Centrifuge { burn: 800, burn_max: 1600, spin: 100, stage: 0 };
         assert_eq!(c.data(), [800, 1600, 100, SPIN_TICKS as i32]);
         // Data slots are 16 bits on the wire.
-        let hot = Centrifuge { burn: 40_000, burn_max: 40_000, spin: 0 };
+        let hot = Centrifuge { burn: 40_000, burn_max: 40_000, spin: 0, stage: 0 };
         assert_eq!(hot.data()[..2], [i32::from(i16::MAX); 2]);
         assert_eq!(flame_height(0, 0), 0);
         assert_eq!(flame_height(1600, 1600), FLAME_HEIGHT);
@@ -5428,6 +5702,11 @@ mod tests {
     // ---- the bombs (plan 4, Task 5) ------------------------------------------
 
     const OVERWORLD: &str = "minecraft:overworld";
+
+    /// A world with nothing in it, as a bomb's structure reads one.
+    fn air(_: [i32; 3]) -> String {
+        "minecraft:air".into()
+    }
 
     /// A bomb with a keypad, its code `code` set when it isn't empty.
     fn keypad(code: &str) -> Bomb {
@@ -5448,7 +5727,7 @@ mod tests {
 
     #[test]
     fn bombs_know_their_radius() {
-        assert_eq!(BombKind::ALL.map(BombKind::radius), [16, 50, 250]);
+        assert_eq!(BombKind::ALL.map(BombKind::radius), [16, 50, 250, 1000]);
         for k in BombKind::ALL {
             assert_eq!(BombKind::of_block(k.id()), Some(k));
             assert!((MIN_RADIUS..=MAX_RADIUS).contains(&k.radius()), "{k:?}");
@@ -5664,7 +5943,7 @@ mod tests {
         // glue takes the bomb when the wave works the chunk of its center.
         let roof_bomb = [40, 126, -20];
         assert!(saved.record(NETHER, roof_bomb, BombKind::Atomic));
-        assert_eq!(saved.fire_bomb(NETHER, roof_bomb), Ok(1));
+        assert_eq!(saved.fire_bomb(NETHER, roof_bomb, &air), Ok(1));
         assert_eq!(saved.waves.centers_in(NETHER, chunk_of(40, -20)), vec![roof_bomb]);
         assert!(saved.waves.centers_in(NETHER, chunk_of(56, -20)).is_empty(), "another chunk");
         assert!(saved.waves.centers_in(OVERWORLD, chunk_of(40, -20)).is_empty(), "another dimension");
@@ -5688,13 +5967,13 @@ mod tests {
         assert!(reached(&saved.placed, &blast, chunk_of(60, 0)).is_empty());
         // A bomb set off goes off once, within the operator's limit.
         assert!(saved.record(OVERWORLD, near, BombKind::Tactical));
-        assert_eq!(saved.set_off(OVERWORLD, near), Ok(2));
+        assert_eq!(saved.set_off(OVERWORLD, near, &air), Ok(2));
         assert!(reached(&saved.placed, &blast, chunk_of(0, 0)).is_empty());
         assert_eq!(saved.recorded(OVERWORLD, near), None, "its remote finds it gone");
-        assert_eq!(saved.set_off(OVERWORLD, near), Err(Refused::Gone));
+        assert_eq!(saved.set_off(OVERWORLD, near, &air), Err(Refused::Gone));
         saved.maxpower = 16;
         assert!(saved.place(OVERWORLD, [12, 64, 0], BombKind::Atomic));
-        assert_eq!(saved.set_off(OVERWORLD, [12, 64, 0]), Err(Refused::Maxpower { radius: 250, maxpower: 16 }));
+        assert_eq!(saved.set_off(OVERWORLD, [12, 64, 0], &air), Err(Refused::Maxpower { radius: 250, maxpower: 16 }));
         assert_eq!(reached(&saved.placed, &blast, chunk_of(0, 0)), vec![([12, 64, 0], BombKind::Atomic)], "it stays");
         // A bomb taken away is forgotten.
         assert!(saved.unplace(OVERWORLD, [12, 64, 0]));
@@ -5712,20 +5991,20 @@ mod tests {
         assert!(saved.record(OVERWORLD, at, BombKind::Tactical));
         assert_eq!(saved.recorded(OVERWORLD, at), Some(BombKind::Tactical));
         // Its chunk needn't be loaded: the wave starts at the bomb, with the bomb's radius.
-        assert_eq!(saved.fire_bomb(OVERWORLD, at), Ok(1));
+        assert_eq!(saved.fire_bomb(OVERWORLD, at, &air), Ok(1));
         let news = saved.waves.news(OVERWORLD, saved.tick);
         assert_eq!(news.iter().map(|n| (n.id, n.center, n.radius)).collect::<Vec<_>>(), vec![(1, at, 50)]);
         // The record goes with the blast: a second press finds no bomb.
         assert_eq!(saved.recorded(OVERWORLD, at), None);
-        assert_eq!(saved.fire_bomb(OVERWORLD, at), Err(Refused::Gone));
+        assert_eq!(saved.fire_bomb(OVERWORLD, at, &air), Err(Refused::Gone));
         assert_eq!(saved.next_id, 1, "no second blast");
         // The bomb still standing while its wave runs isn't linked again.
         assert!(!saved.record(OVERWORLD, at, BombKind::Tactical));
-        assert_eq!(saved.fire_bomb(OVERWORLD, at), Err(Refused::Gone));
+        assert_eq!(saved.fire_bomb(OVERWORLD, at, &air), Err(Refused::Gone));
         // A bomb is its dimension's and its place's: the same place elsewhere is another.
-        assert_eq!(saved.fire_bomb(NETHER, at), Err(Refused::Gone));
+        assert_eq!(saved.fire_bomb(NETHER, at, &air), Err(Refused::Gone));
         assert!(saved.record(NETHER, at, BombKind::Atomic));
-        assert_eq!(saved.fire_bomb(NETHER, at), Ok(2));
+        assert_eq!(saved.fire_bomb(NETHER, at, &air), Ok(2));
         // A link is a dimension and a place.
         let link = Link { dimension: NETHER.into(), pos: at };
         assert_eq!(Link::of(&link.dimension, link.pos), Some(link));
@@ -5748,9 +6027,9 @@ mod tests {
         assert!(saved.forget(OVERWORLD, a));
         assert!(!saved.forget(OVERWORLD, a), "forgotten once");
         assert!(!saved.forget(NETHER, b), "only in its own dimension");
-        assert_eq!(saved.fire_bomb(OVERWORLD, a), Err(Refused::Gone));
+        assert_eq!(saved.fire_bomb(OVERWORLD, a, &air), Err(Refused::Gone));
         assert!(saved.waves.finished(), "a broken bomb doesn't go off");
-        assert_eq!(saved.fire_bomb(OVERWORLD, b), Ok(1));
+        assert_eq!(saved.fire_bomb(OVERWORLD, b, &air), Ok(1));
     }
 
     #[test]
@@ -5763,20 +6042,20 @@ mod tests {
         let (atomic, tactical) = ([100, 64, 0], [200, 64, 0]);
         saved.record(OVERWORLD, atomic, BombKind::Atomic);
         saved.record(OVERWORLD, tactical, BombKind::Tactical);
-        assert_eq!(saved.fire_bomb(OVERWORLD, atomic), Err(Refused::Maxpower { radius: 250, maxpower: 50 }));
+        assert_eq!(saved.fire_bomb(OVERWORLD, atomic, &air), Err(Refused::Maxpower { radius: 250, maxpower: 50 }));
         assert_eq!(saved.recorded(OVERWORLD, atomic), Some(BombKind::Atomic));
-        assert_eq!(saved.fire_bomb(OVERWORLD, tactical), Ok(2));
+        assert_eq!(saved.fire_bomb(OVERWORLD, tactical, &air), Ok(2));
         saved.maxpower = 16;
         assert!(saved.allows(BombKind::Demolition.radius()));
         assert!(!saved.allows(BombKind::Tactical.radius()));
-        assert_eq!(saved.fire_bomb(OVERWORLD, atomic), Err(Refused::Maxpower { radius: 250, maxpower: 16 }));
+        assert_eq!(saved.fire_bomb(OVERWORLD, atomic, &air), Err(Refused::Maxpower { radius: 250, maxpower: 16 }));
         saved.maxpower = 250;
-        assert_eq!(saved.fire_bomb(OVERWORLD, atomic), Ok(3));
+        assert_eq!(saved.fire_bomb(OVERWORLD, atomic, &air), Ok(3));
     }
 
     #[test]
-    fn maxpower_takes_only_the_four_steps() {
-        assert_eq!(MAXPOWER_STEPS, [16, 50, 250, 1024]);
+    fn maxpower_takes_only_its_steps() {
+        assert_eq!(MAXPOWER_STEPS, [16, 50, 250, 1000, 1024]);
         assert_eq!(*MAXPOWER_STEPS.last().unwrap(), MAX_RADIUS);
         assert_eq!(parse_maxpower(&[]), Some(None), "no number: tell the limit");
         for step in MAXPOWER_STEPS {
@@ -6137,6 +6416,342 @@ mod tests {
         assert!(close(one, two) && one > 0.0 && one < 0.5, "{one} {two}");
         assert!(ease(0.0, 1.0, 5.0) > 0.99);
         assert_eq!(ease(0.3, 0.3, 1.0), 0.3);
+    }
+
+    // ---- the sunbreaker (plan 8, Task 1) ------------------------------------------------
+
+    const CORE_AT: [i32; 3] = [100, 64, -40];
+
+    /// The blocks of a Sunbreaker at `core` with its whole structure.
+    fn sunbreaker(core: [i32; 3]) -> BTreeMap<[i32; 3], &'static str> {
+        let mut w: BTreeMap<[i32; 3], &'static str> =
+            structure_cells(core).map(|(p, layer)| (p, if layer == 1 { IMPLOSION_SHELL } else { NEUTRON_REFLECTOR })).collect();
+        w.insert(core, SUNBREAKER_CORE);
+        w
+    }
+
+    /// A world of `w`'s blocks and air.
+    fn reader<'a>(w: &'a BTreeMap<[i32; 3], &'static str>) -> impl Fn([i32; 3]) -> String + 'a {
+        move |p| w.get(&p).copied().unwrap_or("minecraft:air").to_owned()
+    }
+
+    /// The places of `core`'s structure in one layer.
+    fn layer(core: [i32; 3], wanted: u8) -> Vec<[i32; 3]> {
+        structure_cells(core).filter(|c| c.1 == wanted).map(|c| c.0).collect()
+    }
+
+    #[test]
+    fn a_full_structure_gives_a_thousand() {
+        let cells: Vec<([i32; 3], u8)> = structure_cells(CORE_AT).collect();
+        let distinct: BTreeSet<[i32; 3]> = cells.iter().map(|c| c.0).collect();
+        assert_eq!(distinct.len(), cells.len());
+        assert!(!distinct.contains(&CORE_AT));
+        assert_eq!((layer(CORE_AT, 1).len() as u32, layer(CORE_AT, 2).len() as u32), (SHELL_BLOCKS, REFLECTOR_BLOCKS));
+        let w = sunbreaker(CORE_AT);
+        let s = read_structure(CORE_AT, &reader(&w));
+        assert_eq!(s, Structure { shell: 26, reflector: 98 });
+        assert_eq!(s.radius(), Ok(1000));
+        assert_eq!(BombKind::Sunbreaker.power(CORE_AT, &reader(&w)), Ok(1000));
+        assert_eq!(BombKind::Sunbreaker.radius(), 1000);
+        assert!(BombKind::Sunbreaker.radius() <= MAX_RADIUS && MAXPOWER_STEPS.iter().any(|s| *s >= 1000));
+        // The others don't read the world.
+        assert_eq!(BombKind::Atomic.power(CORE_AT, &air), Ok(250));
+        assert_eq!(BombKind::of_block(SUNBREAKER_CORE), Some(BombKind::Sunbreaker));
+    }
+
+    #[test]
+    fn a_full_shell_alone_gives_six_hundred() {
+        let mut w = sunbreaker(CORE_AT);
+        for p in layer(CORE_AT, 2) {
+            w.remove(&p);
+        }
+        assert_eq!(read_structure(CORE_AT, &reader(&w)), Structure { shell: 26, reflector: 0 });
+        assert_eq!(BombKind::Sunbreaker.power(CORE_AT, &reader(&w)), Ok(SUNBREAKER_BASE));
+        assert_eq!(SUNBREAKER_BASE, 600);
+    }
+
+    #[test]
+    fn each_reflector_block_adds_its_share() {
+        let mut w = sunbreaker(CORE_AT);
+        for p in layer(CORE_AT, 2).into_iter().take(25) {
+            w.remove(&p);
+        }
+        // 73 of 98: the chat's example.
+        assert_eq!(Structure { shell: 26, reflector: 73 }.radius(), Ok(897));
+        assert_eq!(BombKind::Sunbreaker.power(CORE_AT, &reader(&w)), Ok(897));
+        for p in layer(CORE_AT, 2).into_iter().take(49) {
+            w.remove(&p);
+        }
+        assert_eq!(read_structure(CORE_AT, &reader(&w)).reflector, 49);
+        assert_eq!(BombKind::Sunbreaker.power(CORE_AT, &reader(&w)), Ok(800));
+        // Each block counts, rounded down.
+        assert_eq!(Structure { shell: 26, reflector: 1 }.radius(), Ok(604));
+        assert_eq!(Structure { shell: 26, reflector: 97 }.radius(), Ok(995));
+    }
+
+    #[test]
+    fn a_gap_in_the_shell_refuses() {
+        let mut w = sunbreaker(CORE_AT);
+        w.remove(&layer(CORE_AT, 1)[7]);
+        assert_eq!(read_structure(CORE_AT, &reader(&w)), Structure { shell: 25, reflector: 98 });
+        assert_eq!(BombKind::Sunbreaker.power(CORE_AT, &reader(&w)), Err(StructureProblem::Shell(25)));
+        // A whole reflector makes up for nothing.
+        assert_eq!(Structure { shell: 0, reflector: 98 }.radius(), Err(StructureProblem::Shell(0)));
+    }
+
+    #[test]
+    fn a_wrong_block_counts_as_missing() {
+        let mut w = sunbreaker(CORE_AT);
+        w.insert(layer(CORE_AT, 2)[0], "minecraft:glass");
+        assert_eq!(read_structure(CORE_AT, &reader(&w)).reflector, 97);
+        // Each part counts only in its own layer.
+        w.insert(layer(CORE_AT, 2)[1], IMPLOSION_SHELL);
+        w.insert(layer(CORE_AT, 1)[0], NEUTRON_REFLECTOR);
+        assert_eq!(read_structure(CORE_AT, &reader(&w)), Structure { shell: 25, reflector: 96 });
+        assert_eq!(BombKind::Sunbreaker.power(CORE_AT, &reader(&w)), Err(StructureProblem::Shell(25)));
+    }
+
+    #[test]
+    fn an_unread_block_counts_as_missing() {
+        assert_eq!(read_structure(CORE_AT, &air), Structure::default());
+        assert_eq!(BombKind::Sunbreaker.power(CORE_AT, &air), Err(StructureProblem::Shell(0)));
+        // A core two blocks from its chunk's edge, the next chunk not loaded: the
+        // reflector's far face is lost, the bomb is weaker but goes off.
+        let core = [14, 64, 8];
+        let w = sunbreaker(core);
+        let loaded = |p: [i32; 3]| if chunk_of(p[0], p[2]) == [0, 0] { reader(&w)(p) } else { "minecraft:air".to_owned() };
+        assert_eq!(read_structure(core, &loaded), Structure { shell: 26, reflector: 73 });
+        assert_eq!(BombKind::Sunbreaker.power(core, &loaded), Ok(897));
+    }
+
+    #[test]
+    fn core_near_finds_the_core_from_any_cell() {
+        let w = sunbreaker(CORE_AT);
+        assert_eq!(core_near(CORE_AT, &reader(&w)), Some(CORE_AT));
+        for (p, _) in structure_cells(CORE_AT) {
+            assert_eq!(core_near(p, &reader(&w)), Some(CORE_AT), "{p:?}");
+        }
+        // Three blocks out is past the reflector.
+        assert_eq!(core_near([CORE_AT[0] + 3, CORE_AT[1], CORE_AT[2]], &reader(&w)), None);
+        assert_eq!(core_near(CORE_AT, &air), None);
+        // Two cores: the nearer.
+        let mut two = sunbreaker(CORE_AT);
+        let other = [CORE_AT[0] + 4, CORE_AT[1], CORE_AT[2]];
+        two.insert(other, SUNBREAKER_CORE);
+        assert_eq!(core_near([CORE_AT[0] + 3, CORE_AT[1], CORE_AT[2]], &reader(&two)), Some(other));
+        assert_eq!(core_near([CORE_AT[0] + 1, CORE_AT[1], CORE_AT[2]], &reader(&two)), Some(CORE_AT));
+    }
+
+    #[test]
+    fn a_chain_detonation_reads_what_is_left_of_the_structure() {
+        let mut saved = Saved::default();
+        let atomic = [0, 64, 0];
+        let (strong, broken) = ([40, 64, 0], [0, 64, 40]);
+        assert!(saved.place(OVERWORLD, atomic, BombKind::Atomic));
+        assert!(saved.place(OVERWORLD, strong, BombKind::Sunbreaker));
+        assert!(saved.place(OVERWORLD, broken, BombKind::Sunbreaker));
+        assert!(saved.record(OVERWORLD, broken, BombKind::Sunbreaker));
+        let id = saved.fire(OVERWORLD, atomic, 250).unwrap();
+        let blast = saved.waves.waves.iter().find(|w| w.blast.id == id).unwrap().blast.clone();
+        assert_eq!(reached(&saved.placed, &blast, chunk_of(40, 0)), vec![(strong, BombKind::Sunbreaker)]);
+        // The wave has taken half its reflector by the time it gets there.
+        let mut w = sunbreaker(strong);
+        w.extend(sunbreaker(broken));
+        for p in layer(strong, 2).into_iter().take(49) {
+            w.remove(&p);
+        }
+        let set_off = saved.set_off(OVERWORLD, strong, &reader(&w)).unwrap();
+        let news = saved.waves.news(OVERWORLD, saved.tick);
+        let n = news.iter().find(|n| n.id == set_off).unwrap();
+        assert_eq!((n.center, n.radius), (strong, 800));
+        assert!(saved.placed.iter().all(|b| b.pos != strong));
+        // One whose shell is gone fizzles: nothing goes off and it is forgotten.
+        w.remove(&layer(broken, 1)[3]);
+        let before = saved.next_id;
+        assert_eq!(saved.set_off(OVERWORLD, broken, &reader(&w)), Err(Refused::Structure(StructureProblem::Shell(25))));
+        assert_eq!(saved.next_id, before);
+        assert!(saved.placed.iter().all(|b| b.pos != broken));
+        assert_eq!(saved.recorded(OVERWORLD, broken), None);
+    }
+
+    #[test]
+    fn a_thousand_breaks_bedrock_at_the_center_only() {
+        let w = World::OVERWORLD;
+        let b = blast([0, 64, 0], BEDROCK_RADIUS, 9, w);
+        assert_eq!(crater_floor(&b, 0.0), w.min_y);
+        assert_eq!(crater_floor(&b, f64::from(BEDROCK_HOLE) / 1000.0), w.min_y);
+        assert!(crater_floor(&b, 30.0 / 1000.0) >= w.min_y + ABOVE_FLOOR);
+        for i in (0..=1000).filter(|i| *i != BEDROCK_HOLE as i32) {
+            let floor = crater_floor(&b, f64::from(i) / 1000.0);
+            if i < BEDROCK_HOLE as i32 {
+                assert_eq!(floor, w.min_y, "{i}");
+            } else {
+                assert!(floor >= w.min_y + ABOVE_FLOOR, "{i}");
+            }
+        }
+        let short = blast([0, 64, 0], BEDROCK_RADIUS - 1, 9, w);
+        for i in 0..=1000 {
+            assert!(crater_floor(&short, f64::from(i) / 1000.0) >= w.min_y + ABOVE_FLOOR, "{i}");
+        }
+        // The center's column is emptied from the world's floor up: the void shows under it.
+        let [plants, _] = plan_chunk(&b, chunk_of(0, 0));
+        let run = plants.runs.iter().find(|r| (r.x, r.z) == (0, 0) && r.only.is_none()).unwrap();
+        assert_eq!((run.y, run.y + run.height as i32, run.block), (w.min_y, w.roof, AIR));
+        let [plants, _] = plan_chunk(&short, chunk_of(0, 0));
+        let run = plants.runs.iter().find(|r| (r.x, r.z) == (0, 0) && r.only.is_none()).unwrap();
+        assert_eq!(run.y, w.min_y + ABOVE_FLOOR);
+    }
+
+    #[test]
+    fn the_nether_keeps_its_roof_but_loses_its_floor() {
+        let w = World::NETHER;
+        let b = blast([0, 64, 0], 1000, 3, w);
+        let [plants, _] = plan_chunk(&b, chunk_of(0, 0));
+        let run = plants.runs.iter().find(|r| (r.x, r.z) == (0, 0) && r.only.is_none()).unwrap();
+        // The floor's bedrock goes, the roof's (123 and up) stays.
+        assert_eq!((run.y, run.y + run.height as i32), (w.min_y, w.roof));
+        assert!(plants.runs.iter().chain(&plan_chunk(&b, chunk_of(0, 0))[1].runs).all(|r| r.y + r.height as i32 <= w.roof || r.surface.is_some()));
+        // Past the hole the Nether's floor stays.
+        let [plants, _] = plan_chunk(&b, chunk_of(40, 0));
+        let off = plants.runs.iter().find(|r| (r.x, r.z) == (40, 0) && r.only.is_none()).unwrap();
+        assert!(edge(&b, 40, 0) * 1000.0 > f64::from(BEDROCK_HOLE));
+        assert_eq!(off.y, w.min_y + ABOVE_FLOOR);
+    }
+
+    #[test]
+    fn maxpower_holds_back_a_sunbreaker() {
+        let mut saved = Saved { maxpower: 250, ..Saved::default() };
+        let mut w = sunbreaker(CORE_AT);
+        for p in layer(CORE_AT, 2).into_iter().take(25) {
+            w.remove(&p);
+        }
+        assert!(saved.place(OVERWORLD, CORE_AT, BombKind::Sunbreaker));
+        assert!(saved.record(OVERWORLD, CORE_AT, BombKind::Sunbreaker));
+        let over = Err(Refused::Maxpower { radius: 897, maxpower: 250 });
+        assert_eq!(saved.set_off(OVERWORLD, CORE_AT, &reader(&w)), over);
+        assert_eq!(saved.fire_bomb(OVERWORLD, CORE_AT, &reader(&w)), over);
+        // Nothing went off and the bomb stays, for its remote and for the next wave.
+        assert!(saved.waves.finished());
+        assert_eq!(saved.recorded(OVERWORLD, CORE_AT), Some(BombKind::Sunbreaker));
+        assert_eq!(saved.placed_in(OVERWORLD, chunk_of(CORE_AT[0], CORE_AT[2])), vec![CORE_AT]);
+        // A remote's Sunbreaker without its shell stays too: it can be mended.
+        saved.maxpower = MAX_RADIUS;
+        assert_eq!(saved.fire_bomb(OVERWORLD, CORE_AT, &air), Err(Refused::Structure(StructureProblem::Shell(0))));
+        assert_eq!(saved.recorded(OVERWORLD, CORE_AT), Some(BombKind::Sunbreaker));
+        assert!(saved.fire_bomb(OVERWORLD, CORE_AT, &reader(&w)).is_ok());
+    }
+
+    #[test]
+    fn the_sunbreakers_fuse_burns_fifteen_seconds() {
+        let mut b = Bomb::new(BombKind::Sunbreaker);
+        for d in Detonator::ALL {
+            assert!(BombKind::Sunbreaker.takes(d), "{d:?}");
+        }
+        b.install(Detonator::Fuse).unwrap();
+        assert!(b.light(0));
+        assert_eq!(b.left(0), Some(SUNBREAKER_FUSE));
+        assert_eq!(SUNBREAKER_FUSE / 20, 15);
+        assert!(!b.tick(SUNBREAKER_FUSE - 1));
+        assert!(b.tick(SUNBREAKER_FUSE));
+        // A clock gone back cuts the count to the Sunbreaker's own fuse, not the others'.
+        let mut b = Bomb { fires_at: Some(100_000), ..Bomb::new(BombKind::Sunbreaker) };
+        b.tick(0);
+        assert_eq!(b.fires_at, Some(SUNBREAKER_FUSE));
+        let mut a = Bomb { fires_at: Some(100_000), ..Bomb::new(BombKind::Atomic) };
+        a.tick(0);
+        assert_eq!(a.fires_at, Some(FUSE_TICKS.max(COUNTDOWN_TICKS)));
+        assert!(ALARM_TICKS < SUNBREAKER_FUSE);
+    }
+
+    #[test]
+    fn the_sunbreaker_neither_flies_nor_rides_a_bomber() {
+        assert!(!BombKind::Sunbreaker.flies());
+        assert!(!pad_takes(PAD_WARHEAD_SLOT, SUNBREAKER_CORE));
+        assert_eq!(pad_load(Some(MISSILE), Some(SUNBREAKER_CORE)), Err(ShaftProblem::NoWarhead));
+        let mut saved = Saved::default();
+        assert_eq!(saved.charge(OVERWORLD, [0, 64, 0], Some(SUNBREAKER_CORE)), Charge::Not);
+        assert_eq!(name_key(SUNBREAKER_CORE), "block.big_nukes.sunbreaker_core");
+        assert_eq!(name_key(IMPLOSION_SHELL), "block.big_nukes.implosion_shell");
+        assert_eq!(name_key(WEAPONS_GRADE_URANIUM), "item.big_nukes.weapons_grade_uranium");
+    }
+
+    #[test]
+    fn the_centrifuge_makes_weapons_grade_from_four_enriched() {
+        let enriched = |n: u32| Some((ENRICHED_URANIUM, n));
+        let mut c = Centrifuge::default();
+        // Three aren't enough to start.
+        assert_eq!(c.step(enriched(3), COAL, None, &most), Step::IDLE);
+        assert_eq!(c, Centrifuge::default());
+        let mut made = 0;
+        for tick in 1..=SPIN_TICKS * 3 {
+            let step = c.step(enriched(4), COAL, None, &most);
+            if step.made {
+                made += 1;
+                assert_eq!(tick, SPIN_TICKS * 3);
+            }
+            if tick == 1 {
+                assert_eq!(c.data()[3], (SPIN_TICKS * 3) as i32, "the screen's arrow fills over the longer spin");
+            }
+        }
+        assert_eq!(made, 1);
+        assert_eq!(c.enrichment(), Enrichment { input: ENRICHED_URANIUM, takes: 4, output: WEAPONS_GRADE_URANIUM, ticks: 1200 });
+        // Its output takes weapons-grade uranium only, up to a stack.
+        let mut c = Centrifuge { burn: 100, burn_max: 100, spin: 0, stage: 0 };
+        assert_eq!(c.step(enriched(4), COAL, Some((ENRICHED_URANIUM, 1)), &most), Step::IDLE);
+        assert_eq!(c.step(enriched(4), COAL, Some((WEAPONS_GRADE_URANIUM, 16)), &most), Step::IDLE);
+        assert!(!c.step(enriched(4), COAL, Some((WEAPONS_GRADE_URANIUM, 15)), &most).took_fuel);
+        assert_eq!(c.spin, 1);
+        // Changing the input for another loses the work on it.
+        let mut c = Centrifuge { burn: 100, burn_max: 100, spin: 399, stage: 1 };
+        assert_eq!(c.step(raw(1), COAL, None, &most), Step::default());
+        assert_eq!((c.stage, c.spin), (0, 1));
+        // What the centrifuge takes and gives.
+        assert_eq!(enrichment(RAW_URANIUM), Some(0));
+        assert_eq!(enrichment(ENRICHED_URANIUM), Some(1));
+        assert_eq!(enrichment(WEAPONS_GRADE_URANIUM), None);
+    }
+
+    #[test]
+    fn raw_uranium_still_makes_enriched() {
+        let mut c = Centrifuge::default();
+        for tick in 1..=SPIN_TICKS {
+            assert_eq!(c.step(raw(1), COAL, Some((ENRICHED_URANIUM, 10)), &most).made, tick == SPIN_TICKS);
+        }
+        assert_eq!(c.enrichment().output, ENRICHED_URANIUM);
+        assert_eq!(c.data()[3], SPIN_TICKS as i32);
+        // Weapons-grade in the output keeps raw uranium waiting.
+        let mut c = Centrifuge::default();
+        assert_eq!(c.step(raw(1), COAL, Some((WEAPONS_GRADE_URANIUM, 1)), &most), Step::IDLE);
+        // A centrifuge saved before the second step reads as enriching.
+        let old: Centrifuge = serde_json::from_str(r#"{"burn":5,"burn_max":10,"spin":7}"#).unwrap();
+        assert_eq!(old, Centrifuge { burn: 5, burn_max: 10, spin: 7, stage: 0 });
+        // Something it doesn't take is nothing to spin.
+        assert_eq!(c.step(Some(("minecraft:stone", 64)), COAL, None, &most), Step::IDLE);
+    }
+
+    #[test]
+    fn the_three_parts_are_assembled() {
+        let core = [Some((WEAPONS_GRADE_URANIUM, 4)), Some(("big_nukes:nuclear_charge", 4)), Some(("minecraft:diamond_block", 1))];
+        let made = assemble(&core, None, &most).unwrap();
+        assert_eq!((made.result, made.count), (SUNBREAKER_CORE, 1));
+        let shell = [Some(("minecraft:tnt", 4)), Some(("minecraft:iron_block", 2)), Some(("minecraft:redstone", 2))];
+        assert_eq!(assemble(&shell, None, &most).map(|a| (a.result, a.count)), Some((IMPLOSION_SHELL, 1)));
+        let reflector = [Some(("minecraft:iron_block", 4)), Some((ENRICHED_URANIUM, 1))];
+        assert_eq!(assemble(&reflector, None, &most).map(|a| (a.result, a.count)), Some((NEUTRON_REFLECTOR, 4)));
+        // Four reflectors need room for four (`most` stacks 16).
+        assert!(assemble(&reflector, Some((NEUTRON_REFLECTOR, 13)), &most).is_none());
+        assert!(assemble(&reflector, Some((NEUTRON_REFLECTOR, 12)), &most).is_some());
+        // Every recipe's own parts make it, and nothing else.
+        for (i, a) in ASSEMBLIES.iter().enumerate() {
+            let grid: Vec<Option<(&str, u32)>> = a.parts.iter().map(|&(id, n)| Some((id, n))).collect();
+            assert_eq!(assembly_in(&grid), Some(i), "{}", a.result);
+            assert!(a.count >= 1 && a.parts.iter().map(|p| p.1).sum::<u32>() as usize <= GRID_SLOTS, "{}", a.result);
+        }
+        // The core is the bomb, the parts are blocks, the uranium an item.
+        assert!(ITEMS.iter().any(|i| i.0 == WEAPONS_GRADE_URANIUM && i.2));
+        for id in [SUNBREAKER_CORE, IMPLOSION_SHELL, NEUTRON_REFLECTOR, WEAPONS_GRADE_URANIUM] {
+            assert!(!tips(id).is_empty(), "{id}");
+        }
     }
 }
 

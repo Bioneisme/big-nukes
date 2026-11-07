@@ -346,7 +346,22 @@ pub(in crate::game) fn refused(why: rules::Refused) -> Text {
         rules::Refused::Dimension => Text::translate("big_nukes.blast.dimension", &[]),
         rules::Refused::Maxpower { radius, maxpower } => Text::translate("big_nukes.maxpower.over", &[n(radius), n(maxpower)]),
         rules::Refused::Gone => Text::translate("big_nukes.remote.gone", &[]),
+        rules::Refused::Structure(rules::StructureProblem::Shell(shell)) => {
+            Text::translate("big_nukes.sunbreaker.shell", &[n(shell), n(rules::SHELL_BLOCKS)])
+        }
     }
+}
+
+/// The blocks round the bomb at `pos` that a Sunbreaker's structure takes, as they
+/// stand now: read for a rule that looks at them after the state is locked or the
+/// wave has changed them.
+pub(in crate::game) fn structure_now(game: &Game<'_>, pos: [i32; 3]) -> HashMap<[i32; 3], String> {
+    rules::structure_cells(pos).map(|(p, _)| (p, game.native_block(p))).collect()
+}
+
+/// Reads `blocks` as the world: what isn't there is air.
+fn read_from(blocks: &HashMap<[i32; 3], String>) -> impl Fn([i32; 3]) -> String + '_ {
+    move |p| blocks.get(&p).cloned().unwrap_or_else(|| "minecraft:air".to_owned())
 }
 
 fn usage() -> Text {
@@ -732,7 +747,7 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     let mut worked = Vec::new();
     // The bombs a wave reaches go off as it gets to them: read before the edits take them.
     let placed = st.saved.placed.clone();
-    let mut reached: Vec<[i32; 3]> = Vec::new();
+    let mut reached: Vec<([i32; 3], HashMap<[i32; 3], String>)> = Vec::new();
     let done = st.saved.waves.work(dimension, BUDGET, &|| started.elapsed(), &mut |blast, chunk| {
         if !loaded.contains(&chunk) {
             return false;
@@ -740,7 +755,9 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
         worked.push(chunk);
         for (pos, kind) in rules::reached(&placed, blast, chunk) {
             if rules::BombKind::of_block(&game.native_block(pos)) == Some(kind) {
-                reached.push(pos);
+                // A Sunbreaker goes off with what is left of its structure as the wave gets there.
+                let blocks = if kind == rules::BombKind::Sunbreaker { structure_now(game, pos) } else { HashMap::new() };
+                reached.push((pos, blocks));
             }
         }
         for edit in rules::plan_chunk(blast, chunk) {
@@ -762,11 +779,20 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     // that its crater missed (above the Nether's roof) goes now, so a bomb set
     // off from afar can't stay to be linked and set off again.
     let mut news = Vec::new();
-    for pos in reached {
-        if let Ok(id) = st.saved.set_off(dimension, pos) {
-            log::info!("[big_nukes] blast {id}: set off by another at {pos:?} in {dimension}");
-            take_bomb(game, dimension, pos);
-            news.extend(st.saved.waves.news(dimension, st.saved.tick).into_iter().filter(|n| n.id == id));
+    for (pos, blocks) in reached {
+        match st.saved.set_off(dimension, pos, &read_from(&blocks)) {
+            Ok(id) => {
+                log::info!("[big_nukes] blast {id}: set off by another at {pos:?} in {dimension}");
+                take_bomb(game, dimension, pos);
+                news.extend(st.saved.waves.news(dimension, st.saved.tick).into_iter().filter(|n| n.id == id));
+            }
+            // A Sunbreaker whose shell the wave broke first fizzles, and goes with it.
+            Err(rules::Refused::Structure(problem)) => {
+                log::info!("[big_nukes] the sunbreaker at {pos:?} in {dimension} fizzled: {problem:?}");
+                take_bomb(game, dimension, pos);
+                st.dirty = true;
+            }
+            Err(_) => {}
         }
     }
     if !news.is_empty() {
@@ -995,7 +1021,7 @@ fn centrifuge_container() -> ModContainer {
     }
 }
 
-/// What a hopper may put in: raw uranium in its slot, fuel in the other.
+/// What a hopper may put in: uranium the centrifuge works in its slot, fuel in the other.
 pub(in crate::game) fn accepts(game: &Game<'_>, entity: &ModBlockEntity, slot: usize, stack: &ItemStack, cancel: &mut bool) {
     if entity.id == rules::LAUNCH_PAD && !*cancel {
         *cancel = !rules::pad_takes(slot, &stack.item);
@@ -1004,10 +1030,10 @@ pub(in crate::game) fn accepts(game: &Game<'_>, entity: &ModBlockEntity, slot: u
     if entity.id != rules::CENTRIFUGE || *cancel {
         return;
     }
-    let raw = &*stack.item == rules::RAW_URANIUM;
+    let uranium = rules::enrichment(&stack.item).is_some();
     *cancel = match slot {
-        rules::INPUT_SLOT => !raw,
-        rules::FUEL_SLOT => raw || burn_time(game, stack) <= 0,
+        rules::INPUT_SLOT => !uranium,
+        rules::FUEL_SLOT => uranium || burn_time(game, stack) <= 0,
         _ => true,
     };
 }
@@ -1054,17 +1080,17 @@ fn take_fuel(entity: &mut ModBlockEntity) {
     }
 }
 
-/// One raw uranium out, one enriched uranium in.
-fn make(entity: &mut ModBlockEntity) {
+/// The step's uranium out of the input, one of what it makes into the output.
+fn make(entity: &mut ModBlockEntity, step: rules::Enrichment) {
     if let Some(input) = entity.items[rules::INPUT_SLOT].as_mut() {
-        input.count -= 1;
+        input.count = input.count.saturating_sub(step.takes);
         if input.count == 0 {
             entity.items[rules::INPUT_SLOT] = None;
         }
     }
     match entity.items[rules::OUTPUT_SLOT].as_mut() {
         Some(out) => out.count += 1,
-        None => entity.items[rules::OUTPUT_SLOT] = Some(stack_of(rules::ENRICHED_URANIUM)),
+        None => entity.items[rules::OUTPUT_SLOT] = Some(stack_of(step.output)),
     }
 }
 
@@ -1074,24 +1100,20 @@ fn centrifuge_tick(game: &mut Game<'_>, entity: &mut ModBlockEntity) {
     }
     let was = load(entity);
     let mut centrifuge = was.unwrap_or_default();
-    let input = entity.items[rules::INPUT_SLOT].as_ref().filter(|s| &*s.item == rules::RAW_URANIUM).map_or(0, |s| s.count);
     let fuel = entity.items[rules::FUEL_SLOT]
         .as_ref()
-        .filter(|s| &*s.item != rules::RAW_URANIUM)
+        .filter(|s| rules::enrichment(&s.item).is_none())
         .map(|s| burn_time(game, s))
         .filter(|t| *t > 0)
         .map(i32::unsigned_abs);
-    let most = game.native_max_stack_size(rules::ENRICHED_URANIUM).unwrap_or(64);
-    let room = match &entity.items[rules::OUTPUT_SLOT] {
-        None => true,
-        Some(s) => &*s.item == rules::ENRICHED_URANIUM && s.count < most,
-    };
-    let step = centrifuge.step(input, fuel, room);
+    let most = |item: &str| game.native_max_stack_size(item).unwrap_or(64);
+    let slot = |i: usize| entity.items[i].as_ref().map(|s| (&*s.item, s.count));
+    let step = centrifuge.step(slot(rules::INPUT_SLOT), fuel, slot(rules::OUTPUT_SLOT), &most);
     if step.took_fuel {
         take_fuel(entity);
     }
     if step.made {
-        make(entity);
+        make(entity, centrifuge.enrichment());
     }
     let data = centrifuge.data().to_vec();
     if entity.data != data {
@@ -1102,7 +1124,7 @@ fn centrifuge_tick(game: &mut Game<'_>, entity: &mut ModBlockEntity) {
     }
 }
 
-/// A shift-click from the inventory: raw uranium to its slot, fuel to its slot,
+/// A shift-click from the inventory: uranium it works to its slot, fuel to its slot,
 /// nothing else. One from the centrifuge goes the game's way, to the inventory.
 pub(in crate::game) fn quick_move(game: &Game<'_>, entity: &mut ModBlockEntity, container_slots: usize, slot: usize, stack: &mut ItemStack, handled: &mut bool) {
     // Nothing moves into or out of a bomb's hidden slot, nor a console's or a beacon's.
@@ -1121,7 +1143,7 @@ pub(in crate::game) fn quick_move(game: &Game<'_>, entity: &mut ModBlockEntity, 
     if entity.items.len() < rules::CENTRIFUGE_SLOTS {
         entity.items.resize(rules::CENTRIFUGE_SLOTS, None);
     }
-    let to = if &*stack.item == rules::RAW_URANIUM {
+    let to = if rules::enrichment(&stack.item).is_some() {
         rules::INPUT_SLOT
     } else if burn_time(game, stack) > 0 {
         rules::FUEL_SLOT
@@ -2019,7 +2041,8 @@ pub(in crate::game) fn use_item(game: &mut Game<'_>, stack: &ItemStack, claimed:
             }
         }
     }
-    let line = match start(game, dimension, |saved| saved.fire_bomb(dimension, pos)) {
+    let blocks = if here { structure_now(game, pos) } else { HashMap::new() };
+    let line = match start(game, dimension, |saved| saved.fire_bomb(dimension, pos, &read_from(&blocks))) {
         Ok(_) => {
             if here {
                 // The bomb goes with its blast, and its detonator with it.
