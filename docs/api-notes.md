@@ -213,6 +213,14 @@ Read in the source of 66f3981, not yet seen in the game:
   and its own `native_clock().game_time`, two ticks back for the display's glide.
 - The target's chunk is kept with `execute in <dim> run forceload add`, run from a level's tick where commands run,
   and the world keeps the list (`Saved.forced`) to remove it once the blast's wave has worked its center's chunk.
+  The pad's chunk is kept the same way from the launch, so the hatch is put back: `native_block` reads air where
+  nothing is loaded, so the hatch waits for `native_chunk_load`'s list (`glue::loaded`) rather than trust it.
+- A world opened again has only the overworld open: the dimensions with a flight, a strike or a forced chunk are
+  opened at its first server tick with `forceload query`, as a remote's blast does (`Saved::to_wake`).
+- The item helpers (`native_take_items`) take only plain stacks, the main hand first, so a renamed bomb on a beacon
+  is taken with `native_carried_stack` from the hotbar slot holding the stack `native_equipment(MainHand)` showed.
+  That runs in the click's hook, not in `native_inventory_tick`; its count of 0 is emptied at the slot's next
+  inventory tick. Not yet seen in the game.
 ## The guide
 
 Read in the source of 66f3981, not yet seen in the game:
@@ -270,5 +278,8 @@ Read in the source of 66f3981, not yet seen in the game:
   `WorldSurface` height, filtered to ash and to coarse dirt, so the top block is read in the edit itself and water or a
   block over the ash leaves the column alone. `native_surface_heights` (API 127) isn't needed. A pass waits while any of
   its columns is in a chunk not loaded, as the edit would skip it for good.
+- No hook says which items a hopper may take from a slot (`ModContainer.outputs` is the whole slot), so the bucket a
+  lava bucket leaves isn't an output: the block puts it into the container under it with `native_insert_item`
+  (API 20, a machine's auto-output, through that block's top). Not yet seen in the game.
 - The decontaminator's block entity ticks only in a loaded chunk; its circle is the world's (`Saved.cleans`), so the
   background is cleaned there with the chunk unloaded or the block broken.
