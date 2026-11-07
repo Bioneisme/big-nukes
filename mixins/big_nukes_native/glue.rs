@@ -73,6 +73,8 @@ static BROKEN: Mutex<Vec<(String, [i32; 3])>> = Mutex::new(Vec::new());
 /// Bombs placed (`Some`) and taken away (`None`), heard from the level the same
 /// way: the world's list of standing bombs takes them the next time it opens.
 static PLACED: Mutex<Vec<(String, [i32; 3], Option<rules::BombKind>)>> = Mutex::new(Vec::new());
+/// Players who asked for the guide with `/bignukes guide`, given it at the next server tick.
+static GUIDES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Players who died, heard while the state may be locked (a blast's damage or the
 /// sickness' kills them from a command): their doses go the next time it opens.
 static DIED: Mutex<Vec<u128>> = Mutex::new(Vec::new());
@@ -215,6 +217,10 @@ pub(in crate::game) fn logged_in(game: &mut Game<'_>, player: u128, name: &str) 
     }
     if world_items!(game).has_loot_table(rules::ASSETS_MARKER) {
         game.native_run_command(&format!("tag {name} add big_nukes.native"));
+        // The guide, once a player: the tag says they had it.
+        let tag = rules::GUIDE_TAG;
+        game.native_run_command(&format!("execute as {name} unless entity @s[tag={tag}] run {}", rules::guide_give("@s")));
+        game.native_run_command(&format!("tag {name} add {tag}"));
         // Someone joining mid-blast still hears what's on its way.
         let dimension = game.native_server_players().into_iter().find(|p| p.uuid == player).map(|p| p.dimension);
         let news = dimension
@@ -247,6 +253,7 @@ pub(in crate::game) fn commands(commands: &mut Vec<NativeCommand>) {
     // One text argument, last: the radius and the optional place are read from it.
     commands.push(NativeCommand::op("bignukes blast <args:text>", 2));
     commands.push(NativeCommand::op("bignukes maxpower [limit:integer]", 2));
+    commands.push(NativeCommand::new("bignukes guide"));
 }
 
 pub(in crate::game) fn perform(game: &mut Game<'_>, player: &NativeServerPlayer, line: &str, ran: &mut bool) {
@@ -264,6 +271,11 @@ pub(in crate::game) fn perform(game: &mut Game<'_>, player: &NativeServerPlayer,
             None => usage(),
         },
         Some(&"maxpower") => maxpower(game, &words[2..]),
+        // A command doesn't run inside a player's own: the next server tick gives the book.
+        Some(&"guide") => {
+            lock(&GUIDES).push(player.name.clone());
+            Text::translate("big_nukes.guide.given", &[])
+        }
         _ => usage(),
     };
     game.native_feedback(reply);
@@ -665,6 +677,9 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     // wave waits for its chunks to load, as anywhere else.
     for dimension in wake {
         game.native_run_command(&format!("execute in {dimension} run forceload query"));
+    }
+    for name in std::mem::take(&mut *lock(&GUIDES)) {
+        game.native_run_command(&rules::guide_give(&name));
     }
 }
 

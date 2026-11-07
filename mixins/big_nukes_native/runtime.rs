@@ -83,6 +83,31 @@ pub const ITEMS: [(&str, u8, bool); 14] = [
     (GEIGER_COUNTER, 1, false),
 ];
 
+/// The guide's pages, lang keys of the assets half: the book reads in the player's language.
+pub const GUIDE_PAGES: [&str; 10] = [
+    "big_nukes.guide.1",
+    "big_nukes.guide.2",
+    "big_nukes.guide.3",
+    "big_nukes.guide.4",
+    "big_nukes.guide.5",
+    "big_nukes.guide.6",
+    "big_nukes.guide.7",
+    "big_nukes.guide.8",
+    "big_nukes.guide.9",
+    "big_nukes.guide.10",
+];
+/// A player who was given the guide when they first joined.
+pub const GUIDE_TAG: &str = "big_nukes_guide_given";
+
+/// The command that gives `name` the guide: a written book, the only kind the game opens as a book.
+pub fn guide_give(name: &str) -> String {
+    let pages: Vec<String> = GUIDE_PAGES.iter().map(|k| format!("{{translate:\"{k}\"}}")).collect();
+    format!(
+        "give {name} minecraft:written_book[minecraft:written_book_content={{title:\"Big Nukes\",author:\"bioneisme\",pages:[{}]}}]",
+        pages.join(",")
+    )
+}
+
 /// What each block and item says under its name about how to use it: lang keys, one line each.
 const TIPS: [(&str, &[&str]); 21] = [
     ("big_nukes:demolition_charge", &["big_nukes.tip.demolition_charge", "big_nukes.tip.demolition_charge.2"]),
@@ -2666,6 +2691,32 @@ mod tests {
         assert_eq!(&b[1..4], b"PNG", "{path}");
         let int = |at: usize| u32::from_be_bytes(b[at..at + 4].try_into().unwrap());
         (int(16), int(20))
+    }
+
+    #[test]
+    fn every_guide_page_is_in_both_languages_and_fits() {
+        let (en, ru) = (language("en_us"), language("ru_ru"));
+        assert_eq!(GUIDE_PAGES.len(), 10);
+        for key in GUIDE_PAGES {
+            for (lang, lines) in [("en_us", &en), ("ru_ru", &ru)] {
+                let page = lines.get(key).unwrap_or_else(|| panic!("{key} isn't in {lang}"));
+                // A book's page holds 14 lines of about 19 characters.
+                assert!(page.chars().count() <= 260, "{key} in {lang} is {} characters", page.chars().count());
+                assert!(page.lines().count() <= 14, "{key} in {lang} has too many lines");
+            }
+        }
+    }
+
+    #[test]
+    fn the_guide_command_names_every_page() {
+        let line = guide_give("Steve");
+        assert!(line.starts_with("give Steve minecraft:written_book[minecraft:written_book_content={"), "{line}");
+        for key in GUIDE_PAGES {
+            assert!(line.contains(&format!("{{translate:\"{key}\"}}")), "{key}");
+        }
+        assert!(line.contains("title:\"Big Nukes\"") && line.contains("author:\"bioneisme\""));
+        assert_eq!(line.matches('[').count(), line.matches(']').count());
+        assert_eq!(line.matches('{').count(), line.matches('}').count());
     }
 
     #[test]
