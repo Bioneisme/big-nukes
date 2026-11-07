@@ -5,6 +5,8 @@ shockwave rolls across the land, from a demolition charge to the Sunbreaker, whi
 Mine uranium, enrich it, assemble the bombs, set them off by fuse, keypad, remote, missile or bomber, then fight the
 radiation they leave or wait it out in a bunker.
 
+![A mushroom cloud rising beside the setting sun over a scorched horizon](docs/images/cloud-sunset.jpg)
+
 > **The mod has two parts, and you need both:**
 >
 > - `big_nukes_native`: the native part, the code.
@@ -21,6 +23,8 @@ radiation they leave or wait it out in a bunker.
    Assemble.
 4. **Place** a bomb and right-click it with a detonator.
 5. **Set it off**, and be far away: at least 400 blocks from an atomic bomb.
+
+![The atomic bomb, the tactical warhead, the demolition charge, the centrifuge, the assembly table and the decontaminator in a row](docs/images/bombs.jpg)
 
 The **Big Nukes Guide** tells all of this in the game, chapter by chapter, with the recipes. Craft it from a book and a
 raw uranium, or type `/bignukes guide`.
@@ -43,6 +47,10 @@ they are.
 A blast's wave sets off every bomb it reaches. Chunks that aren't loaded when the wave passes are finished when they
 load.
 
+![A tactical warhead's cloud over its fresh crater on a cape, fires on the ring of ash, debris in the air](docs/images/crater-cloud.jpg)
+
+![The same crater a few minutes later: the bowl, the scorched ring and the sea running in](docs/images/crater.jpg)
+
 ## Detonators
 
 - **Fuse:** light the bomb with flint and steel and run. You have 4 seconds.
@@ -62,6 +70,8 @@ the fields, Enter launches. The code of the console's first launch becomes its c
 After a 5 second countdown the hatch opens and the missile climbs out in smoke. A camera follows it for the one who
 launched; the Camera button turns it off. The missile goes off on its target, even far from any player.
 
+![A missile climbing out of its silo in smoke, the open hatch and the launch console beside it](docs/images/silo.jpg)
+
 **Bomber.** Place a strike beacon and right-click it with a tactical warhead or an atomic bomb. 30 seconds later a
 bomber flies over, 120 blocks up, and drops the bomb on the beacon. Break the beacon before the drop to get the bomb
 back.
@@ -80,6 +90,8 @@ It is read when it goes off, so a broken part makes it weaker.
 Right-click any of its blocks to reach the core: it takes any detonator, and with an empty hand it tells you its shell,
 its reflector and its radius. Its fuse burns 15 seconds, with an alarm over the last 5. You won't outrun radius 1000 on
 foot. Missiles and bombers can't carry it. Sneak to place a block against it.
+
+![The Sunbreaker cut open: its core inside the implosion shell, inside the neutron reflectors](docs/images/sunbreaker.jpg)
 
 ## Radiation
 
@@ -117,6 +129,8 @@ brings the radiation back. Hoppers bring fuel.
 A wall the wave can't hold cracks first, then breaks, and a cracked wall holds half. Under the crater's floor the wave
 touches nothing, and a roof that holds keeps the blast off whoever is under it.
 
+![A bunker of armored concrete dug into a cliff, its hermetic door at the end of a gravel path](docs/images/bunker-outside.jpg)
+
 | Wall | Holds |
 |---|---|
 | Reinforced Concrete | A demolition charge anywhere, a tactical warhead at the edge of its crater |
@@ -131,9 +145,12 @@ alone is weak. TNT and creepers can't break any of these walls.
 - **Fuel Generator:** burns furnace fuel twice as long as a furnace and powers the air filters and lamps within 16
   blocks.
 - **Air Filter:** a powered filter goes round its room every 5 seconds. Shut by walls and closed doors, with up to 4096
-  blocks of air and no gap to the sky or to the open air outside, the room is sealed and lets in only 5% of the radiation. An open door unseals it.
+  blocks of air and no gap to the sky or to the open air outside, the room is sealed and lets in only 5% of the
+  radiation. An open door unseals it.
 - **Bunker Lamp:** shines while a burning generator is within 16 blocks.
 - **Ration:** filling and eaten fast, for the long wait.
+
+![Inside a bunker: lamps lit by the generators, air filters, a decontaminator, beds and supplies](docs/images/bunker-inside.jpg)
 
 ## Recipes
 
