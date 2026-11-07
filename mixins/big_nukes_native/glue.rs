@@ -203,6 +203,10 @@ pub(in crate::game) fn items(items: &mut Vec<Item>) {
 /// A consume effect of the mod's own kind (API 74): a drink of anti-rad takes
 /// its amount off the drinker's dose.
 pub(in crate::game) fn consume_effect(game: &mut Game<'_>, kind: &str, data: &serde_json::Value) {
+    // An iodine tablet's.
+    if decon::consume_effect(game, kind) {
+        return;
+    }
     if kind != rules::ANTI_RADIATION {
         return;
     }
@@ -705,6 +709,7 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     for dimension in wake {
         game.native_run_command(&format!("execute in {dimension} run forceload query"));
     }
+    decon::server_tick(game);
     for name in std::mem::take(&mut *lock(&GUIDES)) {
         game.native_run_command(&rules::guide_give(&name));
     }
@@ -741,6 +746,7 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     }
     irradiate_mobs(game, dimension);
     silo::level_tick(game, dimension);
+    decon::level_tick(game, dimension);
     let Some(mut guard) = state(game) else { return };
     let st = guard.as_mut().expect("opened");
     effects(game, st, dimension);
@@ -842,6 +848,13 @@ fn take_bomb(game: &mut Game<'_>, dimension: &str, pos: [i32; 3]) {
     }
 }
 
+/// Whether the world's game has the ash block, asked once a world (`has_ash`).
+pub(in crate::game) fn ash_here(game: &mut Game<'_>, dimension: &str) -> bool {
+    let Some(mut guard) = state(game) else { return false };
+    let st = guard.as_mut().expect("opened");
+    *st.ash.get_or_insert_with(|| has_ash(game, dimension))
+}
+
 /// Whether the ash block is in the game: it comes with the assets half. An edit with no runs reads its palette as
 /// any other does, and changes nothing; an entry that doesn't read refuses it.
 fn has_ash(game: &mut Game<'_>, dimension: &str) -> bool {
@@ -855,7 +868,7 @@ fn has_ash(game: &mut Game<'_>, dimension: &str) -> bool {
     }
 }
 
-fn native(edit: rules::ChunkEdit) -> NativeBlockEdit {
+pub(in crate::game) fn native(edit: rules::ChunkEdit) -> NativeBlockEdit {
     let surface = |s: rules::Surface| match s {
         rules::Surface::WorldSurface => NativeHeightmap::WorldSurface,
         rules::Surface::MotionBlockingNoLeaves => NativeHeightmap::MotionBlockingNoLeaves,
@@ -913,6 +926,7 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
     lock(&ANTI_RAD).clear();
     lock(&MIRRORS).clear();
     silo::forget();
+    decon::forget();
 }
 
 // ---- the machines ---------------------------------------------------------------
@@ -962,6 +976,7 @@ pub(in crate::game) fn tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut Mod
     match entity.id.as_str() {
         rules::CENTRIFUGE => centrifuge_tick(game, entity),
         rules::ASSEMBLY_TABLE => assembly_tick(entity),
+        rules::DECONTAMINATOR => decon::tick(game, pos, entity),
         id if rules::BombKind::of_block(id).is_some() => bomb_tick(game, pos, entity),
         id if silo::has_entity(id) => silo::tick(game, pos, entity),
         _ => {}
@@ -1713,13 +1728,15 @@ fn install(game: &mut Game<'_>, pos: [i32; 3], bomb: &rules::Bomb, detonator: ru
 // their level's tick, a few at a time.
 
 /// A player's tick: once a second, the dose takes the background where they
-/// stand, less what their hazmat suit keeps out, and each worn piece wears while
+/// stand, less what their hazmat suit and the iodine's effect keep out, and each worn piece wears while
 /// there is any to speak of. Creative players and spectators take none.
 pub(in crate::game) fn player_tick(game: &mut Game<'_>) {
     if !game.native_on(rules::ID) {
         return;
     }
     let Some(who) = game.native_acting_player() else { return };
+    // Taken each tick, so a creative player's iodine doesn't linger.
+    let iodine = decon::iodine_on(who.uuid);
     if matches!(who.game_mode, 1 | 3) {
         return;
     }
@@ -1729,7 +1746,7 @@ pub(in crate::game) fn player_tick(game: &mut Game<'_>) {
     let Some(mut guard) = state(game) else { return };
     let st = guard.as_mut().expect("opened");
     let had = st.saved.doses.contains_key(&rules::dose_key(who.uuid));
-    let protection = rules::protection(suit[0], suit[1], suit[2], suit[3]);
+    let protection = rules::shielded(rules::protection(suit[0], suit[1], suit[2], suit[3]), iodine);
     let Some(background) = st.saved.expose(who.uuid, &who.dimension, who.position, protection) else {
         return;
     };
@@ -2158,7 +2175,7 @@ fn block_name(block: &str) -> Text {
 }
 
 /// Whether the chunk of `pos` is loaded in `dimension`.
-fn loaded(dimension: &str, pos: [i32; 3]) -> bool {
+pub(in crate::game) fn loaded(dimension: &str, pos: [i32; 3]) -> bool {
     let chunk = rules::chunk_of(pos[0], pos[2]);
     lock(&LOADED).as_ref().and_then(|m| m.get(dimension)).is_some_and(|set| set.contains(&chunk))
 }

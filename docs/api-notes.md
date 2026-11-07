@@ -255,3 +255,20 @@ Read in the source of 66f3981, not yet seen in the game:
   (`lan/containers.rs`, `BlockEntity::Mod(e) => e.data`), whether or not that entity ticks.
 - A block with a menu opens it on a plain right click before an item is placed against it, so the structure's
   blocks, like the bombs, take a block placed against them only from a sneaking player.
+
+## Iodine and the decontaminator
+
+Read in the source of 66f3981, not yet seen in the game:
+- No helper reads a player's effects. The iodine's effect is heard ticking instead: `native_should_apply_effect_tick_this_tick`
+  (API 56) says it acts every tick, and `native_apply_effect_tick` hears it with `entity` None and the player swapped in
+  (`native_acting_player`). A player's effects tick in `guest_server_tick` (`tick_mob_effects` through `as_guest`), before
+  `native_player_tick` in the same turn, so the player tick takes the flag the effect left that tick. Milk or death
+  takes the effect, and with it the shield.
+- A tablet's consume effect (API 74) runs a command, which answers false inside a player's hook: the
+  `effect give` waits for the end of the server's tick, as the sickness' effects do.
+- The grass pass is one `native_edit_blocks` (API 126) in the level's tick: a run a column at `y` -1 from the
+  `WorldSurface` height, filtered to ash and to coarse dirt, so the top block is read in the edit itself and water or a
+  block over the ash leaves the column alone. `native_surface_heights` (API 127) isn't needed. A pass waits while any of
+  its columns is in a chunk not loaded, as the edit would skip it for good.
+- The decontaminator's block entity ticks only in a loaded chunk; its circle is the world's (`Saved.cleans`), so the
+  background is cleaned there with the chunk unloaded or the block broken.

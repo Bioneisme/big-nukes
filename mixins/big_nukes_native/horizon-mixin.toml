@@ -394,6 +394,29 @@ bindings = [
   { name = "player", ty = "u128", value = "player" },
 ]
 
+# Iodine (plan 9): its effect acts every tick it is on a player, and the dose hears it (API 56).
+[[injection]]
+id = "effect-applies"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_should_apply_effect_tick_this_tick"
+helper = "effect_applies.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "effect", ty = "&str", value = "effect" },
+  { name = "apply", ty = "&mut bool", value = "&mut *apply" },
+]
+
+[[injection]]
+id = "effect-tick"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_apply_effect_tick"
+helper = "effect_tick.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "effect", ty = "&str", value = "effect" },
+  { name = "entity", ty = "Option<i32>", value = "entity" },
+]
+
 # The end of each level's tick: where the waves work (API 23), and the mobs in the zones are hurt (API 37).
 [[injection]]
 id = "level-tick"
