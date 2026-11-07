@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "lit=false": {
+      "model": "big_nukes:block/bunker_lamp"
+    },
+    "lit=true": {
+      "model": "big_nukes:block/bunker_lamp_lit"
+    }
+  }
+}

@@ -13,6 +13,8 @@ use crate::game::{
     big_nukes_silo as silo,
     // Iodine and the decontaminator (plan 9): decon.rs.
     big_nukes_decon as decon,
+    // The bunker (plan 10): bunker.rs.
+    big_nukes_bunker as bunker,
 };
 use horizon_client::{
     containers::{ModBlockEntity, ModContainer},
@@ -180,6 +182,7 @@ pub(in crate::game) fn blocks(blocks: &mut Vec<Block>) {
     blocks.push(block(rules::NEUTRON_REFLECTOR, "minecraft:furnace", 5.0));
     decon::blocks(blocks, block);
     silo::blocks(blocks, block);
+    bunker::blocks(blocks);
 }
 
 /// The items, in code like the blocks: the suit on iron armour, the rest on

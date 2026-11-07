@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "big_nukes:block/air_filter_side",
+    "down": "big_nukes:block/air_filter_top",
+    "up": "big_nukes:block/air_filter_top",
+    "north": "big_nukes:block/air_filter_front",
+    "south": "big_nukes:block/air_filter_side",
+    "west": "big_nukes:block/air_filter_side",
+    "east": "big_nukes:block/air_filter_side"
+  }
+}

@@ -53,6 +53,54 @@
       "required": false
     },
     "big_nukes:uranium_ore",
-    "big_nukes:deepslate_uranium_ore"
+    "big_nukes:deepslate_uranium_ore",
+    {
+      "id": "big_nukes:reinforced_concrete",
+      "required": false
+    },
+    {
+      "id": "big_nukes:armored_concrete",
+      "required": false
+    },
+    {
+      "id": "big_nukes:lead_shield",
+      "required": false
+    },
+    {
+      "id": "big_nukes:blast_damper",
+      "required": false
+    },
+    {
+      "id": "big_nukes:cracked_reinforced_concrete",
+      "required": false
+    },
+    {
+      "id": "big_nukes:cracked_armored_concrete",
+      "required": false
+    },
+    {
+      "id": "big_nukes:cracked_lead_shield",
+      "required": false
+    },
+    {
+      "id": "big_nukes:cracked_blast_damper",
+      "required": false
+    },
+    {
+      "id": "big_nukes:hermetic_door",
+      "required": false
+    },
+    {
+      "id": "big_nukes:fuel_generator",
+      "required": false
+    },
+    {
+      "id": "big_nukes:air_filter",
+      "required": false
+    },
+    {
+      "id": "big_nukes:bunker_lamp",
+      "required": false
+    }
   ]
 }

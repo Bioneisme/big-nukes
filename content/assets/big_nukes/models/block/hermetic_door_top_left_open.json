@@ -1,0 +1,7 @@
+{
+  "parent": "minecraft:block/door_top_left_open",
+  "textures": {
+    "bottom": "big_nukes:block/hermetic_door_bottom",
+    "top": "big_nukes:block/hermetic_door_top"
+  }
+}

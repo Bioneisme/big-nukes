@@ -85,7 +85,7 @@ impl BombKind {
 
 /// The items: id, how many stack, and whether they are rare. Each copies its
 /// `template` with the `components` patch.
-pub const ITEMS: [(&str, u8, bool); 18] = [
+pub const ITEMS: [(&str, u8, bool); 19] = [
     ("big_nukes:raw_uranium", 64, false),
     ("big_nukes:enriched_uranium", 64, true),
     (WEAPONS_GRADE_URANIUM, 64, true),
@@ -104,6 +104,7 @@ pub const ITEMS: [(&str, u8, bool); 18] = [
     (GEIGER_COUNTER, 1, false),
     (MISSILE, 1, true),
     (GUIDE, 1, false),
+    (RATION, 16, false),
 ];
 
 /// The guide: a book of the mod's own, whose screen is drawn by the mod (see "the guide" below).
@@ -117,7 +118,7 @@ pub fn guide_give(name: &str) -> String {
 }
 
 /// What each block and item says under its name about how to use it: lang keys, one line each.
-const TIPS: [(&str, &[&str]); 33] = [
+const TIPS: [(&str, &[&str]); 46] = [
     ("big_nukes:demolition_charge", &["big_nukes.tip.demolition_charge", "big_nukes.tip.demolition_charge.2"]),
     ("big_nukes:tactical_warhead", &["big_nukes.tip.tactical_warhead", "big_nukes.tip.tactical_warhead.2"]),
     ("big_nukes:atomic_bomb", &["big_nukes.tip.atomic_bomb", "big_nukes.tip.atomic_bomb.2"]),
@@ -151,6 +152,19 @@ const TIPS: [(&str, &[&str]); 33] = [
     (WEAPONS_GRADE_URANIUM, &["big_nukes.tip.weapons_grade_uranium"]),
     (IODINE, &["big_nukes.tip.iodine_tablets"]),
     (DECONTAMINATOR, &["big_nukes.tip.decontaminator", "big_nukes.tip.decontaminator.2"]),
+    (WALL_BLOCKS[0], &["big_nukes.tip.reinforced_concrete", "big_nukes.tip.wall"]),
+    (WALL_BLOCKS[1], &["big_nukes.tip.armored_concrete", "big_nukes.tip.wall"]),
+    (WALL_BLOCKS[2], &["big_nukes.tip.lead_shield", "big_nukes.tip.multilayer"]),
+    (WALL_BLOCKS[3], &["big_nukes.tip.blast_damper", "big_nukes.tip.multilayer"]),
+    (WALL_BLOCKS[4], &["big_nukes.tip.cracked_wall"]),
+    (WALL_BLOCKS[5], &["big_nukes.tip.cracked_wall"]),
+    (WALL_BLOCKS[6], &["big_nukes.tip.cracked_wall"]),
+    (WALL_BLOCKS[7], &["big_nukes.tip.cracked_wall"]),
+    (HERMETIC_DOOR, &["big_nukes.tip.hermetic_door"]),
+    (FUEL_GENERATOR, &["big_nukes.tip.fuel_generator"]),
+    (AIR_FILTER, &["big_nukes.tip.air_filter", "big_nukes.tip.air_filter.2"]),
+    (BUNKER_LAMP, &["big_nukes.tip.bunker_lamp"]),
+    (RATION, &["big_nukes.tip.ration"]),
 ];
 
 /// The tip lines of `id`, empty for anything else.
@@ -220,6 +234,13 @@ pub fn components(id: &str) -> BTreeMap<String, serde_json::Value> {
             "minecraft:consumable".into(),
             json!({"consume_seconds": 0.8, "animation": "eat", "sound": "minecraft:entity.generic.eat",
                 "on_consume_effects": [{"type": IODINE_EFFECT}]}),
+        );
+    } else if id == RATION {
+        // As much as a steak and more lasting (a saturation modifier of 1.0), eaten as fast as dried kelp.
+        c.insert("minecraft:food".into(), json!({"nutrition": RATION_FOOD, "saturation": RATION_SATURATION}));
+        c.insert(
+            "minecraft:consumable".into(),
+            json!({"consume_seconds": 0.8, "animation": "eat", "sound": "minecraft:entity.generic.eat"}),
         );
     } else if id == GUIDE {
         // A book goes on the enchanting table; the guide stays the guide.
@@ -400,7 +421,7 @@ pub struct Assembly {
     pub parts: &'static [(&'static str, u32)],
 }
 
-pub const ASSEMBLIES: [Assembly; 11] = [
+pub const ASSEMBLIES: [Assembly; 20] = [
     Assembly { result: "big_nukes:nuclear_charge", count: 1, parts: &[(ENRICHED_URANIUM, 1), ("minecraft:tnt", 4)] },
     Assembly { result: "big_nukes:bomb_casing", count: 1, parts: &[("minecraft:iron_block", 4), ("minecraft:redstone", 4)] },
     Assembly {
@@ -449,6 +470,48 @@ pub const ASSEMBLIES: [Assembly; 11] = [
         count: 1,
         parts: &[("minecraft:iron_block", 4), ("minecraft:water_bucket", 2), ("minecraft:sponge", 1), ("minecraft:redstone", 2)],
     },
+    // The bunker (plan 10).
+    Assembly {
+        result: WALL_BLOCKS[0],
+        count: 4,
+        parts: &[("minecraft:gray_concrete", 4), ("minecraft:iron_ingot", 4), ("minecraft:gravel", 1)],
+    },
+    Assembly {
+        result: WALL_BLOCKS[1],
+        count: 4,
+        parts: &[(WALL_BLOCKS[0], 4), ("minecraft:iron_block", 4), ("minecraft:netherite_ingot", 1)],
+    },
+    Assembly {
+        result: WALL_BLOCKS[2],
+        count: 4,
+        parts: &[("minecraft:iron_ingot", 4), ("minecraft:clay_ball", 4), (ENRICHED_URANIUM, 1)],
+    },
+    Assembly {
+        result: WALL_BLOCKS[3],
+        count: 4,
+        parts: &[("minecraft:white_wool", 4), ("minecraft:slime_ball", 2), ("minecraft:iron_ingot", 2)],
+    },
+    Assembly {
+        result: HERMETIC_DOOR,
+        count: 1,
+        parts: &[(WALL_BLOCKS[1], 6), ("minecraft:iron_block", 2), ("minecraft:redstone", 1)],
+    },
+    Assembly {
+        result: FUEL_GENERATOR,
+        count: 1,
+        parts: &[("minecraft:iron_block", 4), ("minecraft:furnace", 1), ("minecraft:redstone", 2), ("minecraft:copper_ingot", 2)],
+    },
+    Assembly {
+        result: AIR_FILTER,
+        count: 1,
+        parts: &[("minecraft:iron_ingot", 4), ("minecraft:coal", 2), ("minecraft:paper", 2), (ENRICHED_URANIUM, 1)],
+    },
+    Assembly {
+        result: BUNKER_LAMP,
+        count: 4,
+        parts: &[("minecraft:copper_block", 1), ("minecraft:glowstone", 2), ("minecraft:redstone", 1)],
+    },
+    Assembly { result: RATION, count: 4, parts: &[("minecraft:beef", 2), ("minecraft:potato", 2), ("minecraft:iron_ingot", 1)] },
 ];
 
 /// What a part leaves in its grid slot when Assemble takes it: a bucket's bucket.
@@ -519,13 +582,15 @@ pub fn assembly_of_data(data: i32) -> Option<&'static Assembly> {
 }
 
 /// The language key of a block's or an item's name: the bombs, the Sunbreaker's parts,
-/// the silo's blocks and the decontaminator are blocks.
+/// the silo's blocks, the decontaminator and the bunker's blocks are blocks.
 pub fn name_key(id: &str) -> String {
     let (namespace, name) = id.split_once(':').unwrap_or(("minecraft", id));
     let block = BombKind::ALL.iter().any(|k| k.id() == id)
         || SUNBREAKER_PARTS.contains(&id)
         || SILO_BLOCKS.contains(&id)
-        || id == DECONTAMINATOR;
+        || id == DECONTAMINATOR
+        || WALL_BLOCKS.contains(&id)
+        || BUNKER_BLOCKS.contains(&id);
     let kind = if block { "block" } else { "item" };
     format!("{kind}.{namespace}.{name}")
 }
@@ -3261,6 +3326,9 @@ pub const FUEL_GENERATOR: &str = "big_nukes:fuel_generator";
 pub const AIR_FILTER: &str = "big_nukes:air_filter";
 pub const BUNKER_LAMP: &str = "big_nukes:bunker_lamp";
 pub const RATION: &str = "big_nukes:ration";
+/// A ration's hunger and saturation: 8, with a saturation modifier of 1.0 (2 x 8 x 1.0).
+pub const RATION_FOOD: u32 = 8;
+pub const RATION_SATURATION: f64 = 16.0;
 /// The bunker's blocks besides its walls.
 pub const BUNKER_BLOCKS: [&str; 4] = [HERMETIC_DOOR, FUEL_GENERATOR, AIR_FILTER, BUNKER_LAMP];
 
@@ -4066,7 +4134,20 @@ pub const CHAPTERS: [Chapter; 9] = [
         title: "big_nukes.guide.radiation",
         text: "big_nukes.guide.radiation.text",
         tab: GEIGER_COUNTER,
-        icons: &[GEIGER_COUNTER, HAZMAT[0].0, HAZMAT[1].0, HAZMAT[2].0, HAZMAT[3].0, ANTI_RAD, IODINE, DECONTAMINATOR],
+        icons: &[
+            GEIGER_COUNTER,
+            HAZMAT[0].0,
+            HAZMAT[1].0,
+            HAZMAT[2].0,
+            HAZMAT[3].0,
+            ANTI_RAD,
+            IODINE,
+            DECONTAMINATOR,
+            WALL_BLOCKS[1],
+            HERMETIC_DOOR,
+            FUEL_GENERATOR,
+            AIR_FILTER,
+        ],
         recipes: false,
     },
     Chapter {
@@ -4688,6 +4769,7 @@ mod tests {
             "mixins/big_nukes_native/glue.rs",
             "mixins/big_nukes_native/silo.rs",
             "mixins/big_nukes_native/decon.rs",
+            "mixins/big_nukes_native/bunker.rs",
             "content/data/big_nukes/function/check.mcfunction",
         ]
         .iter()
@@ -5451,6 +5533,8 @@ mod tests {
             .chain(SUNBREAKER_PARTS)
             .chain(SILO_BLOCKS)
             .chain(FILE_BLOCKS)
+            .chain(WALL_BLOCKS)
+            .chain(BUNKER_BLOCKS)
             .collect();
         for c in &CHAPTERS {
             for key in [c.title, c.text] {
@@ -5541,7 +5625,9 @@ mod tests {
             counts += drawn.iter().filter(|d| matches!(d, GuideDraw::Text(t, _, GUIDE_HEADING) if t == "4")).count();
             g.next();
         }
-        assert_eq!(counts, 1);
+        // The reflectors and the bunker's walls, lamps and rations come four to a recipe.
+        assert_eq!(counts, ASSEMBLIES.iter().filter(|a| a.count == 4).count());
+        assert_eq!(counts, 7);
         // The commands' chapter names every limit.
         for lang in [&en, &ru] {
             let steps: Vec<String> = MAXPOWER_STEPS.iter().map(u32::to_string).collect();
@@ -6121,7 +6207,7 @@ mod tests {
 
     #[test]
     fn every_block_and_item_says_how_to_use_it() {
-        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE, DECONTAMINATOR].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).chain(FILE_BLOCKS).collect();
+        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE, DECONTAMINATOR].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).chain(FILE_BLOCKS).chain(WALL_BLOCKS).chain(BUNKER_BLOCKS).collect();
         all.extend(ITEMS.iter().map(|i| i.0));
         let (en, ru) = (language("en_us"), language("ru_ru"));
         for id in all.into_iter().filter(|id| *id != "big_nukes:ash") {
@@ -6138,7 +6224,7 @@ mod tests {
     fn every_block_and_item_is_in_the_creative_tab() {
         let tab: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/horizon/creative_tab/big_nukes.json")).unwrap();
         let listed: Vec<&str> = tab["items"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE, DECONTAMINATOR].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).chain(FILE_BLOCKS).collect();
+        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE, DECONTAMINATOR].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).chain(FILE_BLOCKS).chain(WALL_BLOCKS).chain(BUNKER_BLOCKS).collect();
         all.extend(ITEMS.iter().map(|i| i.0));
         let (listed_set, all_set): (BTreeSet<&str>, BTreeSet<&str>) = (listed.iter().copied().collect(), all.iter().copied().collect());
         assert_eq!(listed.len(), listed_set.len(), "an id is listed twice");
@@ -6151,7 +6237,7 @@ mod tests {
     #[test]
     fn every_block_and_item_is_declared_once_with_its_assets() {
         let code_blocks: Vec<&str> =
-            [CENTRIFUGE, ASSEMBLY_TABLE, DECONTAMINATOR].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).collect();
+            [CENTRIFUGE, ASSEMBLY_TABLE, DECONTAMINATOR].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).chain(WALL_BLOCKS).chain(BUNKER_BLOCKS).collect();
         let blocks: Vec<&str> = code_blocks.iter().copied().chain(FILE_BLOCKS).collect();
         let items: Vec<&str> = ITEMS.iter().map(|i| i.0).collect();
         let all: BTreeSet<&str> = blocks.iter().chain(&items).copied().collect();
@@ -6236,6 +6322,8 @@ mod tests {
             .chain([CENTRIFUGE, ASSEMBLY_TABLE, DECONTAMINATOR])
             .chain(SUNBREAKER_PARTS)
             .chain(SILO_BLOCKS)
+            .chain(WALL_BLOCKS)
+            .chain(BUNKER_BLOCKS)
             .collect();
         let known_id = |id: &str| id.starts_with("minecraft:") || known.contains(id);
         let dir = format!("{}/content/data/big_nukes/recipe", env!("CARGO_MANIFEST_DIR"));
@@ -6278,8 +6366,9 @@ mod tests {
             assert!(!made.contains(a.result), "{} has a crafting table recipe too", a.result);
             made.insert(a.result.to_owned());
         }
-        // Mined, or made in the centrifuge.
-        let not_crafted = ["big_nukes:raw_uranium", "big_nukes:enriched_uranium", WEAPONS_GRADE_URANIUM];
+        // Mined, made in the centrifuge, or cracked by a blast.
+        let not_crafted: Vec<&str> =
+            ["big_nukes:raw_uranium", "big_nukes:enriched_uranium", WEAPONS_GRADE_URANIUM].into_iter().chain(WallKind::ALL.map(WallKind::cracked_id)).collect();
         let crafted: BTreeSet<String> = known.iter().filter(|id| !not_crafted.contains(id)).map(|id| id.to_string()).collect();
         assert_eq!(made, crafted);
     }
@@ -6380,10 +6469,15 @@ mod tests {
 
     #[test]
     fn assembly_recipes_name_known_items() {
-        let known: BTreeSet<&str> = ITEMS.iter().map(|i| i.0).chain(BombKind::ALL.map(BombKind::id)).collect();
+        let known: BTreeSet<&str> = ITEMS.iter().map(|i| i.0).chain(BombKind::ALL.map(BombKind::id)).chain(WALL_BLOCKS).collect();
         let results: BTreeSet<&str> = ASSEMBLIES.iter().map(|a| a.result).collect();
-        let wanted: BTreeSet<&str> =
-            [CHARGE, "big_nukes:bomb_casing", MISSILE, STRIKE_BEACON, DECONTAMINATOR].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).collect();
+        let wanted: BTreeSet<&str> = [CHARGE, "big_nukes:bomb_casing", MISSILE, STRIKE_BEACON, DECONTAMINATOR, RATION]
+            .into_iter()
+            .chain(BombKind::ALL.map(BombKind::id))
+            .chain(SUNBREAKER_PARTS)
+            .chain(WallKind::ALL.map(WallKind::id))
+            .chain(BUNKER_BLOCKS)
+            .collect();
         assert_eq!(results, wanted);
         assert_eq!(results.len(), ASSEMBLIES.len(), "a result is made twice");
         let en = language("en_us");
@@ -8831,7 +8925,7 @@ mod decon_tests {
     #[test]
     fn the_radiation_chapter_tells_of_iodine_and_the_decontaminator() {
         let radiation = CHAPTERS.iter().find(|c| c.title == "big_nukes.guide.radiation").expect("the radiation's chapter");
-        assert_eq!(radiation.icons, [GEIGER_COUNTER, HAZMAT[0].0, HAZMAT[1].0, HAZMAT[2].0, HAZMAT[3].0, ANTI_RAD, IODINE, DECONTAMINATOR]);
+        assert_eq!(radiation.icons[..8], [GEIGER_COUNTER, HAZMAT[0].0, HAZMAT[1].0, HAZMAT[2].0, HAZMAT[3].0, ANTI_RAD, IODINE, DECONTAMINATOR]);
         let numbers = [
             ((IODINE_PROTECTION * 100.0) as u32).to_string(),
             (IODINE_TICKS / SECOND / 60).to_string(),
@@ -9359,5 +9453,105 @@ mod bunker_tests {
         assert!(powered(&[[100, 0, 0], g], [3, 64, 3]));
         assert!(!powered(&[], [3, 64, 3]));
         assert_eq!(FILTER_EVERY, 100);
+    }
+
+    // ---- the blocks, the ration and the guide (Task 2) ----
+
+    fn json(path: &str) -> serde_json::Value {
+        let text = std::fs::read_to_string(format!("{}/{path}", env!("CARGO_MANIFEST_DIR"))).unwrap_or_else(|e| panic!("{path}: {e}"));
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn language(code: &str) -> BTreeMap<String, String> {
+        serde_json::from_value(json(&format!("content/assets/big_nukes/lang/{code}.json"))).unwrap()
+    }
+
+    #[test]
+    fn the_bunker_is_assembled_as_the_plan_says() {
+        let parts = |result: &str| -> (u32, BTreeMap<&str, u32>) {
+            let a = ASSEMBLIES.iter().find(|a| a.result == result).unwrap_or_else(|| panic!("{result} has no recipe"));
+            (a.count, a.parts.iter().copied().collect())
+        };
+        let m = |list: &[(&'static str, u32)]| list.iter().copied().collect::<BTreeMap<&str, u32>>();
+        assert_eq!(parts(WALL_BLOCKS[0]), (4, m(&[("minecraft:gray_concrete", 4), ("minecraft:iron_ingot", 4), ("minecraft:gravel", 1)])));
+        assert_eq!(parts(WALL_BLOCKS[1]), (4, m(&[(WALL_BLOCKS[0], 4), ("minecraft:iron_block", 4), ("minecraft:netherite_ingot", 1)])));
+        assert_eq!(parts(WALL_BLOCKS[2]), (4, m(&[("minecraft:iron_ingot", 4), ("minecraft:clay_ball", 4), (ENRICHED_URANIUM, 1)])));
+        assert_eq!(parts(WALL_BLOCKS[3]), (4, m(&[("minecraft:white_wool", 4), ("minecraft:slime_ball", 2), ("minecraft:iron_ingot", 2)])));
+        assert_eq!(parts(HERMETIC_DOOR), (1, m(&[(WALL_BLOCKS[1], 6), ("minecraft:iron_block", 2), ("minecraft:redstone", 1)])));
+        assert_eq!(
+            parts(FUEL_GENERATOR),
+            (1, m(&[("minecraft:iron_block", 4), ("minecraft:furnace", 1), ("minecraft:redstone", 2), ("minecraft:copper_ingot", 2)]))
+        );
+        assert_eq!(parts(AIR_FILTER), (1, m(&[("minecraft:iron_ingot", 4), ("minecraft:coal", 2), ("minecraft:paper", 2), (ENRICHED_URANIUM, 1)])));
+        assert_eq!(parts(BUNKER_LAMP), (4, m(&[("minecraft:copper_block", 1), ("minecraft:glowstone", 2), ("minecraft:redstone", 1)])));
+        assert_eq!(parts(RATION), (4, m(&[("minecraft:beef", 2), ("minecraft:potato", 2), ("minecraft:iron_ingot", 1)])));
+        // Every recipe fits the grid, and the blocks are named as blocks.
+        for a in &ASSEMBLIES {
+            assert!(a.parts.iter().map(|p| p.1).sum::<u32>() <= GRID_SLOTS as u32, "{}", a.result);
+        }
+        for id in WALL_BLOCKS.iter().chain(&BUNKER_BLOCKS) {
+            assert!(name_key(id).starts_with("block.big_nukes."), "{id}");
+        }
+        assert_eq!(name_key(RATION), "item.big_nukes.ration");
+    }
+
+    #[test]
+    fn a_ration_is_filling_and_eaten_fast() {
+        let item = ITEMS.iter().find(|i| i.0 == RATION).expect("declared");
+        assert_eq!((item.1, item.2), (16, false));
+        assert_eq!(template(RATION), "minecraft:paper");
+        let c = components(RATION);
+        assert_eq!(c["minecraft:food"], serde_json::json!({"nutrition": 8, "saturation": 16.0}));
+        assert_eq!(c["minecraft:consumable"]["consume_seconds"], 0.8);
+        assert_eq!(c["minecraft:consumable"]["animation"], "eat");
+    }
+
+    #[test]
+    fn the_walls_hold_off_vanilla_explosions() {
+        let resistance: Vec<f32> = WallKind::ALL.iter().map(|k| k.explosion_resistance()).collect();
+        assert_eq!(resistance, [600.0, 1200.0, 600.0, 600.0]);
+    }
+
+    #[test]
+    fn the_door_drops_once_and_the_blocks_have_their_models() {
+        let loot = json("content/data/big_nukes/loot_table/blocks/hermetic_door.json");
+        assert_eq!(loot["pools"][0]["entries"][0]["condition"]["state"], serde_json::json!({"half": "lower"}));
+        let states = json("content/assets/big_nukes/blockstates/hermetic_door.json");
+        assert_eq!(states["variants"].as_object().unwrap().len(), 32, "facing, half, hinge and open");
+        let lamp = json("content/assets/big_nukes/blockstates/bunker_lamp.json");
+        assert_eq!(lamp["variants"]["lit=true"]["model"], "big_nukes:block/bunker_lamp_lit");
+        let generator = json("content/assets/big_nukes/blockstates/fuel_generator.json");
+        assert_eq!(generator["variants"]["facing=east,lit=true"], serde_json::json!({"model": "big_nukes:block/fuel_generator_on", "y": 90}));
+        for k in WallKind::ALL {
+            let (ns, name) = k.cracked_id().split_once(':').unwrap();
+            let loot = json(&format!("content/data/{ns}/loot_table/blocks/{name}.json"));
+            assert_eq!(loot["pools"][0]["entries"][0]["name"], k.cracked_id(), "a cracked wall drops itself");
+        }
+    }
+
+    #[test]
+    fn the_radiation_chapter_tells_of_the_bunker() {
+        let radiation = CHAPTERS.iter().find(|c| c.title == "big_nukes.guide.radiation").expect("the radiation's chapter");
+        for id in [WALL_BLOCKS[1], HERMETIC_DOOR, FUEL_GENERATOR, AIR_FILTER] {
+            assert!(radiation.icons.contains(&id), "{id}");
+        }
+        assert!(radiation.icons.len() <= 2 * ICONS_A_ROW);
+        assert_eq!(CHAPTERS.len(), 9, "no tenth chapter: the bookmarks fill the book");
+        let numbers = [
+            POWER_RADIUS.to_string(),
+            (FILTER_EVERY / SECOND).to_string(),
+            ROOM_LIMIT.to_string(),
+            ((SEALED_SHELTER * 100.0).round() as u32).to_string(),
+        ];
+        for lang in [language("en_us"), language("ru_ru")] {
+            let text = &lang[radiation.text];
+            for n in &numbers {
+                assert!(text.split(|c: char| !c.is_ascii_digit()).any(|w| w == n), "{n} in {text}");
+            }
+            assert!(text.matches("\n\n").count() >= 6, "the bunker's paragraphs are their own");
+            for k in ["big_nukes.tip.multilayer", "big_nukes.tip.air_filter.2"] {
+                assert!(lang.contains_key(k), "{k}");
+            }
+        }
     }
 }

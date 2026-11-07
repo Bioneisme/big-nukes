@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "big_nukes:block/fuel_generator_side",
+    "down": "big_nukes:block/fuel_generator_top",
+    "up": "big_nukes:block/fuel_generator_top",
+    "north": "big_nukes:block/fuel_generator_front",
+    "south": "big_nukes:block/fuel_generator_side",
+    "west": "big_nukes:block/fuel_generator_side",
+    "east": "big_nukes:block/fuel_generator_side"
+  }
+}

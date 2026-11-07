@@ -45,6 +45,13 @@ file = "crates/horizon-client/src/game.rs"
 name = "big_nukes_decon"
 source = "decon.rs"
 
+# The bunker (plan 10): its glue, beside the rest.
+[[module]]
+id = "bunker"
+file = "crates/horizon-client/src/game.rs"
+name = "big_nukes_bunker"
+source = "bunker.rs"
+
 # The machines and the bombs, declared in code; the ores and the ash are the assets half's files.
 [[injection]]
 id = "blocks"

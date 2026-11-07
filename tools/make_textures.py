@@ -1086,3 +1086,239 @@ for x in range(108):
         gui.putpixel((x, 166 + y), shade(base, k))
 save(gui, "gui", "decontaminator")
 print("plan 9 textures written")
+
+
+# ---- the bunker (plan 10) ----
+# Drawn last and with their own random, so everything above stays the same.
+bunker_rng = random.Random(2621)
+
+
+def bunker_noise(base, spread):
+    im = Image.new("RGBA", (16, 16))
+    for y in range(16):
+        for x in range(16):
+            im.putpixel((x, y), shade(base, 1 + bunker_rng.uniform(-spread, spread)))
+    return im
+
+
+def veins(im, colour, count, length):
+    """Thin dark veins wandering across, as cast concrete has."""
+    for _ in range(count):
+        x, y = bunker_rng.randrange(16), bunker_rng.randrange(16)
+        for _ in range(length):
+            im.putpixel((x % 16, y % 16), colour)
+            x += bunker_rng.choice((-1, 0, 1, 1))
+            y += bunker_rng.choice((-1, 0, 1))
+    return im
+
+
+def pores(im, colour, count):
+    for _ in range(count):
+        im.putpixel((bunker_rng.randrange(16), bunker_rng.randrange(16)), colour)
+    return im
+
+
+def cracks(im, colour, light):
+    """Cracks run in from two edges and fork, a lighter edge beside each."""
+    for sx, sy, dx, dy in ((0, bunker_rng.randrange(3, 13), 1, 0), (bunker_rng.randrange(3, 13), 15, 0, -1)):
+        paths = [(sx, sy)]
+        x, y = sx, sy
+        for step in range(13):
+            x += dx + (bunker_rng.choice((-1, 0, 1)) if dy else 0)
+            y += dy + (bunker_rng.choice((-1, 0, 1)) if dx else 0)
+            if not (0 <= x < 16 and 0 <= y < 16):
+                break
+            paths.append((x, y))
+            if step == 5:
+                fx, fy = x, y
+                for _ in range(5):
+                    fx += bunker_rng.choice((-1, 1))
+                    fy += bunker_rng.choice((-1, 1))
+                    if 0 <= fx < 16 and 0 <= fy < 16:
+                        paths.append((fx, fy))
+        for x, y in paths:
+            im.putpixel((x, y), colour)
+            if x + 1 < 16 and (x + 1, y) not in paths:
+                im.putpixel((x + 1, y), light)
+    return im
+
+
+CONCRETE = (150, 150, 146)
+ARMORED = (104, 108, 114)
+LEAD = (82, 88, 104)
+DAMPER = (196, 176, 116)
+walls = {}
+# Reinforced concrete: pale grey, pores and veins, rebar ends showing.
+im = pores(veins(bunker_noise(CONCRETE, 0.05), shade(CONCRETE, 0.78), 3, 9), shade(CONCRETE, 0.62), 10)
+for x, y in ((3, 3), (12, 3), (3, 12), (12, 12)):
+    im.putpixel((x, y), (120, 84, 60, 255))
+walls["reinforced_concrete"] = im
+# Armored concrete: darker, a steel mesh cast in it and a heavy frame.
+im = veins(bunker_noise(ARMORED, 0.05), shade(ARMORED, 0.8), 2, 8)
+for i in range(16):
+    for j in (5, 10):
+        im.putpixel((i, j), (70, 74, 82, 255))
+        im.putpixel((j, i), (70, 74, 82, 255))
+for j in (5, 10):
+    for k in (5, 10):
+        im.putpixel((j, k), (140, 146, 156, 255))
+walls["armored_concrete"] = frame(im, (54, 56, 62, 255))
+# The lead shield: soft blue-grey plates, seams across and rivets.
+im = bunker_noise(LEAD, 0.04)
+for x in range(16):
+    for y in (0, 8):
+        im.putpixel((x, y), shade(LEAD, 0.6))
+    for y in (1, 9):
+        im.putpixel((x, y), shade(LEAD, 1.25))
+for x, y in ((2, 4), (13, 4), (2, 12), (13, 12)):
+    im.putpixel((x, y), (170, 176, 190, 255))
+    im.putpixel((x + 1, y + 1), shade(LEAD, 0.55))
+walls["lead_shield"] = im
+# The blast damper: quilted padding, stitched in diamonds with a button at each crossing.
+im = bunker_noise(DAMPER, 0.05)
+for y in range(16):
+    for x in range(16):
+        if (x + y) % 8 == 0 or (x - y) % 8 == 0:
+            im.putpixel((x, y), shade(DAMPER, 0.68))
+        elif (x + y) % 8 == 4 and (x - y) % 8 == 4:
+            im.putpixel((x, y), shade(DAMPER, 1.15))
+for x, y in ((0, 0), (8, 0), (4, 4), (12, 4), (0, 8), (8, 8), (4, 12), (12, 12)):
+    im.putpixel((x, y), (96, 80, 44, 255))
+walls["blast_damper"] = frame(im, shade(DAMPER, 0.55))
+for name, im in walls.items():
+    save(im, "block", name)
+    base = shade(im.getpixel((7, 7)), 1.0)
+    save(cracks(im.copy(), shade(base, 0.35), shade(base, 1.25)), "block", f"cracked_{name}")
+
+# The hermetic door: a steel leaf in a heavy frame, a porthole above and a hand wheel below.
+STEEL_DOOR = (118, 124, 130)
+top = frame(bunker_noise(STEEL_DOOR, 0.04), (52, 56, 62, 255))
+for y in range(1, 16):
+    for x in range(1, 15):
+        d = math.hypot(x - 7.5, y - 8.5)
+        if d < 3.2:
+            top.putpixel((x, y), (60, 110, 120, 255) if (x + y) % 5 else (150, 200, 210, 255))
+        elif d < 4.4:
+            top.putpixel((x, y), (70, 74, 80, 255))
+for x in range(1, 15):
+    top.putpixel((x, 15), shade(STEEL_DOOR, 0.8))
+save(top, "block", "hermetic_door_top")
+bottom = frame(bunker_noise(STEEL_DOOR, 0.04), (52, 56, 62, 255))
+for y in range(1, 15):
+    for x in range(1, 15):
+        d = math.hypot(x - 7.5, y - 5.5)
+        if 3.0 < d < 4.3 or (d < 3.0 and (abs(x - 7.5) < 0.6 or abs(y - 5.5) < 0.6)):
+            bottom.putpixel((x, y), (178, 40, 32, 255))
+        elif d < 1.0:
+            bottom.putpixel((x, y), (60, 60, 64, 255))
+for x in range(1, 15):
+    bottom.putpixel((x, 0), shade(STEEL_DOOR, 0.8))
+stripes(bottom, (230, 196, 40, 255), (34, 34, 34, 255), [12, 13])
+save(bottom, "block", "hermetic_door_bottom")
+door_item = Image.new("RGBA", (16, 16), CLEAR)
+for y in range(1, 15):
+    for x in range(4, 12):
+        door_item.putpixel((x, y), (52, 56, 62, 255) if x in (4, 11) or y in (1, 14) else shade(STEEL_DOOR, 1 + bunker_rng.uniform(-0.04, 0.04)))
+for x, y in ((7, 3), (8, 3), (7, 4), (8, 4)):
+    door_item.putpixel((x, y), (150, 200, 210, 255))
+for x, y in ((6, 9), (7, 8), (8, 8), (9, 9), (7, 10), (8, 10), (7, 9), (8, 9)):
+    door_item.putpixel((x, y), (178, 40, 32, 255))
+save(door_item, "item", "hermetic_door")
+
+# The fuel generator: an olive engine block, a grille over a firebox that glows while it burns.
+ENGINE = (96, 104, 76)
+ENGINE_EDGE = (40, 44, 34, 255)
+for lit in (False, True):
+    front = frame(bunker_noise(ENGINE, 0.05), ENGINE_EDGE)
+    for y in (2, 4, 6):
+        for x in range(3, 13):
+            front.putpixel((x, y), (36, 38, 32, 255))
+    for y in range(9, 14):
+        for x in range(4, 12):
+            edge_px = y in (9, 13) or x in (4, 11)
+            if edge_px:
+                front.putpixel((x, y), (30, 30, 28, 255))
+            elif lit:
+                front.putpixel((x, y), (255, 150 + 20 * (y - 10), 40, 255) if bunker_rng.random() < 0.7 else (255, 220, 120, 255))
+            else:
+                front.putpixel((x, y), (22, 22, 20, 255))
+    save(front, "block", "fuel_generator_front" + ("_on" if lit else ""))
+side = frame(bunker_noise(ENGINE, 0.05), ENGINE_EDGE)
+for x in range(2, 14, 3):
+    for y in range(3, 13):
+        side.putpixel((x, y), shade(ENGINE, 0.6))
+stripes(side, (230, 196, 40, 255), (34, 34, 34, 255), [14])
+save(side, "block", "fuel_generator_side")
+top = frame(bunker_noise(ENGINE, 0.05), ENGINE_EDGE)
+for y in range(16):
+    for x in range(16):
+        d = math.hypot(x - 10.5, y - 5.5)
+        if d < 1.8:
+            top.putpixel((x, y), (20, 20, 18, 255))
+        elif d < 3.0:
+            top.putpixel((x, y), (130, 132, 126, 255))
+save(top, "block", "fuel_generator_top")
+
+# The air filter: a pale green cabinet with a fan behind a round grille, cartridges down its sides.
+FILTER = (150, 172, 150)
+FILTER_EDGE = (56, 70, 60, 255)
+front = frame(bunker_noise(FILTER, 0.04), FILTER_EDGE)
+for y in range(1, 15):
+    for x in range(1, 15):
+        d = math.hypot(x - 7.5, y - 7.5)
+        a = (math.degrees(math.atan2(y - 7.5, x - 7.5)) + 360) % 120
+        if d < 1.4:
+            front.putpixel((x, y), (200, 206, 200, 255))
+        elif d < 5.4:
+            front.putpixel((x, y), (120, 130, 124, 255) if 20 < a < 70 else (40, 46, 42, 255))
+        elif d < 6.4:
+            front.putpixel((x, y), (80, 92, 84, 255))
+save(front, "block", "air_filter_front")
+side = frame(bunker_noise(FILTER, 0.04), FILTER_EDGE)
+for x0 in (3, 9):
+    for y in range(3, 13):
+        for x in range(x0, x0 + 4):
+            side.putpixel((x, y), (236, 232, 214, 255) if y % 2 else (196, 190, 170, 255))
+save(side, "block", "air_filter_side")
+top = frame(bunker_noise(FILTER, 0.04), FILTER_EDGE)
+for y in range(3, 13):
+    for x in range(3, 13):
+        top.putpixel((x, y), (40, 46, 42, 255) if (x + y) % 2 else (110, 120, 112, 255))
+save(top, "block", "air_filter_top")
+
+# The bunker lamp: thick glass in a steel cage, dull when off.
+for lit in (False, True):
+    lamp = Image.new("RGBA", (16, 16))
+    for y in range(16):
+        for x in range(16):
+            d = math.hypot(x - 7.5, y - 7.5)
+            glow = (255, 236, 170) if lit else (124, 120, 100)
+            lamp.putpixel((x, y), shade(glow, (1.15 - d / 16) * (1 + bunker_rng.uniform(-0.04, 0.04))))
+    for i in range(16):
+        for j in (0, 5, 10, 15):
+            lamp.putpixel((i, j), (58, 60, 66, 255))
+            lamp.putpixel((j, i), (58, 60, 66, 255))
+    save(lamp, "block", "bunker_lamp" + ("_lit" if lit else ""))
+
+# The ration: a tin with an olive label, its lid's rim showing.
+TIN = [
+    "................",
+    "................",
+    "....aaaaaaaa....",
+    "...abbbbbbbba...",
+    "...acccccccca...",
+    "...abbbbbbbba...",
+    "...addddddeda...",
+    "...adeeeeeeda...",
+    "...addddddeda...",
+    "...adeeeeeeda...",
+    "...addddddeda...",
+    "...abbbbbbbba...",
+    "...acccccccca...",
+    "....aaaaaaaa....",
+    "................",
+    "................",
+]
+save(item(TIN, {"a": (44, 46, 50, 255), "b": (170, 174, 180, 255), "c": (214, 218, 224, 255),
+                "d": (92, 104, 56, 255), "e": (196, 180, 96, 255)}), "item", "ration")
+print("plan 10 textures written")

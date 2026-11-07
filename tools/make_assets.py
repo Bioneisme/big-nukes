@@ -171,13 +171,111 @@ write(A / "equipment" / "hazmat.json", {"layers": {
     "humanoid": [{"texture": "big_nukes:hazmat"}], "humanoid_leggings": [{"texture": "big_nukes:hazmat"}]}})
 
 
+# ---- the bunker (plan 10) ----
+# Declared in code. The walls and their cracked blocks: one texture all round; a cracked wall drops itself.
+WALLS = {
+    "reinforced_concrete": ("Reinforced Concrete", "Железобетон"),
+    "armored_concrete": ("Armored Concrete", "Армированный бетон"),
+    "lead_shield": ("Lead Shield", "Свинцовый экран"),
+    "blast_damper": ("Blast Damper", "Демпфер"),
+    "cracked_reinforced_concrete": ("Cracked Reinforced Concrete", "Треснувший железобетон"),
+    "cracked_armored_concrete": ("Cracked Armored Concrete", "Треснувший армированный бетон"),
+    "cracked_lead_shield": ("Cracked Lead Shield", "Треснувший свинцовый экран"),
+    "cracked_blast_damper": ("Cracked Blast Damper", "Треснувший демпфер"),
+}
+BUNKER = {
+    "hermetic_door": ("Hermetic Door", "Гермодверь"),
+    "fuel_generator": ("Fuel Generator", "Топливный генератор"),
+    "air_filter": ("Air Filter", "Фильтр воздуха"),
+    "bunker_lamp": ("Bunker Lamp", "Лампа бункера"),
+}
+
+
+def named(kind, name, en, ru):
+    lang["en_us"][f"{kind}.big_nukes.{name}"] = en
+    lang["ru_ru"][f"{kind}.big_nukes.{name}"] = ru
+
+
+for name, (en, ru) in WALLS.items():
+    write(A / "blockstates" / f"{name}.json", {"variants": {"": {"model": f"big_nukes:block/{name}"}}})
+    write(A / "models" / "block" / f"{name}.json", {"parent": "minecraft:block/cube_all", "textures": {"all": f"big_nukes:block/{name}"}})
+    block_item(name)
+    loot(name, f"big_nukes:{name}")
+    named("block", name, en, ru)
+
+# The hermetic door: two halves on the iron door, its models vanilla's door shapes; only the lower half drops it.
+DOOR_FACING = {"east": 0, "south": 90, "west": 180, "north": 270}
+door = {}
+for facing, y in DOOR_FACING.items():
+    for half, part in (("lower", "bottom"), ("upper", "top")):
+        for hinge in ("left", "right"):
+            for is_open in ("false", "true"):
+                turn = (y + (0 if is_open == "false" else 90 if hinge == "left" else 270)) % 360
+                model = f"big_nukes:block/hermetic_door_{part}_{hinge}" + ("_open" if is_open == "true" else "")
+                door[f"facing={facing},half={half},hinge={hinge},open={is_open}"] = {"model": model} | ({"y": turn} if turn else {})
+write(A / "blockstates" / "hermetic_door.json", {"variants": door})
+for part in ("bottom", "top"):
+    for hinge in ("left", "right"):
+        for shut in ("", "_open"):
+            write(A / "models" / "block" / f"hermetic_door_{part}_{hinge}{shut}.json", {
+                "parent": f"minecraft:block/door_{part}_{hinge}{shut}",
+                "textures": {"bottom": "big_nukes:block/hermetic_door_bottom", "top": "big_nukes:block/hermetic_door_top"}})
+write(A / "items" / "hermetic_door.json", {"model": {"type": "minecraft:model", "model": "big_nukes:item/hermetic_door"}})
+write(A / "models" / "item" / "hermetic_door.json", {"parent": "minecraft:item/generated", "textures": {"layer0": "big_nukes:item/hermetic_door"}})
+write(D / "loot_table" / "blocks" / "hermetic_door.json", {
+    "type": "minecraft:block",
+    "pools": [{"condition": {"type": "minecraft:survives_explosion"}, "entries": [{
+        "type": "minecraft:item", "name": "big_nukes:hermetic_door",
+        "condition": {"type": "minecraft:match_block", "blocks": "big_nukes:hermetic_door", "state": {"half": "lower"}}}], "rolls": 1}],
+    "random_sequence": "big_nukes:blocks/hermetic_door",
+})
+named("block", "hermetic_door", *BUNKER["hermetic_door"])
+
+
+def machine(name, front):
+    write(A / "models" / "block" / f"{name}.json", {"parent": "minecraft:block/cube", "textures": {
+        "particle": f"big_nukes:block/{name}_side", "down": f"big_nukes:block/{name}_top", "up": f"big_nukes:block/{name}_top",
+        "north": f"big_nukes:block/{front}", "south": f"big_nukes:block/{name}_side",
+        "west": f"big_nukes:block/{name}_side", "east": f"big_nukes:block/{name}_side"}})
+
+
+FACINGS = (("north", 0), ("east", 90), ("south", 180), ("west", 270))
+# The generator: a furnace, its front lit while it burns.
+write(A / "blockstates" / "fuel_generator.json", {"variants": {
+    f"facing={f},lit={lit}": ({"model": "big_nukes:block/fuel_generator" + ("_on" if lit == "true" else "")} | ({"y": y} if y else {}))
+    for f, y in FACINGS for lit in ("false", "true")}})
+machine("fuel_generator", "fuel_generator_front")
+write(A / "models" / "block" / "fuel_generator_on.json", {"parent": "minecraft:block/cube", "textures": {
+    "particle": "big_nukes:block/fuel_generator_side", "down": "big_nukes:block/fuel_generator_top", "up": "big_nukes:block/fuel_generator_top",
+    "north": "big_nukes:block/fuel_generator_front_on", "south": "big_nukes:block/fuel_generator_side",
+    "west": "big_nukes:block/fuel_generator_side", "east": "big_nukes:block/fuel_generator_side"}})
+# The filter: a furnace that faces its placer.
+write(A / "blockstates" / "air_filter.json", {"variants": {
+    f"facing={f}": ({"model": "big_nukes:block/air_filter"} | ({"y": y} if y else {})) for f, y in FACINGS}})
+machine("air_filter", "air_filter_front")
+# The lamp: a copper bulb, lit or not.
+write(A / "blockstates" / "bunker_lamp.json", {"variants": {
+    "lit=false": {"model": "big_nukes:block/bunker_lamp"}, "lit=true": {"model": "big_nukes:block/bunker_lamp_lit"}}})
+for lamp in ("bunker_lamp", "bunker_lamp_lit"):
+    write(A / "models" / "block" / f"{lamp}.json", {"parent": "minecraft:block/cube_all", "textures": {"all": f"big_nukes:block/{lamp}"}})
+for name in ("fuel_generator", "air_filter", "bunker_lamp"):
+    block_item(name)
+    loot(name, f"big_nukes:{name}")
+    named("block", name, *BUNKER[name])
+# The ration: an item of the code's own.
+write(A / "items" / "ration.json", {"model": {"type": "minecraft:model", "model": "big_nukes:item/ration"}})
+write(A / "models" / "item" / "ration.json", {"parent": "minecraft:item/generated", "textures": {"layer0": "big_nukes:item/ration"}})
+named("item", "ration", "Ration", "Паёк")
+
+
 # The blocks declared in code are there only with the native half: their entries are optional,
 # so the assets half alone still loads its tags (and with them its data).
 def entry(n):
-    return {"id": f"big_nukes:{n}", "required": False} if n in FACING or n in TABLE or n in CUBE else f"big_nukes:{n}"
+    code = n in FACING or n in TABLE or n in CUBE or n in WALLS or n in BUNKER
+    return {"id": f"big_nukes:{n}", "required": False} if code else f"big_nukes:{n}"
 
 
-pickaxe = [entry(n) for n in [*FACING, *TABLE, *CUBE, "uranium_ore", "deepslate_uranium_ore"]]
+pickaxe = [entry(n) for n in [*FACING, *TABLE, *CUBE, "uranium_ore", "deepslate_uranium_ore", *WALLS, *BUNKER]]
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "mineable" / "pickaxe.json", {"values": pickaxe})
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "mineable" / "shovel.json", {"values": ["big_nukes:ash"]})
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "needs_iron_tool.json",

@@ -1,0 +1,25 @@
+{
+  "type": "minecraft:block",
+  "pools": [
+    {
+      "condition": {
+        "type": "minecraft:survives_explosion"
+      },
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "name": "big_nukes:hermetic_door",
+          "condition": {
+            "type": "minecraft:match_block",
+            "blocks": "big_nukes:hermetic_door",
+            "state": {
+              "half": "lower"
+            }
+          }
+        }
+      ],
+      "rolls": 1
+    }
+  ],
+  "random_sequence": "big_nukes:blocks/hermetic_door"
+}
