@@ -1421,10 +1421,13 @@ const TOLD_WITHIN: f64 = 64.0;
 /// How far a Sunbreaker's is told when its fuse burns out: whoever lit it has run.
 const SUNBREAKER_TOLD_WITHIN: f64 = 256.0;
 
-/// The clicks heard on the bombs: the player, the bomb and the item in hand. The
+/// The player, the bomb and the tick of the last click handled on a bomb. The
 /// game asks once per hand: the off hand's turn of the same click is let go,
-/// so nothing goes in or is lit twice; and a click held down, which the game
-/// repeats, is answered once.
+/// so nothing goes in or is lit twice, even when the main hand's turn used up
+/// the item it held.
+static SAME_TICK: Mutex<Option<(u128, [i32; 3], u64)>> = Mutex::new(None);
+/// The clicks heard on the bombs: the player, the bomb and the item in hand. A
+/// click held down, which the game repeats, is answered once.
 static LAST_CLICK: Mutex<rules::Clicks<(u128, [i32; 3], Option<String>)>> = Mutex::new(rules::Clicks::new(rules::HELD_CLICK_TICKS));
 
 /// A bomb's one slot holds its detonator, out of every hopper's reach and hidden on
@@ -1533,12 +1536,16 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
         return;
     };
     *canceled = true;
+    {
+        let mut last = lock(&SAME_TICK);
+        if *last == Some((who.uuid, core, now)) {
+            return;
+        }
+        *last = Some((who.uuid, core, now));
+    }
     let held = game.native_equipment(EquipmentSlot::MainHand).map(|s| s.item.to_string());
     // A click held down: what it does goes on (a block placed, the keypad), what it says is said once.
-    let held_down = match lock(&LAST_CLICK).heard((who.uuid, core, held.clone()), now) {
-        Some(0) => return,
-        since => since.is_some(),
-    };
+    let held_down = lock(&LAST_CLICK).heard((who.uuid, core, held.clone()), now).is_some();
     let clicked = pos;
     let pos = core;
     let Some(mut bomb) = game.native_with_mod_block_entity(pos, |e| load_bomb(e)).flatten() else {

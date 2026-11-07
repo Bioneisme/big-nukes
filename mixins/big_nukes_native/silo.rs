@@ -203,6 +203,7 @@ pub(in crate::game) fn forget() {
     *lock(&SESSION) = None;
     lock(&TAKEN).clear();
     *lock(&LAST_CHARGE) = rules::Clicks::new(rules::HELD_CLICK_TICKS);
+    *lock(&SAME_TICK) = None;
 }
 
 fn text(line: &rules::Reply) -> Text {
@@ -1109,8 +1110,11 @@ const DRONE_VOLUME: f32 = 12.0;
 /// How far a beacon's news is told.
 const BEACON_TOLD: f64 = 64.0;
 
-/// The clicks heard on the beacons: the player, the beacon and the item in hand. The game asks once per hand,
-/// and repeats a click held down: it is answered once.
+/// The player, the beacon and the tick of the last click handled on a beacon: the game asks once per hand, and the
+/// off hand's turn is let go even when the main hand's took the bomb it held.
+static SAME_TICK: Mutex<Option<(u128, [i32; 3], u64)>> = Mutex::new(None);
+/// The clicks heard on the beacons: the player, the beacon and the item in hand. A click held down, which the
+/// game repeats, is answered once.
 static LAST_CHARGE: Mutex<rules::Clicks<(u128, [i32; 3], Option<String>)>> = Mutex::new(rules::Clicks::new(rules::HELD_CLICK_TICKS));
 /// Beacons and consoles taken away, heard from the level, which may change a block while the state is locked.
 static TAKEN: Mutex<Vec<(String, [i32; 3])>> = Mutex::new(Vec::new());
@@ -1164,6 +1168,13 @@ fn beacon_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
     }
     *canceled = true;
     let (Some(who), Some((now, _))) = (game.native_acting_player(), glue::clock(game)) else { return };
+    {
+        let mut last = lock(&SAME_TICK);
+        if *last == Some((who.uuid, pos, now)) {
+            return;
+        }
+        *last = Some((who.uuid, pos, now));
+    }
     if lock(&LAST_CHARGE).heard((who.uuid, pos, held.clone()), now).is_some() {
         return;
     }
