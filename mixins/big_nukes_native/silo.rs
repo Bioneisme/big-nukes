@@ -328,6 +328,7 @@ fn launch(game: &mut Game<'_>, dimension: &str, who: &NativeServerPlayer, m: &ru
         let st = guard.as_mut().expect("opened");
         match st.saved.launch(dimension, from, to, kind, hatch) {
             Ok(f) => {
+                st.saved.consoles.entry(rules::console_key(dimension, console)).or_default().keep(&code);
                 glue::save(st);
                 f
             }
@@ -492,10 +493,10 @@ fn ours(screen: &NativeScreenView<'_>) -> bool {
     screen.menu == Some(rules::CONSOLE_MENU)
 }
 
-/// A key on the console's screen: every key but Escape is the console's, so none closes the screen or moves
-/// an item.
+/// A key on the console's screen: every key but Escape and the function keys is the console's, so none
+/// closes the screen or moves an item.
 pub(in crate::game) fn key_pressed(game: &Game<'_>, screen: &NativeScreenView<'_>, key: &str, canceled: &mut bool) {
-    if !ours(screen) || key == "key.keyboard.escape" || !game.native_on(rules::ID) {
+    if !ours(screen) || !rules::console_takes(key) || !game.native_on(rules::ID) {
         return;
     }
     *canceled = true;
@@ -1233,7 +1234,7 @@ fn strike(game: &mut Game<'_>, dimension: &str, f: &rules::Flight, now: u64, cha
             read
         }
     };
-    let ground = surface.unwrap_or(f.from[1]);
+    let ground = rules::Flight { surface, ..f.clone() }.bomb_ground();
     let lands = pass.impact(ground);
     match (pass.bomb(now), lands) {
         (Some(_), Some(t)) if now >= t => {

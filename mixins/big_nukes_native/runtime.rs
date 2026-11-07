@@ -1492,6 +1492,12 @@ impl Flight {
         (self.liftoff() - HATCH_OPEN_AT..=self.liftoff() + HATCH_SHUT_AT).contains(&now)
     }
 
+    /// The ground a bomber's bomb falls to: its beacon's column, under the Nether's roof; the beacon's own
+    /// height while the column isn't read.
+    pub fn bomb_ground(&self) -> i32 {
+        self.ground().unwrap_or(self.from[1])
+    }
+
     /// The target's ground, under the Nether's roof.
     fn ground(&self) -> Option<i32> {
         let surface = self.surface?;
@@ -1615,7 +1621,7 @@ pub fn pad_load(missile: Option<&str>, warhead: Option<&str>) -> Result<BombKind
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Console {
-    /// Set by the first launch asked of it.
+    /// Kept from the first launch that goes.
     pub code: Option<String>,
     pub tries: u8,
     pub locked_until: u64,
@@ -1695,7 +1701,8 @@ impl Console {
         }
         code_shape(code)?;
         match &self.code {
-            None => self.code = Some(code.to_owned()),
+            // No code yet: any passes, and the first launch keeps its own (`keep`).
+            None => {}
             Some(c) if c == code => {}
             Some(_) => {
                 self.tries += 1;
@@ -1710,6 +1717,18 @@ impl Console {
         self.tries = 0;
         Ok(())
     }
+
+    /// A launch went with `code`: a console without a code keeps it from now on.
+    pub fn keep(&mut self, code: &str) {
+        self.code.get_or_insert_with(|| code.to_owned());
+    }
+}
+
+/// Whether the console's screen keeps `key` from the game: all but Escape, which closes it, and the function
+/// keys (screenshot, debug screen, full screen).
+pub fn console_takes(key: &str) -> bool {
+    let function = key.strip_prefix("key.keyboard.f").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    key != "key.keyboard.escape" && !function
 }
 
 /// A bomber's pass over its beacon, worked out tick by tick when it is made: the plane comes in from
@@ -5851,6 +5870,45 @@ mod flight_tests {
     }
 
     #[test]
+    fn a_try_on_an_empty_pad_sets_no_code() {
+        let mut c = Console::default();
+        // The first try passes the check, but the pad is empty: no launch, so no code.
+        assert_eq!(c.check("123", 0), Ok(()));
+        assert_eq!(c.check("4567", 1), Ok(()), "another code is still free to try");
+        assert_eq!(c.code, None);
+    }
+
+    #[test]
+    fn the_console_lets_the_function_keys_and_escape_through() {
+        for key in ["key.keyboard.escape", "key.keyboard.f1", "key.keyboard.f2", "key.keyboard.f3", "key.keyboard.f11"] {
+            assert!(!console_takes(key), "{key}");
+        }
+        for key in ["key.keyboard.e", "key.keyboard.1", "key.keyboard.tab", "key.keyboard.enter", "key.keyboard.q", "key.keyboard.f"] {
+            assert!(console_takes(key), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_bomb_dropped_in_the_nether_lands_under_the_roof() {
+        let f = Flight {
+            id: 1,
+            carrier: Carrier::Bomber,
+            dimension: "minecraft:the_nether".into(),
+            from: [0, 70, 0],
+            to: [0, 0],
+            kind: BombKind::Tactical,
+            start: 0,
+            surface: Some(128),
+            seed: 1,
+            hatch: None,
+        };
+        assert_eq!(f.bomb_ground(), 123);
+        let over = Flight { dimension: "minecraft:overworld".into(), ..f.clone() };
+        assert_eq!(over.bomb_ground(), 128);
+        assert_eq!(Flight { surface: None, ..f }.bomb_ground(), 70, "unread ground: the beacon's own height");
+    }
+
+    #[test]
     fn a_console_takes_its_first_code_then_only_that_code() {
         use LaunchRefusal::*;
         let mut c = Console::default();
@@ -5859,7 +5917,11 @@ mod flight_tests {
         assert_eq!(c.check("12a4", 0), Err(NotANumber));
         assert_eq!(c.code, None);
         assert_eq!(c.check("1234", 0), Ok(()));
+        assert_eq!(c.code, None, "a code is kept only once a launch goes");
+        c.keep("1234");
         assert_eq!(c.code.as_deref(), Some("1234"));
+        c.keep("5555");
+        assert_eq!(c.code.as_deref(), Some("1234"), "the first launch's code stays");
         assert_eq!(c.check("1234", 1), Ok(()));
         assert_eq!(c.check("9999", 2), Err(WrongCode(2)));
         assert_eq!(c.check("1234", 3), Ok(()), "the right code clears the wrong ones");
