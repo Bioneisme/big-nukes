@@ -63,7 +63,19 @@ ctl("wait", 5)
 ctl("click-at", w // 4 - 85, 100)
 ctl("wait", 10)
 ctl("screenshot", os.path.join(SHOTS, "icons-tab.png"))
-shown = {w["stack"]["item"] for w in ctl("ui").get("widgets", []) if w.get("kind") == "slot" and w.get("id", "").startswith("slot-9") and w.get("stack")}
+
+
+def visible():
+    return {w["stack"]["item"] for w in ctl("ui").get("widgets", []) if w.get("kind") == "slot" and w.get("id", "").startswith("slot-9") and w.get("stack")}
+
+
+# More than five rows scroll: the wheel over the grid (GUI pixels) brings the rest up a row at a time.
+shown = visible()
+for _ in range(6):
+    ctl("scroll-at", w // 4, 180, -1)
+    ctl("wait", 3)
+    shown |= visible()
+ctl("screenshot", os.path.join(SHOTS, "icons-tab-scrolled.png"))
 check("the Big Nukes tab shows every block and item", set(items) <= shown, str(set(items) - shown))
 ctl("key", "esc", "tap")
 ctl("quit")
