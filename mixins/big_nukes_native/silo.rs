@@ -811,6 +811,7 @@ enum Change {
     Surface(u64, i32),
     HatchShut(u64),
     Force(u64, [i32; 2]),
+    Emptied(u64),
     Impact(u64, [i32; 3], rules::BombKind),
 }
 
@@ -876,6 +877,7 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
                         force.push(chunk);
                     }
                 }
+                Change::Emptied(id) => changed |= st.saved.emptied(id),
                 Change::Impact(..) => {}
             }
         }
@@ -1095,9 +1097,8 @@ fn take_away(game: &mut Game<'_>, dimension: &str) {
     }
     let Some(mut guard) = glue::state(game) else { return };
     let st = guard.as_mut().expect("opened");
-    let now = st.saved.tick;
     for pos in gone {
-        if let Some(kind) = st.saved.uncharge(dimension, pos, now) {
+        if let Some(kind) = st.saved.uncharge(dimension, pos) {
             log::info!("[big_nukes] the beacon at {pos:?} in {dimension} is gone: its {kind:?} isn't dropped");
         }
         st.saved.consoles.remove(&rules::console_key(dimension, pos));
@@ -1217,9 +1218,10 @@ fn strike(game: &mut Game<'_>, dimension: &str, f: &rules::Flight, now: u64, cha
     if now < pass.release {
         return;
     }
-    if now == pass.release {
-        // The bomb has left: a beacon broken now drops nothing.
-        game.native_with_mod_block_entity(f.from, |e| e.items.iter_mut().for_each(|s| *s = None));
+    // The bomb leaves the beacon's slot as it leaves the plane, tried again each tick until it is done: a beacon
+    // broken before then drops it and calls the strike off, one broken after drops nothing.
+    if f.to_empty(now) && game.native_with_mod_block_entity(f.from, |e| e.items.iter_mut().for_each(|s| *s = None)).is_some() {
+        changes.push(Change::Emptied(f.id));
     }
     let surface = match f.surface {
         Some(y) => Some(y),

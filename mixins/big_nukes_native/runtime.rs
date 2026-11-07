@@ -1718,6 +1718,9 @@ pub struct Flight {
     /// The hatch's height while it is to be opened or shut again.
     #[serde(default)]
     pub hatch: Option<i32>,
+    /// A bomber's: its bomb has been taken out of the beacon's slot.
+    #[serde(default)]
+    pub emptied: bool,
 }
 
 /// Where a missile is at a tick.
@@ -2344,6 +2347,7 @@ impl Saved {
             surface: None,
             seed: mix(self.tick ^ mix(id)),
             hatch: Some(hatch),
+            emptied: false,
         };
         self.flights.push(flight.clone());
         Ok(flight)
@@ -2529,6 +2533,12 @@ impl Flight {
     pub fn pass(&self) -> Pass {
         Pass::new(self.from, self.start + STRIKE_COUNTDOWN, self.seed)
     }
+
+    /// Whether a bomber's bomb is to be taken out of its beacon's slot at `now`: from the release on,
+    /// until that is done (`Saved::emptied`).
+    pub fn to_empty(&self, now: u64) -> bool {
+        self.carrier == Carrier::Bomber && !self.emptied && now >= self.pass().release
+    }
 }
 
 impl Saved {
@@ -2561,15 +2571,28 @@ impl Saved {
             surface: None,
             seed: mix(self.tick ^ mix(id)),
             hatch: None,
+            emptied: false,
         });
         Charge::Taken(kind)
     }
 
-    /// The beacon at `pos` is gone: before the bomb's release the strike is called off, and its bomb is the
-    /// beacon's to drop; after, the bomb falls anyway.
-    pub fn uncharge(&mut self, dimension: &str, pos: [i32; 3], now: u64) -> Option<BombKind> {
+    /// The bomb of beacon flight `id` is out of its beacon's slot: whether that is news.
+    pub fn emptied(&mut self, id: u64) -> bool {
+        match self.beacons.iter_mut().find(|f| f.id == id) {
+            Some(f) if !f.emptied => {
+                f.emptied = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The beacon at `pos` is gone: while its bomb is in its slot the strike is called off, and the bomb is the
+    /// beacon's to drop; once it is out (`emptied`, at the release), the bomb falls anyway. Whatever tick the
+    /// beacon was broken at and this is heard, one bomb goes on.
+    pub fn uncharge(&mut self, dimension: &str, pos: [i32; 3]) -> Option<BombKind> {
         let f = self.beacon_at(dimension, pos)?;
-        if now >= f.pass().release {
+        if f.emptied {
             return None;
         }
         let (id, kind) = (f.id, f.kind);
@@ -7231,6 +7254,7 @@ mod flight_tests {
             surface: Some(70),
             seed: 7,
             hatch: Some(71),
+            emptied: false,
         }
     }
 
@@ -7453,6 +7477,7 @@ mod flight_tests {
             surface: Some(128),
             seed: 1,
             hatch: None,
+            emptied: false,
         };
         assert_eq!(f.bomb_ground(), 123);
         let over = Flight { dimension: "minecraft:overworld".into(), ..f.clone() };
@@ -7925,13 +7950,42 @@ mod flight_tests {
         assert_eq!(saved.charge("minecraft:the_nether", b, Some(atomic)), Charge::Taken(BombKind::Atomic));
         assert!(saved.beacons.iter().all(|g| g.id == f.id || g.seed != f.seed));
         // A beacon broken before the release gives its bomb back and calls the bomber off; after, it comes anyway.
-        assert_eq!(saved.uncharge(OVERWORLD, b, 41), Some(BombKind::Tactical));
+        assert_eq!(saved.uncharge(OVERWORLD, b), Some(BombKind::Tactical));
         assert!(saved.beacon_at(OVERWORLD, b).is_none() && saved.beacons.len() == 1);
-        assert_eq!(saved.uncharge(OVERWORLD, b, 42), None);
+        assert_eq!(saved.uncharge(OVERWORLD, b), None);
         assert_eq!(saved.charge(OVERWORLD, b, Some(tactical)), Charge::Taken(BombKind::Tactical));
-        let release = saved.beacon_at(OVERWORLD, b).unwrap().pass().release;
-        assert_eq!(saved.uncharge(OVERWORLD, b, release), None);
+        let id = saved.beacon_at(OVERWORLD, b).unwrap().id;
+        assert!(saved.emptied(id));
+        assert_eq!(saved.uncharge(OVERWORLD, b), None);
         assert!(saved.beacon_at(OVERWORLD, b).is_some());
+    }
+
+    #[test]
+    fn the_strike_is_called_off_until_its_bomb_has_left_the_beacon() {
+        let mut saved = Saved { tick: 40, ..Saved::default() };
+        let b = [10, 64, 10];
+        assert_eq!(saved.charge(OVERWORLD, b, Some(BombKind::Atomic.id())), Charge::Taken(BombKind::Atomic));
+        let f = saved.beacon_at(OVERWORLD, b).unwrap().clone();
+        let release = f.pass().release;
+        // The bomb is taken out of the beacon's slot from the release on, until that is done.
+        assert!(!f.to_empty(release - 1));
+        assert!(f.to_empty(release) && f.to_empty(release + 5));
+        // A beacon broken the tick before the release and heard at it dropped its bomb: no bomb falls too.
+        assert_eq!(saved.uncharge(OVERWORLD, b), Some(BombKind::Atomic));
+        assert!(saved.beacons.is_empty());
+        // Once the slot is empty, a broken beacon drops nothing and the bomb falls anyway.
+        assert_eq!(saved.charge(OVERWORLD, b, Some(BombKind::Atomic.id())), Charge::Taken(BombKind::Atomic));
+        let id = saved.beacon_at(OVERWORLD, b).unwrap().id;
+        assert!(saved.emptied(id));
+        assert!(!saved.emptied(id), "once");
+        let f = saved.beacon_at(OVERWORLD, b).unwrap();
+        assert!(!f.to_empty(f.pass().release + 1));
+        assert_eq!(saved.uncharge(OVERWORLD, b), None);
+        // It is kept with the world.
+        let back: Saved = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert!(back.beacon_at(OVERWORLD, b).unwrap().emptied);
+        // A missile is no beacon's.
+        assert!(!missile().to_empty(u64::MAX / 2));
     }
 
     #[test]
