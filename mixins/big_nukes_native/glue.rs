@@ -58,8 +58,9 @@ pub(in crate::game) struct State {
     /// Something changed since the last save. A wave whose far chunks never load
     /// never ends, so saving only on changes keeps it from costing forever.
     pub(in crate::game) dirty: bool,
-    /// Dimensions a remote's blast went off in, to be opened at the end of the
-    /// server's tick, where a command may run.
+    /// Dimensions to be opened at the end of the server's tick, where a command
+    /// may run: those a remote's blast went off in, and when the world opens, those
+    /// its flights and strikes are on their way in (`Saved::to_wake`).
     wake: Vec<String>,
     /// Each dimension's next pass over its mobs in the zones: its tick, and where
     /// it starts in their list.
@@ -97,11 +98,12 @@ pub(in crate::game) fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Opti
     let dir = game.native_world_dir()?.join(rules::DIR);
     let mut guard = lock(&STATE);
     if guard.as_ref().is_none_or(|s| s.dir != dir) {
-        let saved = fs::read(dir.join("waves.json"))
+        let saved: rules::Saved = fs::read(dir.join("waves.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).map_err(|e| log::warn!("[big_nukes] waves.json: {e}")).ok())
             .unwrap_or_default();
         log::info!("[big_nukes] Big Nukes {} in {}", rules::VERSION, dir.display());
+        let wake = saved.to_wake();
         *guard = Some(State {
             dir,
             saved,
@@ -109,7 +111,7 @@ pub(in crate::game) fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Opti
             opened: BTreeSet::new(),
             ash: None,
             dirty: false,
-            wake: Vec::new(),
+            wake,
             mobs: HashMap::new(),
             told: BTreeSet::new(),
         });
@@ -704,7 +706,12 @@ pub(in crate::game) fn fog(game: &Game<'_>, camera: [f64; 3], fog_type: FogType,
     if fog_type != FogType::Atmospheric {
         return;
     }
-    if let Some((color, start, end)) = rules::tint_fog(shown, fog.color, fog.environmental_start, fog.environmental_end) {
+    // The overworld's fog darkens with the night, and the zone's with it; the other dimensions keep no time.
+    let light = match (game.native_player(), game.native_clock()) {
+        (Some(p), Some(clock)) if p.dimension == "minecraft:overworld" => rules::sky_light(clock.day_time),
+        _ => 1.0,
+    };
+    if let Some((color, start, end)) = rules::tint_fog(shown, fog.color, fog.environmental_start, fog.environmental_end, light) {
         fog.color = color;
         fog.environmental_start = start;
         fog.environmental_end = end;
@@ -1162,6 +1169,12 @@ pub(in crate::game) fn burn_time(game: &Game<'_>, stack: &ItemStack) -> i32 {
 }
 // --- end of internals ---
 
+/// Whether `stack` goes onto `have`: the same item with the same components (its name, its damage...), as the
+/// game stacks them. Only the count may differ.
+pub(in crate::game) fn stacks_with(have: &ItemStack, stack: &ItemStack) -> bool {
+    *have == ItemStack { count: have.count, ..stack.clone() }
+}
+
 fn stack_of(item: &str) -> ItemStack {
     ItemStack { item: item.into(), count: 1, damage: 0, extra: None }
 }
@@ -1264,7 +1277,7 @@ pub(in crate::game) fn quick_move(game: &Game<'_>, entity: &mut ModBlockEntity, 
             entity.items[to] = Some(stack.clone());
             stack.count = 0;
         }
-        Some(have) if have.item == stack.item => {
+        Some(have) if stacks_with(have, stack) => {
             let moved = most.saturating_sub(have.count).min(stack.count);
             have.count += moved;
             stack.count -= moved;
@@ -1474,8 +1487,12 @@ const SUNBREAKER_TOLD_WITHIN: f64 = 256.0;
 
 /// The player, the bomb and the tick of the last click handled on a bomb. The
 /// game asks once per hand: the off hand's turn of the same click is let go,
-/// so nothing goes in or is lit twice.
-static LAST_CLICK: Mutex<Option<(u128, [i32; 3], u64)>> = Mutex::new(None);
+/// so nothing goes in or is lit twice, even when the main hand's turn used up
+/// the item it held.
+static SAME_TICK: Mutex<Option<(u128, [i32; 3], u64)>> = Mutex::new(None);
+/// The clicks heard on the bombs: the player, the bomb and the item in hand. A
+/// click held down, which the game repeats, is answered once.
+static LAST_CLICK: Mutex<rules::Clicks<(u128, [i32; 3], Option<String>)>> = Mutex::new(rules::Clicks::new(rules::HELD_CLICK_TICKS));
 
 /// A bomb's one slot holds its detonator, out of every hopper's reach and hidden on
 /// its screen: a broken bomb drops it as a chest drops its items. The bombs that
@@ -1584,24 +1601,29 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
     };
     *canceled = true;
     {
-        let mut last = lock(&LAST_CLICK);
+        let mut last = lock(&SAME_TICK);
         if *last == Some((who.uuid, core, now)) {
             return;
         }
         *last = Some((who.uuid, core, now));
     }
+    let held = game.native_equipment(EquipmentSlot::MainHand).map(|s| s.item.to_string());
+    // A click held down: what it does goes on (a block placed, the keypad), what it says is said once.
+    let held_down = lock(&LAST_CLICK).heard((who.uuid, core, held.clone()), now).is_some();
     let clicked = pos;
     let pos = core;
     let Some(mut bomb) = game.native_with_mod_block_entity(pos, |e| load_bomb(e)).flatten() else {
         return;
     };
-    let held = game.native_equipment(EquipmentSlot::MainHand).map(|s| s.item.to_string());
     let creative = who.game_mode == 1;
     let tell = |game: &mut Game<'_>, line: Text| {
         game.native_tell(who.uuid, line);
     };
     // A remote is linked to a bomb with a receiver, sneaking or not.
     if held.as_deref() == Some(rules::REMOTE) {
+        if held_down {
+            return;
+        }
         match bomb.detonator {
             Some(rules::Detonator::Receiver) => link(game, &who, pos, bomb.kind),
             _ => tell(game, Text::translate("big_nukes.remote.no_receiver", &[])),
@@ -1609,6 +1631,9 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
         return;
     }
     if let Some(detonator) = held.as_deref().and_then(rules::Detonator::of_item) {
+        if held_down {
+            return;
+        }
         match bomb.install(detonator) {
             Ok(()) => {
                 if install(game, pos, &bomb, detonator, creative, who.uuid) && detonator == rules::Detonator::Receiver {
@@ -1621,6 +1646,9 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
         return;
     }
     if held.as_deref() == Some(rules::FLINT_AND_STEEL) {
+        if held_down {
+            return;
+        }
         match bomb.detonator {
             Some(rules::Detonator::Fuse) if bomb.fires_at.is_none() => {
                 if let Err(why) = may_go_off(game, pos, bomb.kind, maxpower) {
@@ -1650,6 +1678,9 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
     if keypad && keypad_menu_known() && (clicked == pos || mirror(game, &who.dimension, pos, clicked, &bomb, now)) {
         // The game goes on: the block opens its keypad, the core's own or the one it shows on the block clicked.
         *canceled = false;
+        return;
+    }
+    if held_down {
         return;
     }
     if bomb.kind == rules::BombKind::Sunbreaker {
@@ -2525,6 +2556,12 @@ fn keypad_click(at: [f32; 2], right: bool, button: &mut Option<i32>) {
 // open book lives in a static, and a page turned is heard at the next frame. The book
 // stays after the screen closes, so it opens again where it was left.
 
+/// The players who right-clicked with the guide lately, by the wall clock: a click held down asks
+/// once, so a window that sees the book late (a laggy server) doesn't get it again after Escape.
+static GUIDE_CLICKS: Mutex<rules::Clicks<u128>> = Mutex::new(rules::Clicks::new(rules::GUIDE_CLICK_MS));
+/// The wall clock the guide's clicks are counted on: a laggy or frozen server's ticks would swallow real clicks.
+static GUIDE_EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
 /// A right click with the guide: the player's window opens it. The use is claimed
 /// even when the message can't go, so the guide never acts as a plain book.
 fn read_guide(game: &mut Game<'_>, claimed: &mut bool) {
@@ -2532,6 +2569,10 @@ fn read_guide(game: &mut Game<'_>, claimed: &mut bool) {
     let Some(who) = game.native_acting_player() else {
         return;
     };
+    let now = GUIDE_EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64;
+    if lock(&GUIDE_CLICKS).heard(who.uuid, now).is_some() {
+        return;
+    }
     if let Err(e) = game.native_net_send_to_player(who.uuid, rules::GUIDE_CHANNEL, &[]) {
         log::warn!("[big_nukes] opening the guide: {e}");
     }
@@ -2543,7 +2584,8 @@ static PAGE_TURNED: Mutex<bool> = Mutex::new(false);
 /// The server's message: the book is laid out in the window's language and opened, at the
 /// spread it was left at or, the first time, at its contents.
 pub(in crate::game) fn guide_asked(game: &mut Game<'_>, channel: &str) {
-    if channel != rules::GUIDE_CHANNEL || !game.native_on(rules::ID) {
+    // A message late for a book already open is let go.
+    if channel != rules::GUIDE_CHANNEL || !game.native_on(rules::ID) || game.native_mod_screen() == Some(rules::ID) {
         return;
     }
     let mut guide = rules::Guide::new(&lang::get, &|text: &str| game.native_text_width(text));

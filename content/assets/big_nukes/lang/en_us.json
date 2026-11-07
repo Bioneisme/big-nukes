@@ -163,6 +163,7 @@
   "big_nukes.beacon.hint": "Right click with a tactical warhead or an atomic bomb to call a bomber",
   "big_nukes.beacon.soon": "The bomber is %s s away",
   "big_nukes.beacon.no_assets": "Big Nukes' assets mod isn't loaded: no bomber without its model",
+  "big_nukes.beacon.not_taken": "The beacon couldn't take the bomb from your hand",
   "item.big_nukes.guide": "Big Nukes Guide",
   "big_nukes.tip.sunbreaker_core": "Radius up to 1000, through bedrock. Build round it 26 implosion shells, then 98 neutron reflectors.",
   "big_nukes.tip.sunbreaker_core.2": "Assembly table: 4 weapons-grade uranium, 4 nuclear charges, 1 block of diamond.",

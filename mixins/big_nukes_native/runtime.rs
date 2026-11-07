@@ -631,6 +631,47 @@ pub const PAD_ENTER: i32 = 1;
 pub const PAD_LOCKED: i32 = 2;
 pub const PAD_COUNTING: i32 = 3;
 
+/// The game repeats a right click held down every 4 ticks: a click on the same thing this many
+/// ticks or fewer after the last one heard is the same click, held.
+pub const HELD_CLICK_TICKS: u64 = 8;
+/// The same in milliseconds of the wall clock, for the guide: the window repeats a held click
+/// about every 200 ms, whatever the server's ticks do.
+pub const GUIDE_CLICK_MS: u64 = 400;
+
+/// The clicks heard lately, by what each was (the player, the block, the item in hand) and when
+/// (in ticks or milliseconds, as `window` counts): a click held down is answered once, not at each
+/// of the game's repeats.
+#[derive(Debug)]
+pub struct Clicks<K> {
+    last: Vec<(K, u64)>,
+    window: u64,
+}
+
+impl<K: PartialEq> Clicks<K> {
+    pub const fn new(window: u64) -> Self {
+        Clicks { last: Vec::new(), window }
+    }
+
+    /// A click `key` at `now`: None for a new click, else the time since the one it goes on
+    /// from (0 for the other hand's turn of the same click). Each repeat keeps the click held;
+    /// one let go longer than `window` is forgotten.
+    pub fn heard(&mut self, key: K, now: u64) -> Option<u64> {
+        let window = self.window;
+        self.last.retain(|(_, t)| *t <= now && now - *t <= window);
+        match self.last.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, t)) => {
+                let since = now - *t;
+                *t = now;
+                Some(since)
+            }
+            None => {
+                self.last.push((key, now));
+                None
+            }
+        }
+    }
+}
+
 /// What sets a bomb off, put in as an item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Detonator {
@@ -1032,11 +1073,15 @@ pub fn ring(d: f64) -> Ring {
     }
 }
 
-/// The crater's floor under a column at distance `d`: a bowl, deepest at the
-/// center, never into bedrock, but for the hole a blast of `BEDROCK_RADIUS` or more
-/// makes at its center, down to the world's floor.
-pub fn crater_floor(blast: &Blast, d: f64) -> i32 {
-    if blast.radius >= BEDROCK_RADIUS && d * f64::from(blast.radius) <= f64::from(BEDROCK_HOLE) {
+/// The crater's floor under column (`x`, `z`), at distance `d` (`edge`): a bowl,
+/// deepest at the center, never into bedrock, but for the hole a blast of
+/// `BEDROCK_RADIUS` or more makes at its center, down to the world's floor. The
+/// hole is a circle of `BEDROCK_HOLE` blocks round the center's column, whatever the
+/// border's swing.
+pub fn crater_floor(blast: &Blast, x: i32, z: i32, d: f64) -> i32 {
+    let (dx, dz) = (i64::from(x - blast.center[0]), i64::from(z - blast.center[2]));
+    let hole = i64::from(BEDROCK_HOLE);
+    if blast.radius >= BEDROCK_RADIUS && dx * dx + dz * dz <= hole * hole {
         return blast.world.min_y;
     }
     let depth = if d < CORE { CRATER_DEPTH * blast.radius as f64 * (1.0 - (d / CORE).powi(2)) } else { 0.0 };
@@ -1147,7 +1192,7 @@ pub fn plan_chunk(blast: &Blast, chunk: [i32; 2], walls: &[Wall]) -> ([ChunkEdit
             let below = blast.center[1] - PLANTS_BELOW;
             match ring(d) {
                 Ring::Core => {
-                    let floor = crater_floor(blast, d);
+                    let floor = crater_floor(blast, x, z, d);
                     let bottom = core_walls(blast, floor, top, near.column(x, z), &near, &mut plants, &mut changes);
                     plants.runs.extend(absolute(bottom, AIR, None));
                 }
@@ -1773,6 +1818,49 @@ pub struct Flight {
     /// The hatch's height while it is to be opened or shut again.
     #[serde(default)]
     pub hatch: Option<i32>,
+    /// Whether the flight took the hatch away and owes it back; None for a flight saved before this was kept,
+    /// which puts a hatch back on the air as it used to.
+    #[serde(default)]
+    pub hatch_moved: Option<bool>,
+    /// A bomber's: its bomb has been taken out of the beacon's slot.
+    #[serde(default)]
+    pub emptied: bool,
+}
+
+/// What a flight does to its hatch (`Flight::hatch_act`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HatchAct {
+    /// Taken away: the shaft opens.
+    Open,
+    /// Put back.
+    Shut,
+    /// Given back as an item at the pad: a block stands in its place.
+    Drop,
+    /// Left as it is, and forgotten.
+    Forget,
+}
+
+/// Whether the hatch may be put back where `block` is: air, or what a placed block takes the place of
+/// (water and lava that flowed in, snow, fire, grass).
+fn hatch_room(block: &str) -> bool {
+    is_air(block)
+        || matches!(
+            block,
+            "minecraft:water"
+                | "minecraft:lava"
+                | "minecraft:bubble_column"
+                | "minecraft:fire"
+                | "minecraft:soul_fire"
+                | "minecraft:snow"
+                | "minecraft:short_grass"
+                | "minecraft:tall_grass"
+                | "minecraft:fern"
+                | "minecraft:large_fern"
+                | "minecraft:dead_bush"
+                | "minecraft:vine"
+                | "minecraft:seagrass"
+                | "minecraft:tall_seagrass"
+        )
 }
 
 /// Where a missile is at a tick.
@@ -1829,6 +1917,28 @@ impl Flight {
     /// Whether the hatch stands open: from `HATCH_OPEN_AT` before the liftoff to `HATCH_SHUT_AT` after it.
     pub fn hatch_open(&self, now: u64) -> bool {
         (self.liftoff() - HATCH_OPEN_AT..=self.liftoff() + HATCH_SHUT_AT).contains(&now)
+    }
+
+    /// What is done to the hatch at `now`, `here` being the block in its place, None while its chunk isn't
+    /// loaded (where everything reads as air): it waits for it. The hatch is taken away while it stands open,
+    /// and after, only the one taken is put back, where there is room (`hatch_room`); with a block in its place
+    /// it is given back as an item. One mined before is not made again: the flight forgets it.
+    pub fn hatch_act(&self, now: u64, here: Option<&str>) -> Option<HatchAct> {
+        self.hatch?;
+        let here = here?;
+        if self.hatch_open(now) {
+            (self.hatch_moved != Some(true) && here == SILO_HATCH).then_some(HatchAct::Open)
+        } else if now > self.liftoff() {
+            Some(match self.hatch_moved {
+                Some(false) => HatchAct::Forget,
+                _ if hatch_room(here) => HatchAct::Shut,
+                Some(true) => HatchAct::Drop,
+                // Saved before it was kept: whether it was taken isn't known.
+                None => HatchAct::Forget,
+            })
+        } else {
+            None
+        }
     }
 
     /// The ground a bomber's bomb falls to: its beacon's column, under the Nether's roof; the beacon's own
@@ -2399,6 +2509,8 @@ impl Saved {
             surface: None,
             seed: mix(self.tick ^ mix(id)),
             hatch: Some(hatch),
+            hatch_moved: Some(false),
+            emptied: false,
         };
         self.flights.push(flight.clone());
         Ok(flight)
@@ -2417,7 +2529,8 @@ impl Saved {
 // ---- the target's chunk ------------------------------------------------------------
 //
 // A missile's target is kept loaded with `/forceload` from its liftoff, so its
-// ground can be read and its blast's center worked; the world keeps the forced
+// ground can be read and its blast's center worked, and its pad from the launch
+// until the hatch is back, so the hatch isn't lost; the world keeps the forced
 // chunks (`Saved.forced`), and each is let go once its wave has changed its
 // center's chunk, or at once for a flight that never went off.
 
@@ -2447,6 +2560,10 @@ pub struct Forced {
     pub landed: bool,
     #[serde(default)]
     pub center: Option<[i32; 3]>,
+    /// Forced already when the mod came to it (a player's `/forceload`, one flag a chunk): the mod never
+    /// lets it go.
+    #[serde(default)]
+    pub theirs: bool,
 }
 
 impl Waves {
@@ -2461,22 +2578,50 @@ impl Waves {
 }
 
 impl Saved {
-    /// Flight `id` keeps `chunk` loaded: true when no flight did yet, so the glue forces it.
+    /// Flight `id` keeps `chunk` loaded (a missile its pad's and its target's): true when no flight did yet,
+    /// so the glue forces it.
     pub fn force(&mut self, id: u64, dimension: &str, chunk: [i32; 2]) -> bool {
-        if self.forced.iter().any(|f| f.id == id) {
+        if self.forced.iter().any(|f| f.id == id && f.dimension == dimension && f.chunk == chunk) {
             return false;
         }
-        let new = !self.forced.iter().any(|f| f.dimension == dimension && f.chunk == chunk);
-        self.forced.push(Forced { id, dimension: dimension.to_owned(), chunk, landed: false, center: None });
+        let held = self.forced.iter().find(|f| f.dimension == dimension && f.chunk == chunk);
+        let (new, theirs) = (held.is_none(), held.is_some_and(|f| f.theirs));
+        self.forced.push(Forced { id, dimension: dimension.to_owned(), chunk, landed: false, center: None, theirs });
         new
+    }
+
+    /// The game had `chunk` forced before the mod asked for it: whoever forced it lets it go, not the mod.
+    pub fn theirs(&mut self, dimension: &str, chunk: [i32; 2]) {
+        for f in self.forced.iter_mut().filter(|f| f.dimension == dimension && f.chunk == chunk) {
+            f.theirs = true;
+        }
+    }
+
+    /// Flight `id` no longer needs `chunk` (a pad's, once its hatch is back): true when the glue is to let it
+    /// go, as no other flight holds it and it was the mod's to force.
+    pub fn release(&mut self, id: u64, dimension: &str, chunk: [i32; 2]) -> bool {
+        let Some(i) = self.forced.iter().position(|f| f.id == id && f.dimension == dimension && f.chunk == chunk) else {
+            return false;
+        };
+        let gone = self.forced.remove(i);
+        !gone.theirs && !self.forced.iter().any(|f| f.dimension == dimension && f.chunk == chunk)
     }
 
     /// Flight `id` went off at `center`, or never will.
     pub fn landed(&mut self, id: u64, center: Option<[i32; 3]>) {
-        if let Some(f) = self.forced.iter_mut().find(|f| f.id == id) {
+        for f in self.forced.iter_mut().filter(|f| f.id == id) {
             f.landed = true;
             f.center = center;
         }
+    }
+
+    /// The dimensions to open when the world is opened again: those other than the overworld where a flight or a
+    /// strike is on its way, or a forced chunk waits for its wave. A level nobody has entered isn't open, and its
+    /// forced chunks don't tick until it is.
+    pub fn to_wake(&self) -> Vec<String> {
+        let dimensions = self.flights.iter().chain(&self.beacons).map(|f| &f.dimension).chain(self.forced.iter().map(|f| &f.dimension));
+        let set: BTreeSet<&String> = dimensions.filter(|d| d.as_str() != "minecraft:overworld").collect();
+        set.into_iter().cloned().collect()
     }
 
     /// The chunks to let go now: their flights' waves have changed their centers' chunks. A chunk another flight
@@ -2490,7 +2635,7 @@ impl Saved {
         let mut free: Vec<(String, [i32; 2])> = Vec::new();
         for f in done {
             let held = self.forced.iter().any(|k| k.dimension == f.dimension && k.chunk == f.chunk);
-            if !held && !free.iter().any(|(d, c)| *d == f.dimension && *c == f.chunk) {
+            if !held && !f.theirs && !free.iter().any(|(d, c)| *d == f.dimension && *c == f.chunk) {
                 free.push((f.dimension, f.chunk));
             }
         }
@@ -2579,10 +2724,43 @@ pub enum Charge {
     Maxpower { radius: u32, maxpower: u32 },
 }
 
+/// The slot of `hotbar` that holds `held`, the stack seen in the main hand, whole (its name and
+/// all): the hand's own, where its bomb is taken from. The first, should two be the same.
+pub fn hand_slot<T: PartialEq>(hotbar: &[Option<T>], held: &T) -> Option<usize> {
+    hotbar.iter().position(|s| s.as_ref() == Some(held))
+}
+
+/// A charged beacon takes its bomb, `g` being the game: `put` lays `one` (one of the stack seen in hand) in the
+/// beacon's slot, then `take` takes it out of the hand; when that fails, `unput` empties the slot again, so the
+/// bomb is never in both or in neither. Whether it went in.
+pub fn charge_from_hand<G, S>(
+    g: &mut G,
+    one: Option<S>,
+    put: impl FnOnce(&mut G, S) -> bool,
+    take: impl FnOnce(&mut G) -> bool,
+    unput: impl FnOnce(&mut G),
+) -> bool {
+    let Some(one) = one else { return false };
+    if !put(g, one) {
+        return false;
+    }
+    if take(g) {
+        return true;
+    }
+    unput(g);
+    false
+}
+
 impl Flight {
     /// A bomber's pass over its beacon.
     pub fn pass(&self) -> Pass {
         Pass::new(self.from, self.start + STRIKE_COUNTDOWN, self.seed)
+    }
+
+    /// Whether a bomber's bomb is to be taken out of its beacon's slot at `now`: from the release on,
+    /// until that is done (`Saved::emptied`).
+    pub fn to_empty(&self, now: u64) -> bool {
+        self.carrier == Carrier::Bomber && !self.emptied && now >= self.pass().release
     }
 }
 
@@ -2616,15 +2794,29 @@ impl Saved {
             surface: None,
             seed: mix(self.tick ^ mix(id)),
             hatch: None,
+            hatch_moved: None,
+            emptied: false,
         });
         Charge::Taken(kind)
     }
 
-    /// The beacon at `pos` is gone: before the bomb's release the strike is called off, and its bomb is the
-    /// beacon's to drop; after, the bomb falls anyway.
-    pub fn uncharge(&mut self, dimension: &str, pos: [i32; 3], now: u64) -> Option<BombKind> {
+    /// The bomb of beacon flight `id` is out of its beacon's slot: whether that is news.
+    pub fn emptied(&mut self, id: u64) -> bool {
+        match self.beacons.iter_mut().find(|f| f.id == id) {
+            Some(f) if !f.emptied => {
+                f.emptied = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The beacon at `pos` is gone: while its bomb is in its slot the strike is called off, and the bomb is the
+    /// beacon's to drop; once it is out (`emptied`, at the release), the bomb falls anyway. Whatever tick the
+    /// beacon was broken at and this is heard, one bomb goes on.
+    pub fn uncharge(&mut self, dimension: &str, pos: [i32; 3]) -> Option<BombKind> {
         let f = self.beacon_at(dimension, pos)?;
-        if now >= f.pass().release {
+        if f.emptied {
             return None;
         }
         let (id, kind) = (f.id, f.kind);
@@ -2813,11 +3005,18 @@ pub fn uuid_text(uuid: u128) -> String {
 }
 
 impl Saved {
-    /// The zones that faded out for good are dropped. Whether any was.
+    /// The zones that faded out for good are dropped, and with them the decontaminators' circles no zone
+    /// reaches any more: they clean nothing, and never will, as every zone to come is newer than they are.
+    /// Whether any zone was.
     pub fn prune_zones(&mut self, now: u64) -> bool {
         let before = self.zones.len();
         self.zones.retain(|z| !z.gone(now));
-        self.zones.len() != before
+        if self.zones.len() == before {
+            return false;
+        }
+        let zones = &self.zones;
+        self.cleans.retain(|c| zones.iter().any(|z| c.meets(z)));
+        true
     }
 
     /// A second of the player's exposure at `pos`, with `protection` kept out and the share `shelter`
@@ -3017,18 +3216,31 @@ pub fn ease(shown: f64, target: f64, seconds: f64) -> f64 {
     shown + (target - shown) * (1.0 - (-seconds.max(0.0) / FOG_EASE).exp())
 }
 
+/// The sky's light at the world's time of day `day_time`, 0 to 1, as vanilla's
+/// fog colour follows it (`FogRenderer`, from `DimensionType.timeOfDay`): full by
+/// day, none at night, eased at dusk and dawn.
+pub fn sky_light(day_time: i64) -> f32 {
+    let d = (day_time.rem_euclid(24_000) as f64 / 24_000.0 - 0.25).rem_euclid(1.0);
+    let e = 0.5 - (d * std::f64::consts::PI).cos() / 2.0;
+    let angle = (d * 2.0 + e) / 3.0;
+    ((angle * std::f64::consts::TAU).cos() * 2.0 + 0.5).clamp(0.0, 1.0) as f32
+}
+
 /// The world's fog (its colour, the start and the end of the fog of the
 /// surroundings) with a zone's of `strength` over it: the colour toward the
-/// zone's, the end in toward 64 blocks and the start toward the eyes. None for
-/// no fog, and when the result isn't one the game takes.
-pub fn tint_fog(strength: f64, color: [f32; 4], start: f32, end: f32) -> Option<([f32; 4], f32, f32)> {
+/// zone's, darkened by the sky's `light` (`sky_light`) as the world's own is, the
+/// end in toward 64 blocks and the start toward the eyes. None for no fog, and
+/// when the result isn't one the game takes.
+pub fn tint_fog(strength: f64, color: [f32; 4], start: f32, end: f32, light: f32) -> Option<([f32; 4], f32, f32)> {
     let s = strength.min(1.0) as f32;
     if !(s > 0.0) || !start.is_finite() || !end.is_finite() {
         return None;
     }
+    let light = if light.is_finite() { light.clamp(0.0, 1.0) } else { 1.0 };
+    let tint = [FOG_TINT[0] * (light * 0.94 + 0.06), FOG_TINT[1] * (light * 0.94 + 0.06), FOG_TINT[2] * (light * 0.91 + 0.09)];
     let mut tinted = color;
     for i in 0..3 {
-        tinted[i] = (color[i] + (FOG_TINT[i] - color[i]) * s).clamp(0.0, 1.0);
+        tinted[i] = (color[i] + (tint[i] - color[i]) * s).clamp(0.0, 1.0);
     }
     if start >= FOG_OFF {
         return Some((tinted, start, end));
@@ -3134,13 +3346,19 @@ impl Saved {
     /// grown, and the radius the circle has is answered. One placed where a circle is takes
     /// that circle on. A zone newer than the circle that reaches it starts a new circle from
     /// nothing (0 is answered): the old one still cleans the zones older than it, and goes
-    /// once the new one is as large. Nothing is kept of a circle of radius 0.
+    /// once the new one is as large. Nothing is kept of a circle of radius 0. One grown past its first block
+    /// with no circle had it pruned (`prune_zones`) when no zone reached it: it is made again as it was, or,
+    /// if a zone has come over it since, which is newer than it, started again from nothing.
     pub fn cleaned(&mut self, dimension: &str, center: [i32; 3], radius: u32) -> u32 {
         let now = self.tick;
         let here = |c: &Clean| c.dimension == dimension && c.center == center;
         let Some(i) = self.cleans.iter().rposition(here) else {
+            let new = Clean { dimension: dimension.to_owned(), center, radius, start: now };
+            if radius > 1 && self.zones.iter().any(|z| new.meets(z)) {
+                return 0;
+            }
             if radius > 0 {
-                self.cleans.push(Clean { dimension: dimension.to_owned(), center, radius, start: now });
+                self.cleans.push(new);
             }
             return radius;
         };
@@ -3184,7 +3402,9 @@ impl Decontaminator {
     /// `CLEAN_GROW_TICKS` (`Step::made`); a full circle burns nothing more. Without fuel it
     /// stands, keeping what it cleaned.
     pub fn step(&mut self, fuel: Option<u32>) -> Step {
+        // A full circle: the cleaning is over, and the flame goes out.
         if self.radius >= CLEAN_RADIUS {
+            self.burn = 0;
             return Step::IDLE;
         }
         let mut step = Step::IDLE;
@@ -3204,6 +3424,9 @@ impl Decontaminator {
             self.grow = 0;
             self.radius += 1;
             step.made = true;
+            if self.radius >= CLEAN_RADIUS {
+                self.burn = 0;
+            }
         }
         step
     }
@@ -3669,14 +3892,14 @@ pub fn roofed(blast: &Blast, walls: &[Wall], pos: [i32; 3], worked: bool) -> boo
     }
     let near = WallsAt::new(chunk_of(pos[0], pos[2]), walls);
     let top = blast.world.roof.min(blast.world.top());
-    let Some(held) = column_holds(blast, crater_floor(blast, d), top, near.column(pos[0], pos[2]), &near) else { return false };
+    let Some(held) = column_holds(blast, crater_floor(blast, pos[0], pos[2], d), top, near.column(pos[0], pos[2]), &near) else { return false };
     over.any(|w| w.pos[1] < held)
 }
 
 /// Whether `pos` is under the floor the blast's crater has in its column: depth spares it.
 pub fn below_crater(blast: &Blast, pos: [i32; 3]) -> bool {
     let d = edge(blast, pos[0], pos[2]);
-    ring(d) == Ring::Core && pos[1] < crater_floor(blast, d)
+    ring(d) == Ring::Core && pos[1] < crater_floor(blast, pos[0], pos[2], d)
 }
 
 /// The registry's key of a chunk's walls.
@@ -5030,11 +5253,11 @@ mod tests {
     #[test]
     fn the_crater_is_deepest_at_the_center_and_never_reaches_bedrock() {
         let b = blast([0, 70, 0], 250, 1, World::OVERWORLD);
-        assert_eq!(crater_floor(&b, 0.0), 70 - 62);
-        assert!(crater_floor(&b, 0.2) > crater_floor(&b, 0.0));
-        assert_eq!(crater_floor(&b, 0.35), 70);
+        assert_eq!(crater_floor(&b, 0, 0, 0.0), 70 - 62);
+        assert!(crater_floor(&b, 50, 0, 0.2) > crater_floor(&b, 0, 0, 0.0));
+        assert_eq!(crater_floor(&b, 87, 0, 0.35), 70);
         let deep = blast([0, -50, 0], 250, 1, World::OVERWORLD);
-        assert_eq!(crater_floor(&deep, 0.0), -64 + 5);
+        assert_eq!(crater_floor(&deep, 0, 0, 0.0), -64 + 5);
     }
 
     #[test]
@@ -7511,7 +7734,30 @@ mod tests {
     }
 
     fn zone_fog(bg: f64, color: [f32; 4], start: f32, end: f32) -> Option<([f32; 4], f32, f32)> {
-        tint_fog(fog_strength(bg), color, start, end)
+        tint_fog(fog_strength(bg), color, start, end, 1.0)
+    }
+
+    #[test]
+    fn the_zone_fog_darkens_with_the_sky() {
+        // The sky's light by the time of day, as vanilla's fog colour follows it: full at noon, none at midnight.
+        assert_eq!(sky_light(6000), 1.0);
+        assert_eq!(sky_light(18_000), 0.0);
+        assert_eq!(sky_light(6000 + 24_000 * 3), 1.0, "any day");
+        assert!(sky_light(12_500) > 0.0 && sky_light(12_500) < 1.0, "dusk");
+        for t in (0..24_000).step_by(250) {
+            assert!((0.0..=1.0).contains(&sky_light(t)), "{t}");
+        }
+        // A full zone's fog at midnight is the night's, not a bright green over the dark.
+        let night = [0.04, 0.05, 0.08, 1.0];
+        let (c, _, _) = tint_fog(1.0, night, 0.0, 1024.0, sky_light(18_000)).unwrap();
+        assert!(c[..3].iter().all(|v| *v < 0.06), "{c:?}");
+        let (noon, _, _) = tint_fog(1.0, [0.6, 0.7, 0.9, 1.0], 0.0, 1024.0, sky_light(6000)).unwrap();
+        assert!(noon.iter().zip([0.55, 0.62, 0.45, 1.0]).all(|(a, b)| (a - b).abs() < 1e-6), "{noon:?}");
+        // At dusk it is between, and still green over grey.
+        let (dusk, _, _) = tint_fog(1.0, [0.3, 0.3, 0.3, 1.0], 0.0, 1024.0, sky_light(12_800)).unwrap();
+        assert!(dusk[1] < noon[1] && dusk[1] > c[1] && dusk[1] > dusk[2], "{dusk:?}");
+        // The light doesn't touch the distances, nor the fog's alpha.
+        assert_eq!(tint_fog(1.0, night, 0.0, 1024.0, 0.0).map(|(c, s, e)| (c[3], s, e)), Some((1.0, 0.0, 64.0)));
     }
 
     #[test]
@@ -7748,20 +7994,21 @@ mod tests {
     fn a_thousand_breaks_bedrock_at_the_center_only() {
         let w = World::OVERWORLD;
         let b = blast([0, 64, 0], BEDROCK_RADIUS, 9, w);
-        assert_eq!(crater_floor(&b, 0.0), w.min_y);
-        assert_eq!(crater_floor(&b, f64::from(BEDROCK_HOLE) / 1000.0), w.min_y);
-        assert!(crater_floor(&b, 30.0 / 1000.0) >= w.min_y + ABOVE_FLOOR);
-        for i in (0..=1000).filter(|i| *i != BEDROCK_HOLE as i32) {
-            let floor = crater_floor(&b, f64::from(i) / 1000.0);
-            if i < BEDROCK_HOLE as i32 {
-                assert_eq!(floor, w.min_y, "{i}");
+        let hole = BEDROCK_HOLE as i32;
+        assert_eq!(crater_floor(&b, 0, 0, 0.0), w.min_y);
+        assert_eq!(crater_floor(&b, hole, 0, edge(&b, hole, 0)), w.min_y);
+        assert!(crater_floor(&b, 30, 0, edge(&b, 30, 0)) >= w.min_y + ABOVE_FLOOR);
+        for x in 0..=1000 {
+            let floor = crater_floor(&b, x, 0, edge(&b, x, 0));
+            if x <= hole {
+                assert_eq!(floor, w.min_y, "{x}");
             } else {
-                assert!(floor >= w.min_y + ABOVE_FLOOR, "{i}");
+                assert!(floor >= w.min_y + ABOVE_FLOOR, "{x}");
             }
         }
         let short = blast([0, 64, 0], BEDROCK_RADIUS - 1, 9, w);
-        for i in 0..=1000 {
-            assert!(crater_floor(&short, f64::from(i) / 1000.0) >= w.min_y + ABOVE_FLOOR, "{i}");
+        for x in 0..=1000 {
+            assert!(crater_floor(&short, x, 0, edge(&short, x, 0)) >= w.min_y + ABOVE_FLOOR, "{x}");
         }
         // The center's column is emptied from the world's floor up: the void shows under it.
         let [plants, _] = plan_chunk(&b, chunk_of(0, 0), &[]).0;
@@ -7770,6 +8017,30 @@ mod tests {
         let [plants, _] = plan_chunk(&short, chunk_of(0, 0), &[]).0;
         let run = plants.runs.iter().find(|r| (r.x, r.z) == (0, 0) && r.only.is_none()).unwrap();
         assert_eq!(run.y, w.min_y + ABOVE_FLOOR);
+    }
+
+    #[test]
+    fn the_bedrock_hole_is_round_whatever_the_border() {
+        let w = World::OVERWORLD;
+        let r = BEDROCK_HOLE as i32;
+        let round: BTreeSet<[i32; 2]> =
+            (-r - 8..=r + 8).flat_map(|x| (-r - 8..=r + 8).map(move |z| [x, z])).filter(|[x, z]| x * x + z * z <= r * r).collect();
+        for seed in [1, 9, 77, 4242] {
+            let center = [100, 64, -300];
+            let b = blast(center, BEDROCK_RADIUS, seed, w);
+            let mut hole = BTreeSet::new();
+            for cx in -4..=4 {
+                for cz in -4..=4 {
+                    let chunk = chunk_of(center[0], center[2]);
+                    let ([plants, _], _) = plan_chunk(&b, [chunk[0] + cx, chunk[1] + cz], &[]);
+                    for run in plants.runs.iter().filter(|r| r.only.is_none() && r.y == w.min_y) {
+                        hole.insert([run.x - center[0], run.z - center[2]]);
+                    }
+                }
+            }
+            // Its rim is a circle of BEDROCK_HOLE round the center's column, the same for every blast.
+            assert_eq!(hole, round, "seed {seed}");
+        }
     }
 
     #[test]
@@ -7784,7 +8055,6 @@ mod tests {
         // Past the hole the Nether's floor stays.
         let [plants, _] = plan_chunk(&b, chunk_of(40, 0), &[]).0;
         let off = plants.runs.iter().find(|r| (r.x, r.z) == (40, 0) && r.only.is_none()).unwrap();
-        assert!(edge(&b, 40, 0) * 1000.0 > f64::from(BEDROCK_HOLE));
         assert_eq!(off.y, w.min_y + ABOVE_FLOOR);
     }
 
@@ -7923,6 +8193,43 @@ mod tests {
             assert!(!tips(id).is_empty(), "{id}");
         }
     }
+
+    #[test]
+    fn a_held_click_is_heard_once_until_it_is_let_go() {
+        let mut clicks = Clicks::new(HELD_CLICK_TICKS);
+        let bomb = (7u128, [1, 2, 3], Some(REMOTE.to_owned()));
+        assert_eq!(clicks.heard(bomb.clone(), 100), None, "a new click");
+        assert_eq!(clicks.heard(bomb.clone(), 100), Some(0), "the other hand's turn of it");
+        // The game repeats a held click every 4 ticks: each repeat keeps it held, however long.
+        for t in (104..=200).step_by(4) {
+            assert!(clicks.heard(bomb.clone(), t).is_some_and(|since| since > 0), "{t}");
+        }
+        // Let go a while, it is a new click.
+        assert_eq!(clicks.heard(bomb.clone(), 200 + HELD_CLICK_TICKS + 1), None);
+        // Another player, another block or another item is another click.
+        let now = 300;
+        assert_eq!(clicks.heard(bomb.clone(), now), None);
+        assert_eq!(clicks.heard((8, [1, 2, 3], Some(REMOTE.to_owned())), now + 4), None);
+        assert_eq!(clicks.heard((7, [1, 2, 4], Some(REMOTE.to_owned())), now + 4), None);
+        assert_eq!(clicks.heard((7, [1, 2, 3], Some(FLINT_AND_STEEL.to_owned())), now + 4), None);
+        assert_eq!(clicks.heard(bomb.clone(), now + 4), Some(4));
+        // A clock that went back (another world) starts afresh.
+        assert_eq!(clicks.heard(bomb, 10), None);
+    }
+
+    #[test]
+    fn the_guide_hears_a_held_click_by_the_wall_clock() {
+        // The window repeats a held click every 4 of its ticks, about 200 ms, however the server's ticks go
+        // (lagging, or frozen with `/tick freeze`): the guide counts milliseconds.
+        let mut clicks = Clicks::new(GUIDE_CLICK_MS);
+        assert_eq!(clicks.heard(7u128, 1_000), None);
+        for ms in (1_200..=4_000).step_by(200) {
+            assert!(clicks.heard(7, ms).is_some(), "{ms}");
+        }
+        // Let go, a click half a second later is a new one.
+        assert_eq!(clicks.heard(7, 4_000 + GUIDE_CLICK_MS + 1), None);
+        assert!(GUIDE_CLICK_MS >= 300 && GUIDE_CLICK_MS <= 500);
+    }
 }
 
 // ---- flights (plan 7) ---------------------------------------------------------------
@@ -7946,6 +8253,8 @@ mod flight_tests {
             surface: Some(70),
             seed: 7,
             hatch: Some(71),
+            hatch_moved: Some(false),
+            emptied: false,
         }
     }
 
@@ -8022,6 +8331,130 @@ mod flight_tests {
         assert!(!f.hatch_open(161) && !f.hatch_open(5000));
         // By then the missile is well clear of any hatch a shaft has.
         assert!(ascent(&f, 160).0[1] > 64.0 + 40.0);
+    }
+
+    #[test]
+    fn only_the_hatch_the_mod_took_comes_back() {
+        let f = missile();
+        let (before, open, after) = (59, 60, 161);
+        // It is taken while it stands open, once, where it is.
+        assert_eq!(f.hatch_act(before, Some(SILO_HATCH)), None);
+        assert_eq!(f.hatch_act(open, Some(SILO_HATCH)), Some(HatchAct::Open));
+        let taken = Flight { hatch_moved: Some(true), ..f.clone() };
+        assert_eq!(taken.hatch_act(open + 1, Some("minecraft:air")), None);
+        assert_eq!(taken.hatch_act(open + 1, Some(SILO_HATCH)), None, "a hatch put back by hand stays");
+        // After, the one it took is put back on the air, and only that one.
+        assert_eq!(taken.hatch_act(after, Some("minecraft:air")), Some(HatchAct::Shut));
+        // One mined before it opened isn't made again: the flight forgets it.
+        assert_eq!(f.hatch_act(open, Some("minecraft:air")), None);
+        assert_eq!(f.hatch_act(after, Some("minecraft:air")), Some(HatchAct::Forget));
+        assert_eq!(f.hatch_act(after, Some(SILO_HATCH)), Some(HatchAct::Forget));
+        // Water or lava that flowed in, snow, fire or grass make room for it, as for a block placed.
+        for free in ["minecraft:water", "minecraft:lava", "minecraft:cave_air", "minecraft:fire", "minecraft:snow", "minecraft:short_grass"] {
+            assert_eq!(taken.hatch_act(after, Some(free)), Some(HatchAct::Shut), "{free}");
+        }
+        // A block put in its place keeps it out: the hatch taken comes back as an item, not lost.
+        for solid in ["minecraft:stone", "minecraft:oak_planks", SILO_HATCH] {
+            assert_eq!(taken.hatch_act(after, Some(solid)), Some(HatchAct::Drop), "{solid}");
+        }
+        // A chunk not loaded reads as air: the hatch waits for it, open or shut.
+        assert_eq!(f.hatch_act(open, None), None);
+        assert_eq!(taken.hatch_act(after, None), None);
+        assert_eq!(taken.hatch_act(after + 10_000, None), None);
+        // A flight that forgot its hatch does nothing.
+        assert_eq!(Flight { hatch: None, ..taken }.hatch_act(after, Some("minecraft:air")), None);
+    }
+
+    #[test]
+    fn a_flight_saved_before_the_hatch_was_owed_puts_it_back_as_it_used_to() {
+        // Saved in the open window by a version that didn't keep whether it took the hatch.
+        let old = r#"{"id":4,"carrier":"Missile","dimension":"minecraft:overworld","from":[0,64,0],"to":[1000,0],
+            "kind":"Atomic","start":0,"surface":null,"seed":7,"hatch":71}"#;
+        let f: Flight = serde_json::from_str(old).unwrap();
+        assert_eq!((f.hatch, f.hatch_moved), (Some(71), None));
+        // As that version did: taken while it stands open, put back on the air after.
+        assert_eq!(f.hatch_act(60, Some(SILO_HATCH)), Some(HatchAct::Open));
+        assert_eq!(f.hatch_act(161, Some("minecraft:air")), Some(HatchAct::Shut));
+        assert_eq!(f.hatch_act(161, Some("minecraft:stone")), Some(HatchAct::Forget));
+        // A new launch keeps it, through a save.
+        let mut saved = Saved::default();
+        let launched = saved.launch(OVERWORLD, [0, 65, 0], [1000, 0], BombKind::Atomic, 72).unwrap();
+        assert_eq!(launched.hatch_moved, Some(false));
+        let back: Flight = serde_json::from_str(&serde_json::to_string(&launched).unwrap()).unwrap();
+        assert_eq!(back, launched);
+    }
+
+    #[test]
+    fn a_world_opened_again_wakes_the_dimensions_its_flights_are_in() {
+        let mut saved = Saved::default();
+        assert!(saved.to_wake().is_empty());
+        let nether = Flight { id: 2, dimension: "minecraft:the_nether".into(), ..missile() };
+        let end = Flight { id: 3, carrier: Carrier::Bomber, dimension: "minecraft:the_end".into(), hatch: None, ..missile() };
+        saved.flights.extend([missile(), nether.clone()]);
+        saved.beacons.push(end);
+        // The overworld ticks anyway; another level ticks its forced chunks only once it is open.
+        assert_eq!(saved.to_wake(), ["minecraft:the_end", "minecraft:the_nether"]);
+        // A flight gone off whose wave still keeps its chunk forced.
+        saved.flights.retain(|f| f.id != nether.id);
+        saved.beacons.clear();
+        assert!(saved.to_wake().is_empty());
+        saved.force(nether.id, &nether.dimension, [3, 3]);
+        saved.force(nether.id, &nether.dimension, [4, 4]);
+        saved.landed(nether.id, Some([60, 70, 60]));
+        assert_eq!(saved.to_wake(), ["minecraft:the_nether"]);
+    }
+
+    #[test]
+    fn the_mod_lets_go_only_of_the_chunks_it_forced_and_as_soon_as_it_can() {
+        let mut saved = Saved::default();
+        // The pad's chunk goes as soon as the hatch is back; the target's stays.
+        assert!(saved.force(1, OVERWORLD, [0, 0]) && saved.force(1, OVERWORLD, [62, 0]));
+        assert!(saved.release(1, OVERWORLD, [0, 0]), "the mod's to let go");
+        assert!(!saved.release(1, OVERWORLD, [0, 0]), "once");
+        assert_eq!(saved.forced.iter().map(|f| f.chunk).collect::<Vec<_>>(), [[62, 0]]);
+        // A chunk another flight holds stays forced until the last lets go.
+        saved.force(2, OVERWORLD, [5, 5]);
+        saved.force(3, OVERWORLD, [5, 5]);
+        assert!(!saved.release(2, OVERWORLD, [5, 5]));
+        assert!(saved.release(3, OVERWORLD, [5, 5]));
+        assert!(!saved.release(9, OVERWORLD, [5, 5]), "never held");
+        // A chunk the player had forced already (`/forceload` is one flag a chunk): the flights keep it, and
+        // the mod never lets it go, neither by release nor once the wave has worked it.
+        assert!(saved.force(4, OVERWORLD, [9, 9]));
+        saved.theirs(OVERWORLD, [9, 9]);
+        assert!(!saved.force(5, OVERWORLD, [9, 9]));
+        assert!(!saved.release(4, OVERWORLD, [9, 9]));
+        saved.landed(5, None);
+        assert!(saved.unforce().is_empty());
+        assert!(saved.forced.iter().all(|f| f.chunk != [9, 9]));
+        // Forced by the mod again later, it is asked about again.
+        assert!(saved.force(6, OVERWORLD, [9, 9]));
+        saved.landed(6, None);
+        saved.landed(1, None);
+        let mut free = saved.unforce();
+        free.sort();
+        assert_eq!(free, [(OVERWORLD.to_owned(), [9, 9]), (OVERWORLD.to_owned(), [62, 0])]);
+        // A chunk saved before this was the mod's own.
+        saved.force(7, OVERWORLD, [1, 1]);
+        saved.theirs(OVERWORLD, [1, 1]);
+        let mut v = serde_json::to_value(&saved.forced[0]).unwrap();
+        assert_eq!(v["theirs"], true);
+        v.as_object_mut().unwrap().remove("theirs");
+        assert!(!serde_json::from_value::<Forced>(v).unwrap().theirs);
+    }
+
+    #[test]
+    fn a_flight_keeps_its_pad_and_its_target_loaded() {
+        let mut saved = Saved::default();
+        assert!(saved.force(1, OVERWORLD, [0, 0]), "the pad");
+        assert!(saved.force(1, OVERWORLD, [62, 0]), "the target");
+        assert!(!saved.force(1, OVERWORLD, [0, 0]) && !saved.force(1, OVERWORLD, [62, 0]));
+        assert_eq!(saved.forced.len(), 2);
+        saved.landed(1, None);
+        let mut free = saved.unforce();
+        free.sort();
+        assert_eq!(free, vec![(OVERWORLD.to_owned(), [0, 0]), (OVERWORLD.to_owned(), [62, 0])]);
+        assert!(saved.forced.is_empty());
     }
 
     #[test]
@@ -8168,6 +8601,8 @@ mod flight_tests {
             surface: Some(128),
             seed: 1,
             hatch: None,
+            hatch_moved: None,
+            emptied: false,
         };
         assert_eq!(f.bomb_ground(), 123);
         let over = Flight { dimension: "minecraft:overworld".into(), ..f.clone() };
@@ -8640,13 +9075,112 @@ mod flight_tests {
         assert_eq!(saved.charge("minecraft:the_nether", b, Some(atomic)), Charge::Taken(BombKind::Atomic));
         assert!(saved.beacons.iter().all(|g| g.id == f.id || g.seed != f.seed));
         // A beacon broken before the release gives its bomb back and calls the bomber off; after, it comes anyway.
-        assert_eq!(saved.uncharge(OVERWORLD, b, 41), Some(BombKind::Tactical));
+        assert_eq!(saved.uncharge(OVERWORLD, b), Some(BombKind::Tactical));
         assert!(saved.beacon_at(OVERWORLD, b).is_none() && saved.beacons.len() == 1);
-        assert_eq!(saved.uncharge(OVERWORLD, b, 42), None);
+        assert_eq!(saved.uncharge(OVERWORLD, b), None);
         assert_eq!(saved.charge(OVERWORLD, b, Some(tactical)), Charge::Taken(BombKind::Tactical));
-        let release = saved.beacon_at(OVERWORLD, b).unwrap().pass().release;
-        assert_eq!(saved.uncharge(OVERWORLD, b, release), None);
+        let id = saved.beacon_at(OVERWORLD, b).unwrap().id;
+        assert!(saved.emptied(id));
+        assert_eq!(saved.uncharge(OVERWORLD, b), None);
         assert!(saved.beacon_at(OVERWORLD, b).is_some());
+    }
+
+    #[test]
+    fn the_strike_is_called_off_until_its_bomb_has_left_the_beacon() {
+        let mut saved = Saved { tick: 40, ..Saved::default() };
+        let b = [10, 64, 10];
+        assert_eq!(saved.charge(OVERWORLD, b, Some(BombKind::Atomic.id())), Charge::Taken(BombKind::Atomic));
+        let f = saved.beacon_at(OVERWORLD, b).unwrap().clone();
+        let release = f.pass().release;
+        // The bomb is taken out of the beacon's slot from the release on, until that is done.
+        assert!(!f.to_empty(release - 1));
+        assert!(f.to_empty(release) && f.to_empty(release + 5));
+        // A beacon broken the tick before the release and heard at it dropped its bomb: no bomb falls too.
+        assert_eq!(saved.uncharge(OVERWORLD, b), Some(BombKind::Atomic));
+        assert!(saved.beacons.is_empty());
+        // Once the slot is empty, a broken beacon drops nothing and the bomb falls anyway.
+        assert_eq!(saved.charge(OVERWORLD, b, Some(BombKind::Atomic.id())), Charge::Taken(BombKind::Atomic));
+        let id = saved.beacon_at(OVERWORLD, b).unwrap().id;
+        assert!(saved.emptied(id));
+        assert!(!saved.emptied(id), "once");
+        let f = saved.beacon_at(OVERWORLD, b).unwrap();
+        assert!(!f.to_empty(f.pass().release + 1));
+        assert_eq!(saved.uncharge(OVERWORLD, b), None);
+        // It is kept with the world.
+        let back: Saved = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert!(back.beacon_at(OVERWORLD, b).unwrap().emptied);
+        // A missile is no beacon's.
+        assert!(!missile().to_empty(u64::MAX / 2));
+    }
+
+    #[test]
+    fn a_bomb_is_taken_from_the_hand_it_was_seen_in() {
+        // Stacks as the game has them: the item, the count and its name, if renamed.
+        let named = |n: u32| Some((BombKind::Atomic.id(), n, Some("Big One")));
+        let plain = |n: u32| Some((BombKind::Atomic.id(), n, None));
+        let hotbar = [plain(3), None, named(1), plain(1), named(2)];
+        // The hand holds the renamed one: its own slot, not a plain one before it.
+        assert_eq!(hand_slot(&hotbar, &named(1).unwrap()), Some(2));
+        assert_eq!(hand_slot(&hotbar, &named(2).unwrap()), Some(4));
+        assert_eq!(hand_slot(&hotbar, &plain(1).unwrap()), Some(3));
+        // A stack the hotbar doesn't hold (it changed) is in no hand.
+        assert_eq!(hand_slot(&hotbar, &named(5).unwrap()), None);
+        assert_eq!(hand_slot::<(&str, u32, Option<&str>)>(&[], &named(1).unwrap()), None);
+    }
+
+    /// A beacon's slot and a player's hotbar, the hand on one slot: stacks of (item, count, name).
+    struct Charging {
+        beacon: Option<(&'static str, u32, Option<&'static str>)>,
+        hotbar: Vec<Option<(&'static str, u32, Option<&'static str>)>>,
+        entity: bool,
+    }
+
+    /// The glue's sequence on `w`, with the stack `seen` in hand: one of it into the slot, then out of the hand.
+    fn charge_seen(w: &mut Charging, seen: (&'static str, u32, Option<&'static str>)) -> bool {
+        charge_from_hand(
+            w,
+            Some((seen.0, 1, seen.2)),
+            |w, one| {
+                if w.entity {
+                    w.beacon = Some(one);
+                }
+                w.entity
+            },
+            |w| match hand_slot(&w.hotbar, &seen) {
+                Some(i) => {
+                    let s = w.hotbar[i].as_mut().unwrap();
+                    s.1 -= 1;
+                    true
+                }
+                None => false,
+            },
+            |w| w.beacon = None,
+        )
+    }
+
+    #[test]
+    fn a_renamed_bomb_goes_from_the_hand_into_the_beacon_or_stays_in_the_hand() {
+        let atomic = BombKind::Atomic.id();
+        let named = (atomic, 2, Some("Big One"));
+        let fresh = || Charging { beacon: None, hotbar: vec![Some((atomic, 5, None)), Some(named)], entity: true };
+        // Put, then taken from its own slot, not the plain stack before it; the beacon keeps its name.
+        let mut w = fresh();
+        assert!(charge_seen(&mut w, named));
+        assert_eq!(w.beacon, Some((atomic, 1, Some("Big One"))));
+        assert_eq!(w.hotbar, [Some((atomic, 5, None)), Some((atomic, 1, Some("Big One")))]);
+        // The stack changed since it was seen (another click took one): nothing taken, the slot emptied again.
+        let mut w = fresh();
+        w.hotbar[1] = Some((atomic, 1, Some("Big One")));
+        assert!(!charge_seen(&mut w, named));
+        assert_eq!(w.beacon, None);
+        assert_eq!(w.hotbar[1], Some((atomic, 1, Some("Big One"))));
+        // No block entity to put it in: nothing is taken.
+        let mut w = Charging { entity: false, ..fresh() };
+        assert!(!charge_seen(&mut w, named));
+        assert_eq!((w.beacon, w.hotbar), (None, fresh().hotbar));
+        // Nothing seen in hand: nothing at all.
+        let mut w = fresh();
+        assert!(!charge_from_hand(&mut w, None::<u8>, |_, _| unreachable!(), |_| unreachable!(), |_| unreachable!()));
     }
 
     #[test]
@@ -8815,6 +9349,7 @@ mod decon_tests {
         // The decontaminator starts again once a newer zone reaches its circle: its old circle stays for the old
         // zone, and the new one grows from nothing for both.
         let mut saved = Saved { tick: 1000, zones: vec![old.clone()], ..Saved::default() };
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 1), 1);
         assert_eq!(saved.cleaned(OW, [0, 64, 0], 30), 30);
         assert_eq!(saved.cleans, [clean([0, 64, 0], 30, 1000)]);
         saved.tick = 2000;
@@ -8845,6 +9380,62 @@ mod decon_tests {
         assert_eq!((d.radius, d.grow, d.next_column), (31, 7, 300));
         d.keep_circle(0);
         assert_eq!((d.radius, d.grow, d.next_column), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_circle_wider_than_a_block_with_none_kept_beside_a_zone_starts_from_nothing() {
+        let mut saved = Saved { tick: 3000, zones: vec![zone([0, 64, 0], 100)], ..Saved::default() };
+        // No circle of its own and grown past its first block: its circle was pruned, and the zone came since.
+        assert_eq!(saved.cleaned(OW, [10, 64, 0], 5), 0);
+        assert!(saved.cleans.is_empty());
+        // Grown again from its first block, it has its circle, which then grows.
+        assert_eq!(saved.cleaned(OW, [10, 64, 0], 1), 1);
+        assert_eq!(saved.cleaned(OW, [10, 64, 0], 5), 5);
+        assert_eq!(saved.cleans, [clean([10, 64, 0], 5, 3000)]);
+        // Away from every zone, the same block makes its circle again as it was.
+        assert_eq!(saved.cleaned(OW, [5000, 64, 0], 5), 5);
+        assert_eq!(saved.cleans[1], clean([5000, 64, 0], 5, 3000));
+    }
+
+    #[test]
+    fn circles_that_clean_nothing_go_with_the_last_zone_they_met() {
+        let fading = |center: [i32; 3], start: u64| Zone { radius: 100.0, half_life: 1000, floor: 0.0, ..zone(center, start) };
+        let mut saved = Saved { tick: 1000, zones: vec![fading([0, 64, 0], 0), zone([2000, 64, 0], 0)], ..Saved::default() };
+        saved.cleans = vec![clean([0, 64, 0], 20, 500), clean([2000, 64, 0], 20, 500), clean([9000, 64, 0], 5, 500)];
+        // While no zone goes, nothing is looked at.
+        assert!(!saved.prune_zones(2000));
+        assert_eq!(saved.cleans.len(), 3);
+        // The fading zone goes: the circles no zone reaches go with it, the one over the lasting zone stays.
+        assert!(saved.prune_zones(20_000));
+        assert_eq!(saved.cleans, [clean([2000, 64, 0], 20, 500)]);
+        // Its decontaminator, still there, makes its circle again as it was while no zone reaches it...
+        saved.tick = 21_000;
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 20), 20);
+        assert_eq!(saved.cleans[1], clean([0, 64, 0], 20, 21_000));
+        // ...and starts from nothing if a zone came over it meanwhile: that zone is newer than its old circle.
+        saved.cleans.remove(1);
+        saved.zones.push(zone([30, 64, 0], 20_500));
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 20), 0);
+        assert_eq!(saved.cleans.len(), 1);
+        // One that has just grown its first block starts its circle anywhere.
+        assert_eq!(saved.cleaned(OW, [0, 64, 0], 1), 1);
+        assert_eq!(saved.cleans[1], clean([0, 64, 0], 1, 21_000));
+    }
+
+    #[test]
+    fn the_flame_goes_out_when_the_circle_is_full() {
+        let mut d = Decontaminator { radius: CLEAN_RADIUS - 1, grow: CLEAN_GROW_TICKS - 1, burn: 300, burn_max: 400, next_column: 0 };
+        assert!(d.step(Some(1600)).made);
+        assert_eq!(d.radius, CLEAN_RADIUS);
+        assert_eq!(d.data(0.0)[0], 0, "out as the cleaning ends");
+        assert_eq!(flame_height(d.data(0.0)[0], d.data(0.0)[1]), 0);
+        // One saved lit at its full circle goes out at its next tick, taking no fuel.
+        let mut lit = Decontaminator { radius: CLEAN_RADIUS, burn: 300, burn_max: 400, ..Decontaminator::default() };
+        assert_eq!(lit.step(Some(1600)), Step::IDLE);
+        assert_eq!(lit.burn, 0);
+        // Started again from nothing, it takes fuel.
+        lit.keep_circle(0);
+        assert!(lit.step(Some(1600)).took_fuel);
     }
 
     // ---- the decontaminator ----
@@ -9007,6 +9598,8 @@ mod decon_tests {
         // The window is told the circles of its dimension with the zones, and reckons the same background.
         saved.blast(OW, [0, 64, 0], 120).unwrap();
         saved.tick = 500;
+        // It grows from its first block, as a decontaminator's does.
+        saved.cleaned(OW, [0, 64, 0], 1);
         saved.cleaned(OW, [0, 64, 0], 48);
         let rad = saved.rad_for(1, OW, [0.0, 64.0, 0.0]);
         assert!(rad.cleans.iter().all(|c| c.dimension == OW) && rad.cleans.len() == 2);
@@ -9335,7 +9928,7 @@ mod bunker_tests {
         let b = blast(BombKind::Atomic.radius());
         let head = [10, 40, 0];
         assert_eq!(ring(edge(&b, 10, 0)), Ring::Core);
-        assert!(crater_floor(&b, edge(&b, 10, 0)) < head[1]);
+        assert!(crater_floor(&b, 10, 0, edge(&b, 10, 0)) < head[1]);
         let roof = [wall([10, 70, 0], WallKind::Reinforced)];
         assert_eq!(plan_chunk(&b, chunk_of(10, 0), &roof).1, [WallChange::Broken(roof[0].pos)]);
         assert!(!roofed(&b, &roof, head, false));
@@ -9474,7 +10067,7 @@ mod bunker_tests {
     fn a_door_the_crater_floor_cuts_goes_whole() {
         let b = blast(BombKind::Sunbreaker.radius());
         let x = out_to(&b, 0.1);
-        let floor = crater_floor(&b, edge(&b, x, 0));
+        let floor = crater_floor(&b, x, 0, edge(&b, x, 0));
         // Its upper half in the crater, its lower one just under the floor: no half door is left.
         let halves = door([x, floor - 1, 0]);
         let (edits, changes) = plan_chunk(&b, chunk_of(x, 0), &halves);
@@ -9529,7 +10122,7 @@ mod bunker_tests {
         let mut saved = Saved::default();
         let id = saved.blast("minecraft:overworld", [0, 64, 0], 250).unwrap();
         let blast = saved.waves.waves.iter().find(|w| w.blast.id == id).unwrap().blast.clone();
-        let floor = crater_floor(&blast, edge(&blast, 10, 0));
+        let floor = crater_floor(&blast, 10, 0, edge(&blast, 10, 0));
         assert!(below_crater(&blast, [10, floor - 3, 0]));
         assert!(!below_crater(&blast, [10, floor + 1, 0]));
         // Out of the crater the ground isn't dug: only depth under the surface would tell, and that isn't this.
@@ -9574,7 +10167,7 @@ mod bunker_tests {
     fn the_core_run_is_cut_round_a_wall() {
         let b = blast(BombKind::Atomic.radius());
         let x = out_to(&b, 0.25);
-        let floor = crater_floor(&b, edge(&b, x, 0));
+        let floor = crater_floor(&b, x, 0, edge(&b, x, 0));
         assert!(floor < 60);
         let chunk = chunk_of(x, 0);
         // A standing roof at y 70: the run stops over it, and what's under it stays.
@@ -9590,7 +10183,7 @@ mod bunker_tests {
         // The column beside it is emptied down to the floor, as before.
         let free = if x.rem_euclid(16) == 15 { x - 1 } else { x + 1 };
         assert_eq!(chunk_of(free, 0), chunk);
-        let f = crater_floor(&b, edge(&b, free, 0));
+        let f = crater_floor(&b, free, 0, edge(&b, free, 0));
         assert_eq!(touched(&edits, [free, f, 0]), Some("minecraft:air"));
         assert_eq!(touched(&edits, [free, f - 1, 0]), None);
         let (plain, _) = plan_chunk(&b, chunk, &[]);
@@ -9721,7 +10314,8 @@ mod bunker_tests {
             changes = c;
         }
         assert!(!changes.is_empty());
-        assert!(best <= Duration::from_millis(1), "{best:?}");
+        // An unoptimized test build, often beside other builds: about 1 ms, where a slip would cost tens.
+        assert!(best <= Duration::from_millis(3), "{best:?}");
         // The world's 10 000 walls cost a chunk only its own and its neighbours'.
         let mut saved = Saved::default();
         for i in 0..10_000 {

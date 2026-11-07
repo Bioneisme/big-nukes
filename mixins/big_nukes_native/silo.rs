@@ -113,7 +113,7 @@ pub(in crate::game) fn pad_quick_move(
             entity.items[to] = Some(stack.clone());
             stack.count = 0;
         }
-        Some(have) if have.item == stack.item => {
+        Some(have) if glue::stacks_with(have, stack) => {
             let moved = most.saturating_sub(have.count).min(stack.count);
             have.count += moved;
             stack.count -= moved;
@@ -202,7 +202,8 @@ pub(in crate::game) fn forget() {
     lock(&SWEEPS).clear();
     *lock(&SESSION) = None;
     lock(&TAKEN).clear();
-    *lock(&LAST_CHARGE) = None;
+    *lock(&LAST_CHARGE) = rules::Clicks::new(rules::HELD_CLICK_TICKS);
+    *lock(&SAME_TICK) = None;
 }
 
 fn text(line: &rules::Reply) -> Text {
@@ -809,8 +810,10 @@ fn sweep(game: &mut Game<'_>, dimension: &str, now: u64, live: &[u64]) {
 /// What a tick of the flights changes in the world's record, made with the state held once.
 enum Change {
     Surface(u64, i32),
+    HatchOpened(u64),
     HatchShut(u64),
     Force(u64, [i32; 2]),
+    Emptied(u64),
     Impact(u64, [i32; 3], rules::BombKind),
 }
 
@@ -853,7 +856,7 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
     let (force, free) = {
         let Some(mut guard) = glue::state(game) else { return };
         let st = guard.as_mut().expect("opened");
-        let mut force = Vec::new();
+        let (mut force, mut released) = (Vec::new(), Vec::new());
         // Saved only when something changed: most ticks only ask again for a chunk already forced.
         let forced = st.saved.forced.len();
         let mut changed = !fired.is_empty();
@@ -865,10 +868,21 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
                         f.surface = Some(y);
                     }
                 }
+                Change::HatchOpened(id) => {
+                    if let Some(f) = st.saved.flights.iter_mut().find(|f| f.id == id) {
+                        changed |= f.hatch_moved != Some(true);
+                        f.hatch_moved = Some(true);
+                    }
+                }
                 Change::HatchShut(id) => {
                     if let Some(f) = st.saved.flights.iter_mut().find(|f| f.id == id) {
                         changed |= f.hatch.is_some();
                         f.hatch = None;
+                        // The pad's chunk was kept for the hatch only.
+                        let pad = rules::chunk_of(f.from[0], f.from[2]);
+                        if st.saved.release(id, dimension, pad) {
+                            released.push((dimension.to_owned(), pad));
+                        }
                     }
                 }
                 Change::Force(id, chunk) => {
@@ -876,6 +890,7 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
                         force.push(chunk);
                     }
                 }
+                Change::Emptied(id) => changed |= st.saved.emptied(id),
                 Change::Impact(..) => {}
             }
         }
@@ -884,14 +899,32 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
             st.saved.beacons.retain(|f| f.id != *id);
             st.saved.landed(*id, *center);
         }
-        let free = st.saved.unforce();
+        let mut free = st.saved.unforce();
+        free.extend(released);
         if changed || st.saved.forced.len() != forced {
             glue::save(st);
         }
         (force, free)
     };
+    // `/forceload` is one flag a chunk: one forced already (a player's base, say) is theirs, and the mod, which
+    // added nothing, never removes it.
+    let mut theirs = Vec::new();
     for chunk in force {
-        run_in(game, dimension, &format!("forceload add {} {}", chunk[0] * 16, chunk[1] * 16));
+        let [x, z] = [chunk[0] * 16, chunk[1] * 16];
+        if game.native_run_command(&format!("execute in {dimension} run forceload query {x} {z}")) {
+            theirs.push(chunk);
+        } else {
+            run_in(game, dimension, &format!("forceload add {x} {z}"));
+        }
+    }
+    if !theirs.is_empty()
+        && let Some(mut guard) = glue::state(game)
+    {
+        let st = guard.as_mut().expect("opened");
+        for chunk in theirs {
+            st.saved.theirs(dimension, chunk);
+        }
+        glue::save(st);
     }
     for (d, chunk) in free {
         run_in(game, &d, &format!("forceload remove {} {}", chunk[0] * 16, chunk[1] * 16));
@@ -979,26 +1012,43 @@ fn trail(game: &mut Game<'_>, dimension: &str, tail: [f64; 3], climbing: bool) {
     run_in(game, dimension, &particle("minecraft:flame", tail, 0.2, 0.04, fire));
 }
 
-/// The hatch: taken away while it should stand open, put back after; once back, the flight forgets it.
+/// The hatch: taken away while it should stand open, and the one taken put back after (`Flight::hatch_act`);
+/// once back, the flight forgets it. The pad's chunk is kept loaded meanwhile, and the hatch waits for it.
 fn hatch(game: &mut Game<'_>, dimension: &str, f: &rules::Flight, now: u64, changes: &mut Vec<Change>) {
     let Some(y) = f.hatch else { return };
     let at = [f.from[0], y, f.from[2]];
+    changes.push(Change::Force(f.id, rules::chunk_of(at[0], at[2])));
     let registry = &game.pack.assets.registry;
     let (Some(air), Some(shut)) = (registry.default_state("minecraft:air"), registry.default_state(rules::SILO_HATCH)) else {
         return;
     };
-    let here = game.native_block(at);
-    if f.hatch_open(now) {
-        if here == rules::SILO_HATCH {
-            game.native_set_block(dimension, at, air, 3);
-            play(game, dimension, "minecraft:block.iron_trapdoor.open", glue::middle(at), 2.0, 0.6);
+    let here = glue::loaded(dimension, at).then(|| game.native_block(at));
+    match f.hatch_act(now, here.as_deref()) {
+        Some(rules::HatchAct::Open) => {
+            if game.native_set_block(dimension, at, air, 3) {
+                play(game, dimension, "minecraft:block.iron_trapdoor.open", glue::middle(at), 2.0, 0.6);
+                changes.push(Change::HatchOpened(f.id));
+            }
         }
-    } else if now > f.liftoff() {
-        if here == "minecraft:air" {
-            game.native_set_block(dimension, at, shut, 3);
-            play(game, dimension, "minecraft:block.iron_trapdoor.close", glue::middle(at), 2.0, 0.6);
+        // Tried again the next tick if the level didn't take it.
+        Some(rules::HatchAct::Shut) => {
+            if game.native_set_block(dimension, at, shut, 3) {
+                play(game, dimension, "minecraft:block.iron_trapdoor.close", glue::middle(at), 2.0, 0.6);
+                changes.push(Change::HatchShut(f.id));
+            }
         }
-        changes.push(Change::HatchShut(f.id));
+        // Over the pad, where it falls into the shaft; tried again the next tick if it couldn't be made.
+        Some(rules::HatchAct::Drop) => {
+            let item: Compound =
+                [(JavaString::from("Item"), Tag::compound([("id", Tag::String(JavaString::from(rules::SILO_HATCH))), ("count", Tag::Int(1))]))]
+                    .into_iter()
+                    .collect();
+            if game.native_summon(dimension, "minecraft:item", glue::middle(f.from), item).is_some() {
+                changes.push(Change::HatchShut(f.id));
+            }
+        }
+        Some(rules::HatchAct::Forget) => changes.push(Change::HatchShut(f.id)),
+        None => {}
     }
 }
 
@@ -1060,8 +1110,12 @@ const DRONE_VOLUME: f32 = 12.0;
 /// How far a beacon's news is told.
 const BEACON_TOLD: f64 = 64.0;
 
-/// The player, the beacon and the tick of the last click handled on a beacon: the game asks once per hand.
-static LAST_CHARGE: Mutex<Option<(u128, [i32; 3], u64)>> = Mutex::new(None);
+/// The player, the beacon and the tick of the last click handled on a beacon: the game asks once per hand, and the
+/// off hand's turn is let go even when the main hand's took the bomb it held.
+static SAME_TICK: Mutex<Option<(u128, [i32; 3], u64)>> = Mutex::new(None);
+/// The clicks heard on the beacons: the player, the beacon and the item in hand. A click held down, which the
+/// game repeats, is answered once.
+static LAST_CHARGE: Mutex<rules::Clicks<(u128, [i32; 3], Option<String>)>> = Mutex::new(rules::Clicks::new(rules::HELD_CLICK_TICKS));
 /// Beacons and consoles taken away, heard from the level, which may change a block while the state is locked.
 static TAKEN: Mutex<Vec<(String, [i32; 3])>> = Mutex::new(Vec::new());
 
@@ -1094,9 +1148,8 @@ fn take_away(game: &mut Game<'_>, dimension: &str) {
     }
     let Some(mut guard) = glue::state(game) else { return };
     let st = guard.as_mut().expect("opened");
-    let now = st.saved.tick;
     for pos in gone {
-        if let Some(kind) = st.saved.uncharge(dimension, pos, now) {
+        if let Some(kind) = st.saved.uncharge(dimension, pos) {
             log::info!("[big_nukes] the beacon at {pos:?} in {dimension} is gone: its {kind:?} isn't dropped");
         }
         st.saved.consoles.remove(&rules::console_key(dimension, pos));
@@ -1107,7 +1160,8 @@ fn take_away(game: &mut Game<'_>, dimension: &str) {
 /// A right click on a strike beacon: a bomb that flies charges it, anything else hears what it takes. The furnace
 /// it is built on never opens. Sneaking with something else in hand lets it be used (a block placed against it).
 fn beacon_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
-    let held = game.native_equipment(EquipmentSlot::MainHand).map(|s| s.item.to_string());
+    let hand = game.native_equipment(EquipmentSlot::MainHand);
+    let held = hand.as_ref().map(|s| s.item.to_string());
     let flies = held.as_deref().and_then(rules::BombKind::of_block).is_some_and(rules::BombKind::flies);
     if held.is_some() && !flies && game.native_sneaking() {
         return;
@@ -1115,11 +1169,14 @@ fn beacon_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
     *canceled = true;
     let (Some(who), Some((now, _))) = (game.native_acting_player(), glue::clock(game)) else { return };
     {
-        let mut last = lock(&LAST_CHARGE);
+        let mut last = lock(&SAME_TICK);
         if *last == Some((who.uuid, pos, now)) {
             return;
         }
         *last = Some((who.uuid, pos, now));
+    }
+    if lock(&LAST_CHARGE).heard((who.uuid, pos, held.clone()), now).is_some() {
+        return;
     }
     let tell = |game: &mut Game<'_>, line: rules::Reply| {
         game.native_tell(who.uuid, text(&line));
@@ -1139,25 +1196,33 @@ fn beacon_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
     let seconds = |ticks: Option<u64>| ticks.unwrap_or(0).div_ceil(rules::SECOND);
     match charged {
         (rules::Charge::Taken(kind), left) => {
-            // Out of the hand, unless creative, into the beacon's slot.
-            let taken = who.game_mode == 1 || game.native_take_items(kind.id(), 1) == 1;
-            let put = taken
-                && game
-                    .native_with_mod_block_entity(pos, |e| {
+            // One of the very stack in hand, a renamed bomb too, into the beacon's slot (a broken beacon gives it
+            // back as it was), then out of the hand unless creative.
+            let hand = hand.filter(|s| &*s.item == kind.id());
+            let creative = who.game_mode == 1;
+            let charged = rules::charge_from_hand(
+                game,
+                hand.as_ref().map(|h| ItemStack { count: 1, ..h.clone() }),
+                |g, one| {
+                    g.native_with_mod_block_entity(pos, |e| {
                         if e.items.is_empty() {
                             e.items.resize(1, None);
                         }
-                        e.items[0] = Some(ItemStack { item: kind.id().into(), count: 1, damage: 0, extra: None });
+                        e.items[0] = Some(one);
                     })
-                    .is_some();
-            if !put {
-                if taken && who.game_mode != 1 {
-                    game.native_give_items(kind.id(), 1);
-                }
+                    .is_some()
+                },
+                |g| creative || hand.as_ref().is_some_and(|h| take_from_hand(g, h)),
+                |g| {
+                    g.native_with_mod_block_entity(pos, |e| e.items.iter_mut().for_each(|s| *s = None));
+                },
+            );
+            if !charged {
                 if let Some(mut guard) = glue::state(game) {
                     let st = guard.as_mut().expect("opened");
                     st.saved.beacons.retain(|f| f.dimension != dimension || f.from != pos);
                 }
+                tell(game, rules::Reply::new("big_nukes.beacon.not_taken", &[]));
                 return;
             }
             if let Some(mut guard) = glue::state(game) {
@@ -1172,6 +1237,24 @@ fn beacon_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
         (rules::Charge::Maxpower { radius, maxpower }, _) => {
             game.native_tell(who.uuid, glue::refused(rules::Refused::Maxpower { radius, maxpower }));
         }
+    }
+}
+
+/// One of `hand`, the stack seen in the acting player's main hand, taken from that slot: a plain one by the item
+/// helpers, which take from the main hand first; a renamed one, which they leave, from the hotbar slot holding
+/// that very stack (its count of 0, if it was the last, empties the slot at its inventory tick). Whether one was.
+fn take_from_hand(game: &mut Game<'_>, hand: &ItemStack) -> bool {
+    if hand.damage == 0 && hand.extra.is_none() {
+        return game.native_take_items(&hand.item, 1) == 1;
+    }
+    let hotbar: Vec<Option<ItemStack>> = (0..9).map(|i| game.native_carried_stack(i).cloned()).collect();
+    let Some(slot) = rules::hand_slot(&hotbar, hand) else { return false };
+    match game.native_carried_stack(slot as i32) {
+        Some(stack) if stack.count > 0 => {
+            stack.count -= 1;
+            true
+        }
+        _ => false,
     }
 }
 
@@ -1220,9 +1303,10 @@ fn strike(game: &mut Game<'_>, dimension: &str, f: &rules::Flight, now: u64, cha
     if now < pass.release {
         return;
     }
-    if now == pass.release {
-        // The bomb has left: a beacon broken now drops nothing.
-        game.native_with_mod_block_entity(f.from, |e| e.items.iter_mut().for_each(|s| *s = None));
+    // The bomb leaves the beacon's slot as it leaves the plane, tried again each tick until it is done: a beacon
+    // broken before then drops it and calls the strike off, one broken after drops nothing.
+    if f.to_empty(now) && game.native_with_mod_block_entity(f.from, |e| e.items.iter_mut().for_each(|s| *s = None)).is_some() {
+        changes.push(Change::Emptied(f.id));
     }
     let surface = match f.surface {
         Some(y) => Some(y),
