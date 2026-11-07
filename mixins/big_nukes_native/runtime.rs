@@ -3476,10 +3476,15 @@ pub fn multilayer_at(walls: &dyn Fn([i32; 3]) -> Option<WallKind>, blast_center:
             axis = a;
         }
     }
-    let Some(kind) = (ray[axis] != 0).then(|| walls(pos)).flatten() else {
+    // Along the ray, and for a roof from the top down: away from a blast over the land.
+    (ray[axis] != 0 && series_at(walls, pos, axis, ray[axis].signum())) || (axis != 1 && series_at(walls, pos, 1, -1))
+}
+
+/// Whether `pos` is in a series concrete, lead, damper, concrete going `out` along `axis`.
+fn series_at(walls: &dyn Fn([i32; 3]) -> Option<WallKind>, pos: [i32; 3], axis: usize, out: i32) -> bool {
+    let Some(kind) = walls(pos) else {
         return false;
     };
-    let out = ray[axis].signum();
     let at = |i: i32| {
         let mut p = pos;
         p[axis] += out * i;
@@ -3585,6 +3590,21 @@ fn core_walls(
 }
 
 /// The registry's key of a chunk's walls.
+/// How far up a wall of the bunker still roofs a player under it.
+pub const ROOF_REACH: i32 = 32;
+
+/// Whether a wall of the bunker stands over `pos` in its column, within `ROOF_REACH`: the wave's
+/// blow doesn't reach a player under a roof it left standing (a cracked one included).
+pub fn roofed(walls: &[Wall], pos: [i32; 3]) -> bool {
+    walls.iter().any(|w| w.pos[0] == pos[0] && w.pos[2] == pos[2] && w.pos[1] > pos[1] && w.pos[1] - pos[1] <= ROOF_REACH)
+}
+
+/// Whether `pos` is under the floor the blast's crater has in its column: depth spares it.
+pub fn below_crater(blast: &Blast, pos: [i32; 3]) -> bool {
+    let d = edge(blast, pos[0], pos[2]);
+    ring(d) == Ring::Core && pos[1] < crater_floor(blast, d)
+}
+
 pub fn wall_key(dimension: &str, chunk: [i32; 2]) -> String {
     format!("{dimension}:{}:{}", chunk[0], chunk[1])
 }
@@ -9104,6 +9124,38 @@ mod bunker_tests {
         }
         assert_eq!(WallKind::of_block("minecraft:stone"), None);
         assert_eq!(WALL_BLOCKS.len(), 8);
+    }
+
+    #[test]
+    fn a_multilayer_roof_counts_from_the_top_down() {
+        // A roof's layers stack downward, away from a blast over the land: concrete, lead, damper, concrete.
+        let c = [0, 64, 0];
+        let roof = series([100, 70, 3], [0, -1, 0]);
+        assert!(roof.iter().all(|w| multilayer_at(&lookup(&roof), c, w.pos)));
+        // Built the other way up (the concrete inside on top), it doesn't.
+        let upside = series([100, 67, 3], [0, 1, 0]);
+        assert!(upside.iter().all(|w| !multilayer_at(&lookup(&upside), c, w.pos)));
+    }
+
+    #[test]
+    fn a_player_under_a_standing_roof_is_spared() {
+        let roof = [Wall { pos: [5, 80, 5], kind: WallKind::Reinforced, cracked: true }];
+        assert!(roofed(&roof, [5, 70, 5]), "a cracked roof still stands");
+        assert!(!roofed(&roof, [6, 70, 5]), "the next column has no roof");
+        assert!(!roofed(&roof, [5, 81, 5]), "over the roof");
+        assert!(!roofed(&roof, [5, 80 - ROOF_REACH - 1, 5]), "a roof too far up is no roof");
+    }
+
+    #[test]
+    fn a_player_below_the_crater_floor_is_spared() {
+        let mut saved = Saved::default();
+        let id = saved.blast("minecraft:overworld", [0, 64, 0], 250).unwrap();
+        let blast = saved.waves.waves.iter().find(|w| w.blast.id == id).unwrap().blast.clone();
+        let floor = crater_floor(&blast, edge(&blast, 10, 0));
+        assert!(below_crater(&blast, [10, floor - 3, 0]));
+        assert!(!below_crater(&blast, [10, floor + 1, 0]));
+        // Out of the crater the ground isn't dug: only depth under the surface would tell, and that isn't this.
+        assert!(!below_crater(&blast, [240, 20, 0]));
     }
 
     #[test]

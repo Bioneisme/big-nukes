@@ -445,17 +445,44 @@ fn effects(game: &mut Game<'_>, st: &mut State, dimension: &str) {
                 }
             }
         }
-        for (a, b, amount) in rules::damage_band(blast.radius, from, to) {
+        let bands = rules::damage_band(blast.radius, from, to);
+        if bands.is_empty() {
+            continue;
+        }
+        // A player under a roof of the bunker the wave left standing, or deep under the crater's floor, is spared
+        // its blow: tagged for the damage's selector to pass over.
+        let sheltered: Vec<String> = game
+            .native_server_players()
+            .into_iter()
+            .filter(|p| p.dimension == blast.dimension)
+            .filter(|p| {
+                let feet = p.position.map(|v| v.floor() as i32);
+                let head = [feet[0], feet[1] + 1, feet[2]];
+                let walls = rules::walls_in(&st.saved.walls, &blast.dimension, rules::chunk_of(feet[0], feet[2]));
+                rules::below_crater(&blast, head) || rules::roofed(walls, head)
+            })
+            .map(|p| p.name)
+            .collect();
+        for name in &sheltered {
+            game.native_run_command(&format!("tag {name} add {SHELTERED}"));
+        }
+        for (a, b, amount) in bands {
             run_in(
                 game,
                 &blast,
                 &format!(
-                    "execute as @e[x={cx:.1},y={cy:.1},z={cz:.1},distance={a:.1}..{b:.1}] run damage @s {amount:.1} minecraft:explosion at {cx:.1} {cy:.1} {cz:.1}"
+                    "execute as @e[x={cx:.1},y={cy:.1},z={cz:.1},distance={a:.1}..{b:.1},tag=!{SHELTERED}] run damage @s {amount:.1} minecraft:explosion at {cx:.1} {cy:.1} {cz:.1}"
                 ),
             );
         }
+        for name in &sheltered {
+            game.native_run_command(&format!("tag {name} remove {SHELTERED}"));
+        }
     }
 }
+
+/// The tag a sheltered player wears while a wave's damage passes over them.
+const SHELTERED: &str = "big_nukes_sheltered";
 
 // ---- the blast's effects, in the window ---------------------------------------------
 //
