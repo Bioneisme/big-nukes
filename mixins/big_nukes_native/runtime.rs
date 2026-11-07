@@ -1718,9 +1718,23 @@ pub struct Flight {
     /// The hatch's height while it is to be opened or shut again.
     #[serde(default)]
     pub hatch: Option<i32>,
+    /// The hatch was taken away by the flight, which owes it back.
+    #[serde(default)]
+    pub hatch_moved: bool,
     /// A bomber's: its bomb has been taken out of the beacon's slot.
     #[serde(default)]
     pub emptied: bool,
+}
+
+/// What a flight does to its hatch (`Flight::hatch_act`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HatchAct {
+    /// Taken away: the shaft opens.
+    Open,
+    /// Put back.
+    Shut,
+    /// Left as it is, and forgotten.
+    Forget,
 }
 
 /// Where a missile is at a tick.
@@ -1777,6 +1791,22 @@ impl Flight {
     /// Whether the hatch stands open: from `HATCH_OPEN_AT` before the liftoff to `HATCH_SHUT_AT` after it.
     pub fn hatch_open(&self, now: u64) -> bool {
         (self.liftoff() - HATCH_OPEN_AT..=self.liftoff() + HATCH_SHUT_AT).contains(&now)
+    }
+
+    /// What is done to the hatch at `now`, `here` being the block in its place, None while its chunk isn't
+    /// loaded (where everything reads as air): it waits for it. The hatch is taken away while it stands open,
+    /// and after, only the one taken is put back, on the air: one mined before, or a block put in its place,
+    /// and the flight forgets it.
+    pub fn hatch_act(&self, now: u64, here: Option<&str>) -> Option<HatchAct> {
+        self.hatch?;
+        let here = here?;
+        if self.hatch_open(now) {
+            (!self.hatch_moved && here == SILO_HATCH).then_some(HatchAct::Open)
+        } else if now > self.liftoff() {
+            Some(if self.hatch_moved && is_air(here) { HatchAct::Shut } else { HatchAct::Forget })
+        } else {
+            None
+        }
     }
 
     /// The ground a bomber's bomb falls to: its beacon's column, under the Nether's roof; the beacon's own
@@ -2347,6 +2377,7 @@ impl Saved {
             surface: None,
             seed: mix(self.tick ^ mix(id)),
             hatch: Some(hatch),
+            hatch_moved: false,
             emptied: false,
         };
         self.flights.push(flight.clone());
@@ -2366,7 +2397,8 @@ impl Saved {
 // ---- the target's chunk ------------------------------------------------------------
 //
 // A missile's target is kept loaded with `/forceload` from its liftoff, so its
-// ground can be read and its blast's center worked; the world keeps the forced
+// ground can be read and its blast's center worked, and its pad from the launch
+// until the hatch is back, so the hatch isn't lost; the world keeps the forced
 // chunks (`Saved.forced`), and each is let go once its wave has changed its
 // center's chunk, or at once for a flight that never went off.
 
@@ -2410,9 +2442,10 @@ impl Waves {
 }
 
 impl Saved {
-    /// Flight `id` keeps `chunk` loaded: true when no flight did yet, so the glue forces it.
+    /// Flight `id` keeps `chunk` loaded (a missile its pad's and its target's): true when no flight did yet,
+    /// so the glue forces it.
     pub fn force(&mut self, id: u64, dimension: &str, chunk: [i32; 2]) -> bool {
-        if self.forced.iter().any(|f| f.id == id) {
+        if self.forced.iter().any(|f| f.id == id && f.dimension == dimension && f.chunk == chunk) {
             return false;
         }
         let new = !self.forced.iter().any(|f| f.dimension == dimension && f.chunk == chunk);
@@ -2422,7 +2455,7 @@ impl Saved {
 
     /// Flight `id` went off at `center`, or never will.
     pub fn landed(&mut self, id: u64, center: Option<[i32; 3]>) {
-        if let Some(f) = self.forced.iter_mut().find(|f| f.id == id) {
+        for f in self.forced.iter_mut().filter(|f| f.id == id) {
             f.landed = true;
             f.center = center;
         }
@@ -2571,6 +2604,7 @@ impl Saved {
             surface: None,
             seed: mix(self.tick ^ mix(id)),
             hatch: None,
+            hatch_moved: false,
             emptied: false,
         });
         Charge::Taken(kind)
@@ -7254,6 +7288,7 @@ mod flight_tests {
             surface: Some(70),
             seed: 7,
             hatch: Some(71),
+            hatch_moved: false,
             emptied: false,
         }
     }
@@ -7331,6 +7366,50 @@ mod flight_tests {
         assert!(!f.hatch_open(161) && !f.hatch_open(5000));
         // By then the missile is well clear of any hatch a shaft has.
         assert!(ascent(&f, 160).0[1] > 64.0 + 40.0);
+    }
+
+    #[test]
+    fn only_the_hatch_the_mod_took_comes_back() {
+        let f = missile();
+        let (before, open, after) = (59, 60, 161);
+        // It is taken while it stands open, once, where it is.
+        assert_eq!(f.hatch_act(before, Some(SILO_HATCH)), None);
+        assert_eq!(f.hatch_act(open, Some(SILO_HATCH)), Some(HatchAct::Open));
+        let taken = Flight { hatch_moved: true, ..f.clone() };
+        assert_eq!(taken.hatch_act(open + 1, Some("minecraft:air")), None);
+        assert_eq!(taken.hatch_act(open + 1, Some(SILO_HATCH)), None, "a hatch put back by hand stays");
+        // After, the one it took is put back on the air, and only that one.
+        assert_eq!(taken.hatch_act(after, Some("minecraft:air")), Some(HatchAct::Shut));
+        // One mined before it opened isn't made again: the flight forgets it.
+        assert_eq!(f.hatch_act(open, Some("minecraft:air")), None);
+        assert_eq!(f.hatch_act(after, Some("minecraft:air")), Some(HatchAct::Forget));
+        assert_eq!(f.hatch_act(after, Some(SILO_HATCH)), Some(HatchAct::Forget));
+        // A block put in its place keeps it out.
+        assert_eq!(taken.hatch_act(after, Some("minecraft:stone")), Some(HatchAct::Forget));
+        // A chunk not loaded reads as air: the hatch waits for it, open or shut.
+        assert_eq!(f.hatch_act(open, None), None);
+        assert_eq!(taken.hatch_act(after, None), None);
+        assert_eq!(taken.hatch_act(after + 10_000, None), None);
+        // A flight that forgot its hatch does nothing.
+        assert_eq!(Flight { hatch: None, ..taken }.hatch_act(after, Some("minecraft:air")), None);
+        // Saved without it, it is a hatch not taken.
+        let mut v = serde_json::to_value(&f).unwrap();
+        v.as_object_mut().unwrap().remove("hatch_moved");
+        assert!(!serde_json::from_value::<Flight>(v).unwrap().hatch_moved);
+    }
+
+    #[test]
+    fn a_flight_keeps_its_pad_and_its_target_loaded() {
+        let mut saved = Saved::default();
+        assert!(saved.force(1, OVERWORLD, [0, 0]), "the pad");
+        assert!(saved.force(1, OVERWORLD, [62, 0]), "the target");
+        assert!(!saved.force(1, OVERWORLD, [0, 0]) && !saved.force(1, OVERWORLD, [62, 0]));
+        assert_eq!(saved.forced.len(), 2);
+        saved.landed(1, None);
+        let mut free = saved.unforce();
+        free.sort();
+        assert_eq!(free, vec![(OVERWORLD.to_owned(), [0, 0]), (OVERWORLD.to_owned(), [62, 0])]);
+        assert!(saved.forced.is_empty());
     }
 
     #[test]
@@ -7477,6 +7556,7 @@ mod flight_tests {
             surface: Some(128),
             seed: 1,
             hatch: None,
+            hatch_moved: false,
             emptied: false,
         };
         assert_eq!(f.bomb_ground(), 123);

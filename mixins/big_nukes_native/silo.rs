@@ -809,6 +809,7 @@ fn sweep(game: &mut Game<'_>, dimension: &str, now: u64, live: &[u64]) {
 /// What a tick of the flights changes in the world's record, made with the state held once.
 enum Change {
     Surface(u64, i32),
+    HatchOpened(u64),
     HatchShut(u64),
     Force(u64, [i32; 2]),
     Emptied(u64),
@@ -864,6 +865,12 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
                     if let Some(f) = st.saved.flights.iter_mut().chain(&mut st.saved.beacons).find(|f| f.id == id) {
                         changed |= f.surface != Some(y);
                         f.surface = Some(y);
+                    }
+                }
+                Change::HatchOpened(id) => {
+                    if let Some(f) = st.saved.flights.iter_mut().find(|f| f.id == id) {
+                        changed |= !f.hatch_moved;
+                        f.hatch_moved = true;
                     }
                 }
                 Change::HatchShut(id) => {
@@ -981,26 +988,33 @@ fn trail(game: &mut Game<'_>, dimension: &str, tail: [f64; 3], climbing: bool) {
     run_in(game, dimension, &particle("minecraft:flame", tail, 0.2, 0.04, fire));
 }
 
-/// The hatch: taken away while it should stand open, put back after; once back, the flight forgets it.
+/// The hatch: taken away while it should stand open, and the one taken put back after (`Flight::hatch_act`);
+/// once back, the flight forgets it. The pad's chunk is kept loaded meanwhile, and the hatch waits for it.
 fn hatch(game: &mut Game<'_>, dimension: &str, f: &rules::Flight, now: u64, changes: &mut Vec<Change>) {
     let Some(y) = f.hatch else { return };
     let at = [f.from[0], y, f.from[2]];
+    changes.push(Change::Force(f.id, rules::chunk_of(at[0], at[2])));
     let registry = &game.pack.assets.registry;
     let (Some(air), Some(shut)) = (registry.default_state("minecraft:air"), registry.default_state(rules::SILO_HATCH)) else {
         return;
     };
-    let here = game.native_block(at);
-    if f.hatch_open(now) {
-        if here == rules::SILO_HATCH {
-            game.native_set_block(dimension, at, air, 3);
-            play(game, dimension, "minecraft:block.iron_trapdoor.open", glue::middle(at), 2.0, 0.6);
+    let here = glue::loaded(dimension, at).then(|| game.native_block(at));
+    match f.hatch_act(now, here.as_deref()) {
+        Some(rules::HatchAct::Open) => {
+            if game.native_set_block(dimension, at, air, 3) {
+                play(game, dimension, "minecraft:block.iron_trapdoor.open", glue::middle(at), 2.0, 0.6);
+                changes.push(Change::HatchOpened(f.id));
+            }
         }
-    } else if now > f.liftoff() {
-        if here == "minecraft:air" {
-            game.native_set_block(dimension, at, shut, 3);
-            play(game, dimension, "minecraft:block.iron_trapdoor.close", glue::middle(at), 2.0, 0.6);
+        // Tried again the next tick if the level didn't take it.
+        Some(rules::HatchAct::Shut) => {
+            if game.native_set_block(dimension, at, shut, 3) {
+                play(game, dimension, "minecraft:block.iron_trapdoor.close", glue::middle(at), 2.0, 0.6);
+                changes.push(Change::HatchShut(f.id));
+            }
         }
-        changes.push(Change::HatchShut(f.id));
+        Some(rules::HatchAct::Forget) => changes.push(Change::HatchShut(f.id)),
+        None => {}
     }
 }
 
