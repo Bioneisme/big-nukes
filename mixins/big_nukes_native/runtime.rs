@@ -796,7 +796,7 @@ pub const SUNBREAKER_FUSE: u64 = 300;
 pub const ALARM_TICKS: u64 = 100;
 
 /// Why a Sunbreaker doesn't go off: its shell has only so many of its blocks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StructureProblem {
     Shell(u32),
 }
@@ -1376,6 +1376,8 @@ pub enum Refused {
     Maxpower { radius: u32, maxpower: u32 },
     /// A remote's bomb that isn't there any more: broken, or already gone off.
     Gone,
+    /// A Sunbreaker far off whose core hasn't read its structure yet.
+    Unread,
     /// A Sunbreaker whose structure isn't whole enough.
     Structure(StructureProblem),
 }
@@ -1449,6 +1451,9 @@ pub struct Receiver {
     pub dimension: String,
     pub pos: [i32; 3],
     pub kind: BombKind,
+    /// A Sunbreaker's structure as its core last read it, for a remote that fires it from afar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power: Option<Result<u32, StructureProblem>>,
 }
 
 /// What a remote is linked to.
@@ -1475,7 +1480,7 @@ impl Saved {
         }
         match self.bombs.iter_mut().find(|b| b.dimension == dimension && b.pos == pos) {
             Some(b) => b.kind = kind,
-            None => self.bombs.push(Receiver { dimension: dimension.to_owned(), pos, kind }),
+            None => self.bombs.push(Receiver { dimension: dimension.to_owned(), pos, kind, power: None }),
         }
         true
     }
@@ -1483,6 +1488,18 @@ impl Saved {
     /// The bomb recorded at `pos`, if there is one.
     pub fn recorded(&self, dimension: &str, pos: [i32; 3]) -> Option<BombKind> {
         self.bombs.iter().find(|b| b.dimension == dimension && b.pos == pos).map(|b| b.kind)
+    }
+
+    /// What a recorded Sunbreaker's core read of its structure: kept for a remote that fires it from afar.
+    /// Whether it changed.
+    pub fn read_power(&mut self, dimension: &str, pos: [i32; 3], power: Result<u32, StructureProblem>) -> bool {
+        match self.bombs.iter_mut().find(|b| b.dimension == dimension && b.pos == pos) {
+            Some(b) if b.power != Some(power) => {
+                b.power = Some(power);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Forgets the bomb at `pos`: it was broken or went off. Whether there was one.
@@ -1498,7 +1515,7 @@ impl Saved {
             return false;
         }
         self.unplace(dimension, pos);
-        self.placed.push(Receiver { dimension: dimension.to_owned(), pos, kind });
+        self.placed.push(Receiver { dimension: dimension.to_owned(), pos, kind, power: None });
         true
     }
 
@@ -1524,14 +1541,8 @@ impl Saved {
     /// shell it fizzles: it is forgotten, and the glue takes it away.
     pub fn set_off(&mut self, dimension: &str, pos: [i32; 3], block: &dyn Fn([i32; 3]) -> String) -> Result<u64, Refused> {
         let kind = self.placed.iter().find(|b| b.dimension == dimension && b.pos == pos).map(|b| b.kind).ok_or(Refused::Gone)?;
-        let radius = match kind.power(pos, block) {
-            Ok(radius) => radius,
-            Err(problem) => {
-                self.unplace(dimension, pos);
-                self.forget(dimension, pos);
-                return Err(Refused::Structure(problem));
-            }
-        };
+        // One without a whole shell doesn't go off and stays: a crater that reaches its core takes it.
+        let radius = kind.power(pos, block).map_err(Refused::Structure)?;
         let id = self.fire(dimension, pos, radius)?;
         self.unplace(dimension, pos);
         self.forget(dimension, pos);
@@ -1550,9 +1561,22 @@ impl Saved {
     /// A remote's press: the recorded bomb at `pos` goes off, within the
     /// operator's limit, and is forgotten. One over the limit stays recorded, as
     /// does a Sunbreaker whose structure, read with `block`, has no whole shell.
-    pub fn fire_bomb(&mut self, dimension: &str, pos: [i32; 3], block: &dyn Fn([i32; 3]) -> String) -> Result<u64, Refused> {
+    /// `block` reads the bomb's place, None while its chunk isn't loaded: a Sunbreaker then goes off with the
+    /// radius its core last read (`read_power`), which can't have changed since, its blocks unloaded too.
+    pub fn fire_bomb(&mut self, dimension: &str, pos: [i32; 3], block: Option<&dyn Fn([i32; 3]) -> String>) -> Result<u64, Refused> {
         let kind = self.recorded(dimension, pos).ok_or(Refused::Gone)?;
-        let radius = kind.power(pos, block).map_err(Refused::Structure)?;
+        let radius = match block {
+            Some(block) => kind.power(pos, block).map_err(Refused::Structure)?,
+            None if kind == BombKind::Sunbreaker => {
+                let record = self.bombs.iter().find(|b| b.dimension == dimension && b.pos == pos);
+                match record.and_then(|b| b.power) {
+                    Some(Ok(radius)) => radius,
+                    Some(Err(problem)) => return Err(Refused::Structure(problem)),
+                    None => return Err(Refused::Unread),
+                }
+            }
+            None => kind.radius(),
+        };
         let id = self.fire(dimension, pos, radius)?;
         self.forget(dimension, pos);
         self.unplace(dimension, pos);
@@ -6256,7 +6280,7 @@ mod tests {
         // glue takes the bomb when the wave works the chunk of its center.
         let roof_bomb = [40, 126, -20];
         assert!(saved.record(NETHER, roof_bomb, BombKind::Atomic));
-        assert_eq!(saved.fire_bomb(NETHER, roof_bomb, &air), Ok(1));
+        assert_eq!(saved.fire_bomb(NETHER, roof_bomb, Some(&air)), Ok(1));
         assert_eq!(saved.waves.centers_in(NETHER, chunk_of(40, -20)), vec![roof_bomb]);
         assert!(saved.waves.centers_in(NETHER, chunk_of(56, -20)).is_empty(), "another chunk");
         assert!(saved.waves.centers_in(OVERWORLD, chunk_of(40, -20)).is_empty(), "another dimension");
@@ -6304,20 +6328,20 @@ mod tests {
         assert!(saved.record(OVERWORLD, at, BombKind::Tactical));
         assert_eq!(saved.recorded(OVERWORLD, at), Some(BombKind::Tactical));
         // Its chunk needn't be loaded: the wave starts at the bomb, with the bomb's radius.
-        assert_eq!(saved.fire_bomb(OVERWORLD, at, &air), Ok(1));
+        assert_eq!(saved.fire_bomb(OVERWORLD, at, Some(&air)), Ok(1));
         let news = saved.waves.news(OVERWORLD, saved.tick);
         assert_eq!(news.iter().map(|n| (n.id, n.center, n.radius)).collect::<Vec<_>>(), vec![(1, at, 50)]);
         // The record goes with the blast: a second press finds no bomb.
         assert_eq!(saved.recorded(OVERWORLD, at), None);
-        assert_eq!(saved.fire_bomb(OVERWORLD, at, &air), Err(Refused::Gone));
+        assert_eq!(saved.fire_bomb(OVERWORLD, at, Some(&air)), Err(Refused::Gone));
         assert_eq!(saved.next_id, 1, "no second blast");
         // The bomb still standing while its wave runs isn't linked again.
         assert!(!saved.record(OVERWORLD, at, BombKind::Tactical));
-        assert_eq!(saved.fire_bomb(OVERWORLD, at, &air), Err(Refused::Gone));
+        assert_eq!(saved.fire_bomb(OVERWORLD, at, Some(&air)), Err(Refused::Gone));
         // A bomb is its dimension's and its place's: the same place elsewhere is another.
-        assert_eq!(saved.fire_bomb(NETHER, at, &air), Err(Refused::Gone));
+        assert_eq!(saved.fire_bomb(NETHER, at, Some(&air)), Err(Refused::Gone));
         assert!(saved.record(NETHER, at, BombKind::Atomic));
-        assert_eq!(saved.fire_bomb(NETHER, at, &air), Ok(2));
+        assert_eq!(saved.fire_bomb(NETHER, at, Some(&air)), Ok(2));
         // A link is a dimension and a place.
         let link = Link { dimension: NETHER.into(), pos: at };
         assert_eq!(Link::of(&link.dimension, link.pos), Some(link));
@@ -6340,9 +6364,9 @@ mod tests {
         assert!(saved.forget(OVERWORLD, a));
         assert!(!saved.forget(OVERWORLD, a), "forgotten once");
         assert!(!saved.forget(NETHER, b), "only in its own dimension");
-        assert_eq!(saved.fire_bomb(OVERWORLD, a, &air), Err(Refused::Gone));
+        assert_eq!(saved.fire_bomb(OVERWORLD, a, Some(&air)), Err(Refused::Gone));
         assert!(saved.waves.finished(), "a broken bomb doesn't go off");
-        assert_eq!(saved.fire_bomb(OVERWORLD, b, &air), Ok(1));
+        assert_eq!(saved.fire_bomb(OVERWORLD, b, Some(&air)), Ok(1));
     }
 
     #[test]
@@ -6355,15 +6379,15 @@ mod tests {
         let (atomic, tactical) = ([100, 64, 0], [200, 64, 0]);
         saved.record(OVERWORLD, atomic, BombKind::Atomic);
         saved.record(OVERWORLD, tactical, BombKind::Tactical);
-        assert_eq!(saved.fire_bomb(OVERWORLD, atomic, &air), Err(Refused::Maxpower { radius: 250, maxpower: 50 }));
+        assert_eq!(saved.fire_bomb(OVERWORLD, atomic, Some(&air)), Err(Refused::Maxpower { radius: 250, maxpower: 50 }));
         assert_eq!(saved.recorded(OVERWORLD, atomic), Some(BombKind::Atomic));
-        assert_eq!(saved.fire_bomb(OVERWORLD, tactical, &air), Ok(2));
+        assert_eq!(saved.fire_bomb(OVERWORLD, tactical, Some(&air)), Ok(2));
         saved.maxpower = 16;
         assert!(saved.allows(BombKind::Demolition.radius()));
         assert!(!saved.allows(BombKind::Tactical.radius()));
-        assert_eq!(saved.fire_bomb(OVERWORLD, atomic, &air), Err(Refused::Maxpower { radius: 250, maxpower: 16 }));
+        assert_eq!(saved.fire_bomb(OVERWORLD, atomic, Some(&air)), Err(Refused::Maxpower { radius: 250, maxpower: 16 }));
         saved.maxpower = 250;
-        assert_eq!(saved.fire_bomb(OVERWORLD, atomic, &air), Ok(3));
+        assert_eq!(saved.fire_bomb(OVERWORLD, atomic, Some(&air)), Ok(3));
     }
 
     #[test]
@@ -6878,13 +6902,46 @@ mod tests {
         let n = news.iter().find(|n| n.id == set_off).unwrap();
         assert_eq!((n.center, n.radius), (strong, 800));
         assert!(saved.placed.iter().all(|b| b.pos != strong));
-        // One whose shell is gone fizzles: nothing goes off and it is forgotten.
+        // One without a whole shell doesn't go off, and stays: its core is only taken by a crater that reaches it.
         w.remove(&layer(broken, 1)[3]);
         let before = saved.next_id;
         assert_eq!(saved.set_off(OVERWORLD, broken, &reader(&w)), Err(Refused::Structure(StructureProblem::Shell(25))));
         assert_eq!(saved.next_id, before);
-        assert!(saved.placed.iter().all(|b| b.pos != broken));
-        assert_eq!(saved.recorded(OVERWORLD, broken), None);
+        assert!(saved.placed.iter().any(|b| b.pos == broken), "an unfinished core stays placed");
+        assert_eq!(saved.recorded(OVERWORLD, broken), Some(BombKind::Sunbreaker), "and its remote link stays");
+    }
+
+    #[test]
+    fn a_remote_fires_a_distant_sunbreaker_with_its_last_read_radius() {
+        let mut saved = Saved::default();
+        let core = [0, 64, 0];
+        assert!(saved.place(OVERWORLD, core, BombKind::Sunbreaker));
+        assert!(saved.record(OVERWORLD, core, BombKind::Sunbreaker));
+        // Never read: no radius to go off with from afar.
+        assert_eq!(saved.fire_bomb(OVERWORLD, core, None), Err(Refused::Unread));
+        assert!(saved.read_power(OVERWORLD, core, Ok(897)));
+        assert!(!saved.read_power(OVERWORLD, core, Ok(897)), "the same reading changes nothing");
+        let id = saved.fire_bomb(OVERWORLD, core, None).unwrap();
+        let news = saved.waves.news(OVERWORLD, saved.tick);
+        assert_eq!(news.iter().find(|n| n.id == id).map(|n| n.radius), Some(897));
+    }
+
+    #[test]
+    fn a_distant_sunbreaker_last_read_without_a_shell_stays() {
+        let mut saved = Saved::default();
+        let core = [0, 64, 0];
+        assert!(saved.record(OVERWORLD, core, BombKind::Sunbreaker));
+        saved.read_power(OVERWORLD, core, Ok(1000));
+        saved.read_power(OVERWORLD, core, Err(StructureProblem::Shell(20)));
+        assert_eq!(saved.fire_bomb(OVERWORLD, core, None), Err(Refused::Structure(StructureProblem::Shell(20))));
+        assert_eq!(saved.recorded(OVERWORLD, core), Some(BombKind::Sunbreaker));
+    }
+
+    #[test]
+    fn old_saved_receivers_read_without_a_power() {
+        let json = r#"{"dimension":"minecraft:overworld","pos":[1,2,3],"kind":"Atomic"}"#;
+        let r: Receiver = serde_json::from_str(json).unwrap();
+        assert_eq!(r.power, None);
     }
 
     #[test]
@@ -6942,16 +6999,16 @@ mod tests {
         assert!(saved.record(OVERWORLD, CORE_AT, BombKind::Sunbreaker));
         let over = Err(Refused::Maxpower { radius: 897, maxpower: 250 });
         assert_eq!(saved.set_off(OVERWORLD, CORE_AT, &reader(&w)), over);
-        assert_eq!(saved.fire_bomb(OVERWORLD, CORE_AT, &reader(&w)), over);
+        assert_eq!(saved.fire_bomb(OVERWORLD, CORE_AT, Some(&reader(&w))), over);
         // Nothing went off and the bomb stays, for its remote and for the next wave.
         assert!(saved.waves.finished());
         assert_eq!(saved.recorded(OVERWORLD, CORE_AT), Some(BombKind::Sunbreaker));
         assert_eq!(saved.placed_in(OVERWORLD, chunk_of(CORE_AT[0], CORE_AT[2])), vec![CORE_AT]);
         // A remote's Sunbreaker without its shell stays too: it can be mended.
         saved.maxpower = MAX_RADIUS;
-        assert_eq!(saved.fire_bomb(OVERWORLD, CORE_AT, &air), Err(Refused::Structure(StructureProblem::Shell(0))));
+        assert_eq!(saved.fire_bomb(OVERWORLD, CORE_AT, Some(&air)), Err(Refused::Structure(StructureProblem::Shell(0))));
         assert_eq!(saved.recorded(OVERWORLD, CORE_AT), Some(BombKind::Sunbreaker));
-        assert!(saved.fire_bomb(OVERWORLD, CORE_AT, &reader(&w)).is_ok());
+        assert!(saved.fire_bomb(OVERWORLD, CORE_AT, Some(&reader(&w))).is_ok());
     }
 
     #[test]
