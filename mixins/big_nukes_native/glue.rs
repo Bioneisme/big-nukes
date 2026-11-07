@@ -776,7 +776,7 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
                 reached.push((pos, blocks));
             }
         }
-        for edit in rules::plan_chunk(blast, chunk) {
+        for edit in rules::plan_chunk(blast, chunk, &[]).0 {
             if edit.runs.is_empty() {
                 continue;
             }

@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
     time::Duration,
 };
 
@@ -1061,10 +1061,17 @@ fn edit() -> ChunkEdit {
 /// What a blast does to one chunk: two edits, made in order. The first takes the
 /// plants and the crater; the second scorches what is then the surface, as a
 /// run's heightmap is read once, before its edit changes anything.
-pub fn plan_chunk(blast: &Blast, chunk: [i32; 2]) -> [ChunkEdit; 2] {
+///
+/// `walls` are the bunker's walls in and round the chunk, as the world holds them now
+/// (`walls_near`): in a column of the core the crater stops over the highest of the
+/// chunk's own walls that holds (`wall_fate`), which may crack, and what is under it
+/// stays. The walls it cracks or breaks are answered, for the world's registry.
+pub fn plan_chunk(blast: &Blast, chunk: [i32; 2], walls: &[Wall]) -> ([ChunkEdit; 2], Vec<WallChange>) {
     let (mut plants, mut surface) = (edit(), edit());
+    let mut changes = Vec::new();
     let top = blast.world.roof.min(blast.world.top());
     let from = |y: i32| y.clamp(blast.world.min_y, top);
+    let near = WallsAt::new(chunk, walls);
     for x in chunk[0] * 16..chunk[0] * 16 + 16 {
         for z in chunk[1] * 16..chunk[1] * 16 + 16 {
             let d = edge(blast, x, z);
@@ -1074,7 +1081,11 @@ pub fn plan_chunk(blast: &Blast, chunk: [i32; 2]) -> [ChunkEdit; 2] {
             };
             let below = blast.center[1] - PLANTS_BELOW;
             match ring(d) {
-                Ring::Core => plants.runs.extend(absolute(crater_floor(blast, d), AIR, None)),
+                Ring::Core => {
+                    let floor = crater_floor(blast, d);
+                    let bottom = core_walls(blast, d, floor, top, near.column(x, z), &near, &mut plants, &mut changes);
+                    plants.runs.extend(absolute(bottom.unwrap_or(floor), AIR, None));
+                }
                 Ring::Middle => {
                     for f in [LEAVES, LOGS, GLASS].into_iter().chain(PLANTS) {
                         plants.runs.extend(absolute(below, AIR, Some(f)));
@@ -1104,7 +1115,7 @@ pub fn plan_chunk(blast: &Blast, chunk: [i32; 2]) -> [ChunkEdit; 2] {
             }
         }
     }
-    [plants, surface]
+    ([plants, surface], changes)
 }
 
 // ---- the wave ------------------------------------------------------------------
@@ -1343,6 +1354,9 @@ pub struct Saved {
     /// The circles the decontaminators cleaned, theirs still where they were broken.
     #[serde(default)]
     pub cleans: Vec<Clean>,
+    /// The bunker's walls standing in the world, by chunk (`wall_key`).
+    #[serde(default)]
+    pub walls: BTreeMap<String, Vec<Wall>>,
 }
 
 fn largest_radius() -> u32 {
@@ -1365,6 +1379,7 @@ impl Default for Saved {
             beacons: Vec::new(),
             forced: Vec::new(),
             cleans: Vec::new(),
+            walls: BTreeMap::new(),
         }
     }
 }
@@ -2733,23 +2748,10 @@ impl Saved {
 
     /// A second of the player's exposure at `pos`, with `protection` kept out:
     /// the background there, or None when a second hasn't passed since the last.
+    /// A player with no dose is looked at on the second's ticks; one with a
+    /// dose a second after the last time, which holds while the clock stands.
     pub fn expose(&mut self, uuid: u128, dimension: &str, pos: [f64; 3], protection: f64) -> Option<f64> {
-        let (now, key) = (self.tick, dose_key(uuid));
-        // A player with no dose is looked at on the second's ticks; one with a
-        // dose a second after the last time, which holds while the clock stands.
-        match self.doses.get(&key) {
-            Some(d) if now < d.stepped + SECOND => return None,
-            None if now % SECOND != 0 => return None,
-            _ => {}
-        }
-        let bg = background(&self.zones, &self.cleans, dimension, pos, now);
-        let dose = self.doses.entry(key.clone()).or_default();
-        dose.rad = dose_step(dose.rad, bg, protection);
-        dose.stepped = now;
-        if dose.rad <= 0.0 {
-            self.doses.remove(&key);
-        }
-        Some(bg)
+        self.expose_sheltered(uuid, dimension, pos, protection, 1.0)
     }
 
     /// The player's stage and the damage due now, once a second; the damage's
@@ -2804,6 +2806,7 @@ impl Saved {
             cleans: self.cleans_near(dimension, pos),
             now,
             dose: self.doses.get(&dose_key(uuid)).map_or(0.0, |d| d.rad),
+            shelter: 1.0,
         }
     }
 }
@@ -2823,7 +2826,7 @@ pub const GEIGER_CLICK: &str = "big_nukes:geiger.click";
 
 /// What a window knows of the radiation: its dimension's nearest zones, the
 /// mod's clock they are reckoned on, and the player's dose.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Rad {
     pub zones: Vec<Zone>,
@@ -2831,6 +2834,14 @@ pub struct Rad {
     pub cleans: Vec<Clean>,
     pub now: u64,
     pub dose: f64,
+    /// The share of the background the player's shelter lets in where they last were (`shelter`).
+    pub shelter: f64,
+}
+
+impl Default for Rad {
+    fn default() -> Self {
+        Rad { zones: Vec::new(), cleans: Vec::new(), now: 0, dose: 0.0, shelter: 1.0 }
+    }
 }
 
 impl Rad {
@@ -2852,7 +2863,7 @@ impl Told {
     /// `clock`: the mod's clock counts on from the message. A clock behind the
     /// message's counts as no time passed.
     pub fn background(&self, dimension: &str, pos: [f64; 3], clock: u64) -> f64 {
-        background(&self.rad.zones, &self.rad.cleans, dimension, pos, self.rad.now + clock.saturating_sub(self.at))
+        background(&self.rad.zones, &self.rad.cleans, dimension, pos, self.rad.now + clock.saturating_sub(self.at)) * self.rad.shelter.clamp(0.0, 1.0)
     }
 }
 
@@ -3223,6 +3234,499 @@ pub fn ash_under<'a>(top_down: impl Iterator<Item = &'a str>, target: &str) -> O
 pub fn regrow_edit(found: &[[i32; 3]], ash: bool) -> ChunkEdit {
     let runs = found.iter().map(|&[x, y, z]| Run { x, z, y, height: 1, surface: None, block: 0, only: Some(0) }).collect();
     ChunkEdit { palette: vec!["minecraft:grass_block".to_owned()], filters: vec![regrow_target(ash).to_owned()], runs }
+}
+
+// ---- the bunker (plan 10) -------------------------------------------------------
+//
+// Walls in tiers of strength, a hermetic door, a fuel generator that powers air filters
+// and lamps round it, the shelter a roof or a sealed room gives from the radiation, and
+// rations for the long wait.
+//
+// The wave's core empties every column from the crater's floor up, and an edit's filters
+// can't say "all but", so the walls are kept in a registry by chunk (`Saved.walls`): the
+// game tells the mod of every block set through `Level.setBlock` (a player's placing,
+// /setblock, /fill, pistons, vanilla explosions), and the mod tells it of the walls its own
+// edits crack or break. A chunk's plan reads the walls in and round it when the wave works
+// it (`plan_chunk`): in a column of the core the crater stops over the highest wall that
+// holds, and what is under it stays.
+//
+// The wave's strength at a column is `R · (1 − d)`, `d` its share of the border's distance
+// (`edge`). A wall holds while that is no more than its strength, cracks up to half again
+// as much, and breaks past it; a cracked wall holds half and breaks past that. Concrete,
+// a lead shield, a damper and concrete again, in a row out along the ray from the blast,
+// hold as one multilayer wall.
+
+pub const HERMETIC_DOOR: &str = "big_nukes:hermetic_door";
+pub const FUEL_GENERATOR: &str = "big_nukes:fuel_generator";
+pub const AIR_FILTER: &str = "big_nukes:air_filter";
+pub const BUNKER_LAMP: &str = "big_nukes:bunker_lamp";
+pub const RATION: &str = "big_nukes:ration";
+/// The bunker's blocks besides its walls.
+pub const BUNKER_BLOCKS: [&str; 4] = [HERMETIC_DOOR, FUEL_GENERATOR, AIR_FILTER, BUNKER_LAMP];
+
+/// The bunker's walls, weakest first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum WallKind {
+    /// Reinforced concrete: holds a demolition charge anywhere, a tactical warhead at the crater's edge.
+    Reinforced,
+    /// Armored concrete: holds an atomic bomb out of the center of its crater.
+    Armored,
+    Lead,
+    Damper,
+}
+
+/// Every wall's block and its cracked block.
+pub const WALL_BLOCKS: [&str; 8] = [
+    "big_nukes:reinforced_concrete",
+    "big_nukes:armored_concrete",
+    "big_nukes:lead_shield",
+    "big_nukes:blast_damper",
+    "big_nukes:cracked_reinforced_concrete",
+    "big_nukes:cracked_armored_concrete",
+    "big_nukes:cracked_lead_shield",
+    "big_nukes:cracked_blast_damper",
+];
+
+/// Each block of a multilayer wall holds this much.
+pub const MULTILAYER_STRENGTH: f64 = 700.0;
+/// A wall cracks where the wave is up to this many times its strength, and breaks past it.
+pub const CRACKS_UP_TO: f64 = 1.5;
+
+impl WallKind {
+    pub const ALL: [WallKind; 4] = [WallKind::Reinforced, WallKind::Armored, WallKind::Lead, WallKind::Damper];
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn id(self) -> &'static str {
+        WALL_BLOCKS[self.index()]
+    }
+
+    pub fn cracked_id(self) -> &'static str {
+        WALL_BLOCKS[4 + self.index()]
+    }
+
+    /// The wave's strength (`wave_strength`) the whole wall holds alone.
+    pub fn strength(self) -> f64 {
+        [40.0, 200.0, 60.0, 60.0][self.index()]
+    }
+
+    /// What vanilla's explosions (TNT, creepers) make of the whole wall; the cracked one has half.
+    pub fn explosion_resistance(self) -> f32 {
+        [600.0, 1200.0, 600.0, 600.0][self.index()]
+    }
+
+    /// The wall a block is, and whether it is cracked.
+    pub fn of_block(id: &str) -> Option<(WallKind, bool)> {
+        let i = WALL_BLOCKS.iter().position(|b| *b == id)?;
+        Some((WallKind::ALL[i % 4], i >= 4))
+    }
+
+    fn concrete(self) -> bool {
+        matches!(self, WallKind::Reinforced | WallKind::Armored)
+    }
+}
+
+/// A wall standing in the world, as the registry keeps it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wall {
+    pub pos: [i32; 3],
+    pub kind: WallKind,
+    #[serde(default)]
+    pub cracked: bool,
+}
+
+impl Wall {
+    /// What it holds, as a block of a multilayer wall or alone: half once cracked.
+    pub fn strength(&self, multilayer: bool) -> f64 {
+        let whole = if multilayer { MULTILAYER_STRENGTH } else { self.kind.strength() };
+        if self.cracked { whole / 2.0 } else { whole }
+    }
+
+    pub fn block(&self) -> &'static str {
+        if self.cracked { self.kind.cracked_id() } else { self.kind.id() }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WallFate {
+    Stands,
+    Cracks,
+    Breaks,
+}
+
+/// What a chunk's plan did to a wall, for the registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WallChange {
+    Cracked([i32; 3]),
+    Broken([i32; 3]),
+}
+
+/// The wave's strength at column (x, z): the radius at the center, nothing at the border.
+pub fn wave_strength(blast: &Blast, x: i32, z: i32) -> f64 {
+    strength_at(blast, edge(blast, x, z))
+}
+
+fn strength_at(blast: &Blast, d: f64) -> f64 {
+    blast.radius as f64 * (1.0 - d).max(0.0)
+}
+
+/// What a wave of `strength_here` does to `wall`, a block of a multilayer wall or not.
+pub fn wall_fate(strength_here: f64, wall: &Wall, multilayer: bool) -> WallFate {
+    let holds = wall.strength(multilayer);
+    if strength_here <= holds {
+        WallFate::Stands
+    } else if !wall.cracked && strength_here <= holds * CRACKS_UP_TO {
+        WallFate::Cracks
+    } else {
+        WallFate::Breaks
+    }
+}
+
+/// Whether the wall at `pos` is a block of a multilayer wall: concrete, a lead shield, a damper and
+/// concrete, one after another going out from `blast_center` along the main axis of the ray from it to
+/// `pos` (x before z before y where they tie). `walls` tells the wall at a place.
+pub fn multilayer_at(walls: &dyn Fn([i32; 3]) -> Option<WallKind>, blast_center: [i32; 3], pos: [i32; 3]) -> bool {
+    let ray: [i32; 3] = std::array::from_fn(|a| pos[a] - blast_center[a]);
+    let mut axis = 0;
+    for a in [2, 1] {
+        if ray[a].abs() > ray[axis].abs() {
+            axis = a;
+        }
+    }
+    let Some(kind) = (ray[axis] != 0).then(|| walls(pos)).flatten() else {
+        return false;
+    };
+    let out = ray[axis].signum();
+    let at = |i: i32| {
+        let mut p = pos;
+        p[axis] += out * i;
+        p
+    };
+    let layer = |i: i32, k: WallKind| match i {
+        0 | 3 => k.concrete(),
+        1 => k == WallKind::Lead,
+        _ => k == WallKind::Damper,
+    };
+    // The places in the row this wall could have, outward from 0.
+    let places: &[i32] = match kind {
+        WallKind::Reinforced | WallKind::Armored => &[0, 3],
+        WallKind::Lead => &[1],
+        WallKind::Damper => &[2],
+    };
+    places.iter().any(|&k| (0..4).all(|i| i == k || walls(at(i - k)).is_some_and(|w| layer(i, w))))
+}
+
+/// How far round its chunk a plan looks at walls: as far as a multilayer wall reaches.
+const WALLS_AROUND: i32 = 3;
+const WALLS_SIDE: i32 = 16 + 2 * WALLS_AROUND;
+
+/// The walls a chunk's plan is given, column by column over the chunk and `WALLS_AROUND` blocks round it,
+/// each column's highest first: a chunk may hold thousands, and a column a few.
+struct WallsAt {
+    origin: [i32; 2],
+    columns: Vec<Vec<Wall>>,
+}
+
+impl WallsAt {
+    fn new(chunk: [i32; 2], walls: &[Wall]) -> Self {
+        let origin = [chunk[0] * 16 - WALLS_AROUND, chunk[1] * 16 - WALLS_AROUND];
+        let mut at = WallsAt { origin, columns: Vec::new() };
+        if walls.is_empty() {
+            return at;
+        }
+        at.columns = vec![Vec::new(); (WALLS_SIDE * WALLS_SIDE) as usize];
+        for w in walls {
+            if let Some(i) = at.index(w.pos[0], w.pos[2]) {
+                at.columns[i].push(*w);
+            }
+        }
+        for c in at.columns.iter_mut().filter(|c| c.len() > 1) {
+            c.sort_unstable_by(|a, b| b.pos[1].cmp(&a.pos[1]));
+        }
+        at
+    }
+
+    fn index(&self, x: i32, z: i32) -> Option<usize> {
+        let (i, j) = (x - self.origin[0], z - self.origin[1]);
+        ((0..WALLS_SIDE).contains(&i) && (0..WALLS_SIDE).contains(&j)).then_some((i * WALLS_SIDE + j) as usize)
+    }
+
+    fn column(&self, x: i32, z: i32) -> &[Wall] {
+        self.index(x, z).and_then(|i| self.columns.get(i)).map_or(&[], Vec::as_slice)
+    }
+
+    fn kind(&self, pos: [i32; 3]) -> Option<WallKind> {
+        self.column(pos[0], pos[2]).iter().find(|w| w.pos[1] == pos[1]).map(|w| w.kind)
+    }
+}
+
+/// The walls of one column of the core, its highest first: each is judged down to the first that holds,
+/// which may crack (its cracked block goes into `plants`). The lowest place the crater reaches, if a wall
+/// held: just over it.
+#[allow(clippy::too_many_arguments)]
+fn core_walls(
+    blast: &Blast,
+    d: f64,
+    floor: i32,
+    top: i32,
+    column: &[Wall],
+    near: &WallsAt,
+    plants: &mut ChunkEdit,
+    changes: &mut Vec<WallChange>,
+) -> Option<i32> {
+    let strength = strength_at(blast, d);
+    for w in column.iter().filter(|w| w.pos[1] >= floor && w.pos[1] < top) {
+        let fate = match wall_fate(strength, w, false) {
+            WallFate::Stands => WallFate::Stands,
+            _ => wall_fate(strength, w, multilayer_at(&|p| near.kind(p), blast.center, w.pos)),
+        };
+        match fate {
+            WallFate::Breaks => changes.push(WallChange::Broken(w.pos)),
+            WallFate::Cracks => {
+                let cracked = w.kind.cracked_id();
+                let block = match plants.palette.iter().position(|p| p == cracked) {
+                    Some(i) => i,
+                    None => {
+                        plants.palette.push(cracked.to_owned());
+                        plants.palette.len() - 1
+                    }
+                } as u32;
+                let [x, y, z] = w.pos;
+                plants.runs.push(Run { x, z, y, height: 1, surface: None, block, only: None });
+                changes.push(WallChange::Cracked(w.pos));
+                return Some(y + 1);
+            }
+            WallFate::Stands => return Some(w.pos[1] + 1),
+        }
+    }
+    None
+}
+
+/// The registry's key of a chunk's walls.
+pub fn wall_key(dimension: &str, chunk: [i32; 2]) -> String {
+    format!("{dimension}:{}:{}", chunk[0], chunk[1])
+}
+
+/// The walls a chunk's plan needs: its own and those of the four chunks beside it, which a
+/// multilayer wall may reach into.
+pub fn walls_near(walls: &BTreeMap<String, Vec<Wall>>, dimension: &str, chunk: [i32; 2]) -> Vec<Wall> {
+    let [cx, cz] = chunk;
+    [[cx, cz], [cx - 1, cz], [cx + 1, cz], [cx, cz - 1], [cx, cz + 1]]
+        .iter()
+        .filter_map(|c| walls.get(&wall_key(dimension, *c)))
+        .flatten()
+        .copied()
+        .collect()
+}
+
+impl Saved {
+    /// A wall placed at `pos`, in place of any there. Whether the registry changed.
+    pub fn place_wall(&mut self, dimension: &str, pos: [i32; 3], kind: WallKind, cracked: bool) -> bool {
+        let wall = Wall { pos, kind, cracked };
+        let list = self.walls.entry(wall_key(dimension, chunk_of(pos[0], pos[2]))).or_default();
+        match list.iter_mut().find(|w| w.pos == pos) {
+            Some(w) if *w == wall => false,
+            Some(w) => {
+                *w = wall;
+                true
+            }
+            None => {
+                list.push(wall);
+                true
+            }
+        }
+    }
+
+    /// The wall at `pos` taken away. Whether there was one.
+    pub fn remove_wall(&mut self, dimension: &str, pos: [i32; 3]) -> bool {
+        let key = wall_key(dimension, chunk_of(pos[0], pos[2]));
+        let Some(list) = self.walls.get_mut(&key) else { return false };
+        let before = list.len();
+        list.retain(|w| w.pos != pos);
+        let removed = list.len() != before;
+        if list.is_empty() {
+            self.walls.remove(&key);
+        }
+        removed
+    }
+
+    /// The walls standing in `chunk`.
+    pub fn walls_in(&self, dimension: &str, chunk: [i32; 2]) -> &[Wall] {
+        self.walls.get(&wall_key(dimension, chunk)).map_or(&[], Vec::as_slice)
+    }
+
+    /// What a chunk's plan did to its walls. Whether the registry changed.
+    pub fn change_walls(&mut self, dimension: &str, changes: &[WallChange]) -> bool {
+        let mut changed = false;
+        for change in changes {
+            changed |= match *change {
+                WallChange::Broken(pos) => self.remove_wall(dimension, pos),
+                WallChange::Cracked(pos) => {
+                    let key = wall_key(dimension, chunk_of(pos[0], pos[2]));
+                    match self.walls.get_mut(&key).and_then(|l| l.iter_mut().find(|w| w.pos == pos)) {
+                        Some(w) if !w.cracked => {
+                            w.cracked = true;
+                            true
+                        }
+                        _ => false,
+                    }
+                }
+            };
+        }
+        changed
+    }
+
+    /// A second of the player's exposure, as `expose`, under a `shelter` (`shelter`): the background they
+    /// take, the shelter's share of what is outside.
+    pub fn expose_sheltered(&mut self, uuid: u128, dimension: &str, pos: [f64; 3], protection: f64, shelter: f64) -> Option<f64> {
+        let (now, key) = (self.tick, dose_key(uuid));
+        match self.doses.get(&key) {
+            Some(d) if now < d.stepped + SECOND => return None,
+            None if now % SECOND != 0 => return None,
+            _ => {}
+        }
+        let bg = background(&self.zones, &self.cleans, dimension, pos, now) * shelter.clamp(0.0, 1.0);
+        let dose = self.doses.entry(key.clone()).or_default();
+        dose.rad = dose_step(dose.rad, bg, protection);
+        dose.stepped = now;
+        if dose.rad <= 0.0 {
+            self.doses.remove(&key);
+        }
+        Some(bg)
+    }
+}
+
+// ---- the shelter ----
+
+/// The share of the background a roof lets in, where the sky isn't seen.
+pub const ROOF_SHELTER: f64 = 0.5;
+/// The share a sealed room with a powered air filter lets in.
+pub const SEALED_SHELTER: f64 = 0.05;
+/// The most cells of air a filter's room may have.
+pub const ROOM_LIMIT: usize = 4096;
+/// A filter goes round its room this often.
+pub const FILTER_EVERY: u64 = 5 * SECOND;
+/// A generator powers the filters and lamps this far from it.
+pub const POWER_RADIUS: i32 = 16;
+/// A generator burns its fuel this many times as long as a furnace.
+pub const GENERATOR_BURN: u32 = 2;
+pub const GENERATOR_FUEL_SLOT: usize = 0;
+pub const GENERATOR_SLOTS: usize = 1;
+/// The filter's menu has one slot, hidden and never filled: a menu holds one at least.
+pub const FILTER_SLOTS: usize = 1;
+
+/// The share of the background where a player stands: all under the sky, half under a roof, a
+/// twentieth in a sealed room.
+pub fn shelter(sky_visible: bool, in_sealed_room: bool) -> f64 {
+    if in_sealed_room {
+        SEALED_SHELTER
+    } else if sky_visible {
+        1.0
+    } else {
+        ROOF_SHELTER
+    }
+}
+
+/// A place as a filter's room sees it: air (or what doesn't fill a place) it goes through, a
+/// wall it doesn't, air under the sky that unseals it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cell {
+    Open,
+    Wall,
+    Sky,
+}
+
+/// A door by its `open` property: an open one lets the air through.
+pub fn door_cell(open: Option<&str>) -> Cell {
+    if open == Some("true") { Cell::Open } else { Cell::Wall }
+}
+
+/// The room of air from `start`, as `block` sees each place, going through faces: its places, or
+/// none when it reaches the sky, has more than `limit` of them, or `start` isn't air.
+pub fn sealed_room(start: [i32; 3], block: &dyn Fn([i32; 3]) -> Cell, limit: usize) -> Option<HashSet<[i32; 3]>> {
+    if block(start) != Cell::Open {
+        return None;
+    }
+    let mut room = HashSet::from([start]);
+    let mut queue = VecDeque::from([start]);
+    while let Some([x, y, z]) = queue.pop_front() {
+        for p in [[x + 1, y, z], [x - 1, y, z], [x, y + 1, z], [x, y - 1, z], [x, y, z + 1], [x, y, z - 1]] {
+            if room.contains(&p) {
+                continue;
+            }
+            match block(p) {
+                Cell::Wall => {}
+                Cell::Sky => return None,
+                Cell::Open => {
+                    if room.len() >= limit {
+                        return None;
+                    }
+                    room.insert(p);
+                    queue.push_back(p);
+                }
+            }
+        }
+    }
+    Some(room)
+}
+
+/// Whether a generator at `generator` powers what is at `pos`: within `POWER_RADIUS`, block to block.
+pub fn powers(generator: [i32; 3], pos: [i32; 3]) -> bool {
+    let d2: i64 = (0..3).map(|a| i64::from(pos[a] - generator[a]).pow(2)).sum();
+    d2 <= i64::from(POWER_RADIUS).pow(2)
+}
+
+/// Whether any of the burning `generators` powers `pos`.
+pub fn powered(generators: &[[i32; 3]], pos: [i32; 3]) -> bool {
+    generators.iter().any(|g| powers(*g, pos))
+}
+
+/// A fuel generator's state, kept in its block entity: the ticks left of the fuel it burns and that
+/// fuel's whole burn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Generator {
+    pub burn: u32,
+    pub burn_max: u32,
+}
+
+impl Generator {
+    /// One tick. `fuel` is the burn ticks of the fuel in its slot in a furnace (none, or 0, when nothing
+    /// there burns): out of fuel, it takes one, which burns `GENERATOR_BURN` times as long. `made` says it
+    /// burned this tick.
+    pub fn step(&mut self, fuel: Option<u32>) -> Step {
+        let mut step = Step::IDLE;
+        if self.burn == 0 {
+            match fuel {
+                Some(ticks) if ticks > 0 => {
+                    self.burn = ticks.saturating_mul(GENERATOR_BURN);
+                    self.burn_max = self.burn;
+                    step.took_fuel = true;
+                }
+                _ => return Step::IDLE,
+            }
+        }
+        self.burn -= 1;
+        step.made = true;
+        step
+    }
+
+    pub fn burning(&self) -> bool {
+        self.burn > 0
+    }
+
+    /// The menu's data slots, `[burn, burn_max]`, within a data slot's 16 bits.
+    pub fn data(&self) -> [i32; 2] {
+        let short = |v: u32| v.min(i16::MAX as u32) as i32;
+        [short(self.burn), short(self.burn_max)]
+    }
+}
+
+/// What an air filter shows on its screen, in its menu's data slots: `[powered, sealed, the room's cells]`.
+pub fn filter_data(powered: bool, room: Option<usize>) -> [i32; 3] {
+    [i32::from(powered), i32::from(room.is_some()), room.map_or(0, |n| n.min(i16::MAX as usize) as i32)]
 }
 
 // ---- the blast's effects ------------------------------------------------------
@@ -4307,7 +4811,7 @@ mod tests {
         let mut out = vec![];
         for cx in c[0] - r..=c[0] + r {
             for cz in c[1] - r..=c[1] + r {
-                for (i, e) in plan_chunk(b, [cx, cz]).into_iter().enumerate() {
+                for (i, e) in plan_chunk(b, [cx, cz], &[]).0.into_iter().enumerate() {
                     out.extend(e.runs.into_iter().map(|run| (i, run)));
                 }
             }
@@ -4331,7 +4835,7 @@ mod tests {
     #[test]
     fn a_chunk_beyond_the_edge_plans_nothing() {
         let b = blast([0, 64, 0], 100, 2, World::OVERWORLD);
-        for e in plan_chunk(&b, chunk_of(230, 0)) {
+        for e in plan_chunk(&b, chunk_of(230, 0), &[]).0 {
             assert!(e.runs.is_empty());
         }
     }
@@ -4339,12 +4843,12 @@ mod tests {
     #[test]
     fn the_core_clears_whole_columns_and_the_rim_only_filters() {
         let b = blast([0, 64, 0], 100, 2, World::OVERWORLD);
-        let edits = plan_chunk(&b, [0, 0]);
+        let edits = plan_chunk(&b, [0, 0], &[]).0;
         let air = edits[0].palette.iter().position(|p| p == "minecraft:air").unwrap() as u32;
         let core = edits[0].runs.iter().find(|r| r.x == 1 && r.z == 1 && r.only.is_none()).expect("a core column is cleared");
         assert_eq!(core.block, air);
         assert_eq!(core.y + core.height as i32, World::OVERWORLD.top());
-        let outer = plan_chunk(&b, chunk_of(85, 0));
+        let outer = plan_chunk(&b, chunk_of(85, 0), &[]).0;
         let at_85: Vec<&Run> = outer.iter().flat_map(|e| &e.runs).filter(|r| r.x == 85 && r.z == 0).collect();
         assert!(!at_85.is_empty() && at_85.iter().all(|r| r.only.is_some()), "{at_85:?}");
     }
@@ -4352,7 +4856,7 @@ mod tests {
     #[test]
     fn the_middle_scorches_the_surface_after_the_plants_are_gone() {
         let b = blast([0, 64, 0], 100, 2, World::OVERWORLD);
-        let [plants, surface] = plan_chunk(&b, chunk_of(50, 0));
+        let [plants, surface] = plan_chunk(&b, chunk_of(50, 0), &[]).0;
         let ash = surface.palette.iter().position(|p| p == ASH).unwrap() as u32;
         assert!(plants.runs.iter().any(|r| r.x == 50 && r.z == 0));
         assert!(surface.runs.iter().any(|r| r.x == 50 && r.z == 0 && r.block == ash && r.surface.is_some()));
@@ -4362,7 +4866,7 @@ mod tests {
     fn the_scorch_uses_ash() {
         assert_eq!(ASH, "big_nukes:ash");
         let b = blast([0, 64, 0], 100, 2, World::OVERWORLD);
-        let [_, surface] = plan_chunk(&b, chunk_of(50, 0));
+        let [_, surface] = plan_chunk(&b, chunk_of(50, 0), &[]).0;
         assert!(!surface.palette.iter().any(|p| p == "minecraft:coarse_dirt"), "{:?}", surface.palette);
         let ash = surface.palette.iter().position(|p| p == ASH).expect("ash in the palette") as u32;
         let ground = surface.filters.iter().position(|f| f == "#minecraft:substrate_overworld").unwrap() as u32;
@@ -4375,7 +4879,7 @@ mod tests {
     fn without_the_ash_block_the_scorch_is_coarse_dirt() {
         let b = blast([0, 64, 0], 100, 2, World::OVERWORLD);
         for chunk in [[0, 0], chunk_of(50, 0)] {
-            for edit in plan_chunk(&b, chunk) {
+            for edit in plan_chunk(&b, chunk, &[]).0 {
                 let bare = edit.clone().without_ash();
                 assert_eq!((&bare.filters, &bare.runs), (&edit.filters, &edit.runs));
                 assert_eq!(bare.palette.len(), edit.palette.len());
@@ -4391,7 +4895,7 @@ mod tests {
     fn water_and_lava_are_never_taken_with_the_plants() {
         let b = blast([0, 64, 0], 100, 2, World::OVERWORLD);
         for chunk in [[0, 0], chunk_of(50, 0), chunk_of(85, 0)] {
-            let [plants, surface] = plan_chunk(&b, chunk);
+            let [plants, surface] = plan_chunk(&b, chunk, &[]).0;
             for r in plants.runs.iter().filter(|r| r.only.is_some()) {
                 let f = &plants.filters[r.only.unwrap() as usize];
                 assert!(!f.contains("replaceable") && !f.contains("water") && !f.contains("lava"), "{f}");
@@ -6991,10 +7495,10 @@ mod tests {
             assert!(crater_floor(&short, f64::from(i) / 1000.0) >= w.min_y + ABOVE_FLOOR, "{i}");
         }
         // The center's column is emptied from the world's floor up: the void shows under it.
-        let [plants, _] = plan_chunk(&b, chunk_of(0, 0));
+        let [plants, _] = plan_chunk(&b, chunk_of(0, 0), &[]).0;
         let run = plants.runs.iter().find(|r| (r.x, r.z) == (0, 0) && r.only.is_none()).unwrap();
         assert_eq!((run.y, run.y + run.height as i32, run.block), (w.min_y, w.roof, AIR));
-        let [plants, _] = plan_chunk(&short, chunk_of(0, 0));
+        let [plants, _] = plan_chunk(&short, chunk_of(0, 0), &[]).0;
         let run = plants.runs.iter().find(|r| (r.x, r.z) == (0, 0) && r.only.is_none()).unwrap();
         assert_eq!(run.y, w.min_y + ABOVE_FLOOR);
     }
@@ -7003,13 +7507,13 @@ mod tests {
     fn the_nether_keeps_its_roof_but_loses_its_floor() {
         let w = World::NETHER;
         let b = blast([0, 64, 0], 1000, 3, w);
-        let [plants, _] = plan_chunk(&b, chunk_of(0, 0));
+        let [plants, _] = plan_chunk(&b, chunk_of(0, 0), &[]).0;
         let run = plants.runs.iter().find(|r| (r.x, r.z) == (0, 0) && r.only.is_none()).unwrap();
         // The floor's bedrock goes, the roof's (123 and up) stays.
         assert_eq!((run.y, run.y + run.height as i32), (w.min_y, w.roof));
-        assert!(plants.runs.iter().chain(&plan_chunk(&b, chunk_of(0, 0))[1].runs).all(|r| r.y + r.height as i32 <= w.roof || r.surface.is_some()));
+        assert!(plants.runs.iter().chain(&plan_chunk(&b, chunk_of(0, 0), &[]).0[1].runs).all(|r| r.y + r.height as i32 <= w.roof || r.surface.is_some()));
         // Past the hole the Nether's floor stays.
-        let [plants, _] = plan_chunk(&b, chunk_of(40, 0));
+        let [plants, _] = plan_chunk(&b, chunk_of(40, 0), &[]).0;
         let off = plants.runs.iter().find(|r| (r.x, r.z) == (40, 0) && r.only.is_none()).unwrap();
         assert!(edge(&b, 40, 0) * 1000.0 > f64::from(BEDROCK_HOLE));
         assert_eq!(off.y, w.min_y + ABOVE_FLOOR);
@@ -8351,5 +8855,509 @@ mod decon_tests {
         let g = Guide::new(&|k: &str| en.get(k).cloned().unwrap_or_else(|| k.to_owned()), &|t: &str| 6.0 * t.chars().count() as f32);
         let i = CHAPTERS.iter().position(|c| c.title == radiation.title).unwrap();
         assert!(g.starts[i] < g.starts[i + 1]);
+    }
+}
+
+// ---- the bunker (plan 10) ---------------------------------------------------------------
+
+#[cfg(test)]
+mod bunker_tests {
+    use super::*;
+    use std::time::Instant;
+
+    const OW: &str = "minecraft:overworld";
+
+    fn blast(radius: u32) -> Blast {
+        Blast { id: 1, dimension: OW.into(), center: [0, 64, 0], radius, seed: 7, world: World::OVERWORLD }
+    }
+
+    fn wall(pos: [i32; 3], kind: WallKind) -> Wall {
+        Wall { pos, kind, cracked: false }
+    }
+
+    /// The first column out along +x at `d` of the border or more.
+    fn out_to(b: &Blast, d: f64) -> i32 {
+        (0..4 * b.radius as i32).find(|&x| edge(b, x, 0) >= d).expect("within reach")
+    }
+
+    /// The fate of a lone wall of `kind` in column (x, 0).
+    fn fate(b: &Blast, x: i32, kind: WallKind) -> WallFate {
+        wall_fate(wave_strength(b, x, 0), &wall([x, 64, 0], kind), false)
+    }
+
+    /// The palette entry an edit sets `pos` to, if a run without a heightmap covers it.
+    fn set_at(edit: &ChunkEdit, pos: [i32; 3]) -> Option<&str> {
+        edit.runs
+            .iter()
+            .filter(|r| r.surface.is_none() && r.only.is_none() && r.x == pos[0] && r.z == pos[2])
+            .find(|r| (r.y..r.y + r.height as i32).contains(&pos[1]))
+            .map(|r| edit.palette[r.block as usize].as_str())
+    }
+
+    fn touched(edits: &[ChunkEdit; 2], pos: [i32; 3]) -> Option<&str> {
+        edits.iter().find_map(|e| set_at(e, pos))
+    }
+
+    /// The four blocks of a multilayer wall from `start`, one `step` apart going out.
+    fn series(start: [i32; 3], step: [i32; 3]) -> Vec<Wall> {
+        [WallKind::Armored, WallKind::Lead, WallKind::Damper, WallKind::Reinforced]
+            .iter()
+            .enumerate()
+            .map(|(i, &k)| wall(std::array::from_fn(|a| start[a] + step[a] * i as i32), k))
+            .collect()
+    }
+
+    fn lookup(walls: &[Wall]) -> impl Fn([i32; 3]) -> Option<WallKind> + '_ {
+        move |p| walls.iter().find(|w| w.pos == p).map(|w| w.kind)
+    }
+
+    #[test]
+    fn concrete_holds_a_demolition_charge_anywhere() {
+        let b = blast(BombKind::Demolition.radius());
+        for x in 0..=24 {
+            assert_eq!(fate(&b, x, WallKind::Reinforced), WallFate::Stands, "{x}");
+        }
+        // In the crater itself: the column's run stops over the wall, which stays.
+        let walls: Vec<Wall> = (0..4).map(|x| wall([x, 64, 0], WallKind::Reinforced)).collect();
+        let (edits, changes) = plan_chunk(&b, [0, 0], &walls);
+        for w in &walls {
+            assert_eq!(touched(&edits, w.pos), None, "{:?}", w.pos);
+            assert_eq!(touched(&edits, [w.pos[0], 65, 0]), Some("minecraft:air"));
+        }
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn concrete_holds_a_tactical_on_the_crater_edge_only() {
+        let b = blast(BombKind::Tactical.radius());
+        let near = out_to(&b, 0.1);
+        assert_ne!(fate(&b, near, WallKind::Reinforced), WallFate::Stands);
+        let rim = out_to(&b, 0.3);
+        assert_eq!(ring(edge(&b, rim, 0)), Ring::Core);
+        assert_eq!(fate(&b, rim, WallKind::Reinforced), WallFate::Stands);
+        // Where it holds, it holds outward too.
+        for x in out_to(&b, 0.2)..out_to(&b, 1.0) {
+            assert_eq!(fate(&b, x, WallKind::Reinforced), WallFate::Stands, "{x}");
+        }
+    }
+
+    #[test]
+    fn armored_holds_an_atomic_out_of_its_core() {
+        let b = blast(BombKind::Atomic.radius());
+        for x in out_to(&b, 0.2)..out_to(&b, 1.0) {
+            assert_eq!(fate(&b, x, WallKind::Armored), WallFate::Stands, "{x}");
+        }
+        let near = out_to(&b, 0.1);
+        assert_ne!(fate(&b, near, WallKind::Armored), WallFate::Stands);
+        // The atomic breaks the lesser concrete there and at the crater's edge.
+        assert_eq!(fate(&b, near, WallKind::Reinforced), WallFate::Breaks);
+        assert_eq!(fate(&b, out_to(&b, 0.3), WallKind::Reinforced), WallFate::Breaks);
+        assert_eq!(fate(&b, out_to(&b, 0.2), WallKind::Lead), WallFate::Breaks);
+    }
+
+    #[test]
+    fn a_multilayer_wall_holds_a_sunbreaker_out_of_its_center() {
+        let b = blast(BombKind::Sunbreaker.radius());
+        let x = out_to(&b, 0.3);
+        assert!(edge(&b, x + 3, 0) < CORE, "the series is in the crater");
+        let walls = series([x, 64, 0], [1, 0, 0]);
+        let at = lookup(&walls);
+        for w in &walls {
+            assert!(multilayer_at(&at, b.center, w.pos), "{:?}", w.pos);
+            assert_eq!(wall_fate(wave_strength(&b, w.pos[0], 0), w, true), WallFate::Stands);
+            // Each of its blocks alone would break.
+            assert_eq!(wall_fate(wave_strength(&b, w.pos[0], 0), w, false), WallFate::Breaks);
+        }
+        let mut chunks: Vec<[i32; 2]> = walls.iter().map(|w| chunk_of(w.pos[0], w.pos[2])).collect();
+        chunks.dedup();
+        for chunk in chunks {
+            let (edits, changes) = plan_chunk(&b, chunk, &walls);
+            for w in walls.iter().filter(|w| chunk_of(w.pos[0], w.pos[2]) == chunk) {
+                assert_eq!(touched(&edits, w.pos), None, "{:?}", w.pos);
+            }
+            assert!(changes.is_empty(), "{changes:?}");
+        }
+        // Nearer the center it cracks.
+        let near = out_to(&b, 0.1);
+        let walls = series([near, 64, 0], [1, 0, 0]);
+        assert!(multilayer_at(&lookup(&walls), b.center, walls[0].pos));
+        assert_eq!(wall_fate(wave_strength(&b, near, 0), &walls[0], true), WallFate::Cracks);
+    }
+
+    #[test]
+    fn a_wall_cracks_before_it_breaks() {
+        let r = wall([0, 0, 0], WallKind::Reinforced);
+        assert_eq!(wall_fate(40.0, &r, false), WallFate::Stands);
+        assert_eq!(wall_fate(41.0, &r, false), WallFate::Cracks);
+        assert_eq!(wall_fate(60.0, &r, false), WallFate::Cracks);
+        assert_eq!(wall_fate(61.0, &r, false), WallFate::Breaks);
+        let a = wall([0, 0, 0], WallKind::Armored);
+        assert_eq!(wall_fate(200.0, &a, false), WallFate::Stands);
+        assert_eq!(wall_fate(300.0, &a, false), WallFate::Cracks);
+        assert_eq!(wall_fate(301.0, &a, false), WallFate::Breaks);
+        assert_eq!(wall_fate(1050.0, &a, true), WallFate::Cracks);
+        assert_eq!(wall_fate(1051.0, &a, true), WallFate::Breaks);
+        let strengths: Vec<f64> = WallKind::ALL.iter().map(|k| k.strength()).collect();
+        assert_eq!(strengths, [40.0, 200.0, 60.0, 60.0]);
+        assert_eq!(MULTILAYER_STRENGTH, 700.0);
+    }
+
+    #[test]
+    fn a_cracked_wall_holds_half() {
+        let mut r = wall([0, 0, 0], WallKind::Reinforced);
+        r.cracked = true;
+        assert_eq!(r.strength(false), 20.0);
+        assert_eq!(wall_fate(20.0, &r, false), WallFate::Stands);
+        // A cracked wall doesn't crack again: past its half it breaks.
+        assert_eq!(wall_fate(21.0, &r, false), WallFate::Breaks);
+        let mut m = wall([0, 0, 0], WallKind::Lead);
+        m.cracked = true;
+        assert_eq!(wall_fate(350.0, &m, true), WallFate::Stands);
+        assert_eq!(wall_fate(351.0, &m, true), WallFate::Breaks);
+        // Each wall has its cracked block, and the blocks read back as walls.
+        for k in WallKind::ALL {
+            assert_ne!(k.id(), k.cracked_id());
+            assert_eq!(WallKind::of_block(k.id()), Some((k, false)));
+            assert_eq!(WallKind::of_block(k.cracked_id()), Some((k, true)));
+            let mut w = wall([0, 0, 0], k);
+            assert_eq!(w.block(), k.id());
+            w.cracked = true;
+            assert_eq!(w.block(), k.cracked_id());
+        }
+        assert_eq!(WallKind::of_block("minecraft:stone"), None);
+        assert_eq!(WALL_BLOCKS.len(), 8);
+    }
+
+    #[test]
+    fn a_multilayer_wall_counts_along_the_ray_only() {
+        let c = [0, 64, 0];
+        // Out along +x the ray's main axis is x: the series counts, from any of its blocks.
+        let along = series([100, 64, 3], [1, 0, 0]);
+        assert!(along.iter().all(|w| multilayer_at(&lookup(&along), c, w.pos)));
+        // Out along -x, built outward.
+        let back = series([-100, 64, 3], [-1, 0, 0]);
+        assert!(back.iter().all(|w| multilayer_at(&lookup(&back), c, w.pos)));
+        // The same blocks across the ray, up it, or diagonally don't.
+        for step in [[0, 0, 1], [0, 1, 0], [1, 0, 1]] {
+            let across = series([100, 64, 3], step);
+            assert!(across.iter().all(|w| !multilayer_at(&lookup(&across), c, w.pos)), "{step:?}");
+        }
+        // Built the wrong way round (the damper facing the blast), or with a gap, it doesn't.
+        let reversed = series([103, 64, 3], [-1, 0, 0]);
+        assert!(reversed.iter().all(|w| !multilayer_at(&lookup(&reversed), c, w.pos)));
+        let mut gap = series([100, 64, 3], [1, 0, 0]);
+        gap[3].pos[0] += 1;
+        assert!(gap.iter().all(|w| !multilayer_at(&lookup(&gap), c, w.pos)));
+        // Where z leads, a series along x is across the ray.
+        let side = series([100, 64, 300], [1, 0, 0]);
+        assert!(side.iter().all(|w| !multilayer_at(&lookup(&side), c, w.pos)));
+        let up_z = series([100, 64, 300], [0, 0, 1]);
+        assert!(up_z.iter().all(|w| multilayer_at(&lookup(&up_z), c, w.pos)));
+        // Concrete of either kind makes its ends.
+        let mut plain = series([100, 64, 3], [1, 0, 0]);
+        plain[0].kind = WallKind::Reinforced;
+        plain[3].kind = WallKind::Armored;
+        assert!(multilayer_at(&lookup(&plain), c, plain[1].pos));
+        assert!(!multilayer_at(&lookup(&[]), c, [100, 64, 3]));
+        assert!(!multilayer_at(&|_| Some(WallKind::Lead), c, c));
+    }
+
+    #[test]
+    fn the_core_run_is_cut_round_a_wall() {
+        let b = blast(BombKind::Atomic.radius());
+        let x = out_to(&b, 0.25);
+        let floor = crater_floor(&b, edge(&b, x, 0));
+        assert!(floor < 60);
+        let chunk = chunk_of(x, 0);
+        // A standing roof at y 70: the run stops over it, and what's under it stays.
+        let roof = wall([x, 70, 0], WallKind::Armored);
+        let (edits, changes) = plan_chunk(&b, chunk, &[roof]);
+        assert!(changes.is_empty());
+        assert_eq!(touched(&edits, roof.pos), None);
+        assert_eq!(touched(&edits, [x, 71, 0]), Some("minecraft:air"));
+        assert_eq!(touched(&edits, [x, 319, 0]), Some("minecraft:air"));
+        for y in floor..70 {
+            assert_eq!(touched(&edits, [x, y, 0]), None, "{y}");
+        }
+        // The column beside it is emptied down to the floor, as before.
+        let free = if x.rem_euclid(16) == 15 { x - 1 } else { x + 1 };
+        assert_eq!(chunk_of(free, 0), chunk);
+        let f = crater_floor(&b, edge(&b, free, 0));
+        assert_eq!(touched(&edits, [free, f, 0]), Some("minecraft:air"));
+        assert_eq!(touched(&edits, [free, f - 1, 0]), None);
+        let (plain, _) = plan_chunk(&b, chunk, &[]);
+        assert_eq!(touched(&plain, roof.pos), Some("minecraft:air"));
+        // A wall the wave breaks goes with the run.
+        let weak = wall([x, 70, 0], WallKind::Reinforced);
+        let (edits, changes) = plan_chunk(&b, chunk, &[weak]);
+        assert_eq!(touched(&edits, weak.pos), Some("minecraft:air"));
+        assert_eq!(touched(&edits, [x, floor, 0]), Some("minecraft:air"));
+        assert_eq!(changes, [WallChange::Broken(weak.pos)]);
+        // One it cracks turns to its cracked block and still holds.
+        let near = out_to(&b, 0.15);
+        let cracking = wall([near, 70, 0], WallKind::Armored);
+        assert_eq!(wall_fate(wave_strength(&b, near, 0), &cracking, false), WallFate::Cracks);
+        let (edits, changes) = plan_chunk(&b, chunk_of(near, 0), &[cracking]);
+        assert_eq!(touched(&edits, cracking.pos), Some(WallKind::Armored.cracked_id()));
+        assert_eq!(touched(&edits, [near, 71, 0]), Some("minecraft:air"));
+        assert_eq!(touched(&edits, [near, 69, 0]), None);
+        assert_eq!(changes, [WallChange::Cracked(cracking.pos)]);
+        // Under a broken wall the next one down is judged.
+        let (edits, changes) = plan_chunk(&b, chunk, &[weak, wall([x, 66, 0], WallKind::Armored)]);
+        assert_eq!(touched(&edits, [x, 67, 0]), Some("minecraft:air"));
+        assert_eq!(touched(&edits, [x, 66, 0]), None);
+        assert_eq!(touched(&edits, [x, 65, 0]), None);
+        assert_eq!(changes, [WallChange::Broken(weak.pos)]);
+        // Under the crater's floor the wave touches nothing.
+        let deep = wall([x, floor - 3, 0], WallKind::Reinforced);
+        let (edits, changes) = plan_chunk(&b, chunk, &[deep]);
+        assert_eq!(touched(&edits, deep.pos), None);
+        assert!(changes.is_empty());
+        // Only the chunk's own walls are judged; a neighbour's are only looked at.
+        let (_, changes) = plan_chunk(&b, [chunk[0] + 1, chunk[1]], &[weak]);
+        assert!(changes.is_empty());
+        // The middle ring keeps its filters, walls or not.
+        let mid = out_to(&b, 0.5);
+        let (with, _) = plan_chunk(&b, chunk_of(mid, 0), &[wall([mid, 64, 0], WallKind::Reinforced)]);
+        assert_eq!(with, plan_chunk(&b, chunk_of(mid, 0), &[]).0);
+    }
+
+    /// The edits a wave's work makes, each chunk planned with the walls the world holds when it is worked.
+    fn work_all(saved: &mut Saved) -> Vec<([i32; 2], [ChunkEdit; 2], Vec<WallChange>)> {
+        let Saved { waves, walls, .. } = saved;
+        let mut out = Vec::new();
+        waves.work(OW, Duration::MAX, &|| Duration::ZERO, &mut |b, chunk| {
+            let (edits, changes) = plan_chunk(b, chunk, &walls_near(walls, OW, chunk));
+            out.push((chunk, edits, changes));
+            true
+        });
+        out
+    }
+
+    #[test]
+    fn deferred_chunks_spare_their_walls() {
+        let mut saved = Saved::default();
+        let b = blast(BombKind::Atomic.radius());
+        let x = out_to(&b, 0.25);
+        let pos = [x, 70, 0];
+        assert!(saved.place_wall(OW, pos, WallKind::Armored, false));
+        saved.blast(OW, b.center, b.radius).unwrap();
+        saved.tick = 10_000;
+        saved.waves.advance(OW, saved.tick, &|_| false);
+        // The world is saved and loaded while the chunk waits.
+        let mut saved: Saved = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert!(work_all(&mut saved).is_empty(), "nothing is loaded");
+        let chunk = chunk_of(x, 0);
+        assert!(saved.waves.chunk_loaded(OW, chunk));
+        let worked = work_all(&mut saved);
+        assert_eq!(worked.len(), 1);
+        let (c, edits, changes) = &worked[0];
+        assert_eq!(*c, chunk);
+        assert_eq!(touched(edits, pos), None);
+        assert_eq!(touched(edits, [x, 71, 0]), Some("minecraft:air"));
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn the_wave_reads_the_walls_when_it_works_the_chunk() {
+        let b = blast(BombKind::Atomic.radius());
+        let x = out_to(&b, 0.25);
+        let pos = [x, 70, 0];
+        let chunk = chunk_of(x, 0);
+        let planned = |place_after: bool, remove_after: bool| {
+            let mut saved = Saved::default();
+            if !place_after {
+                saved.place_wall(OW, pos, WallKind::Armored, false);
+            }
+            saved.blast(OW, b.center, b.radius).unwrap();
+            saved.tick = 10_000;
+            saved.waves.advance(OW, saved.tick, &|_| true);
+            // The front has reached the chunk; it waits its turn.
+            if place_after {
+                saved.place_wall(OW, pos, WallKind::Armored, false);
+            }
+            if remove_after {
+                assert!(saved.remove_wall(OW, pos));
+            }
+            let worked = work_all(&mut saved);
+            let (_, edits, _) = worked.into_iter().find(|w| w.0 == chunk).expect("worked");
+            touched(&edits, pos).map(str::to_owned)
+        };
+        assert_eq!(planned(true, false), None, "placed after the front came: spared");
+        assert_eq!(planned(false, true).as_deref(), Some("minecraft:air"), "taken away before the work: emptied");
+        assert_eq!(planned(false, false), None);
+        // The work's changes go back to the registry.
+        let mut saved = Saved::default();
+        saved.place_wall(OW, [x, 70, 0], WallKind::Reinforced, false);
+        let near = out_to(&b, 0.15);
+        saved.place_wall(OW, [near, 70, 0], WallKind::Armored, false);
+        assert!(saved.change_walls(OW, &[WallChange::Broken([x, 70, 0]), WallChange::Cracked([near, 70, 0])]));
+        assert!(saved.walls_in(OW, chunk).is_empty());
+        assert_eq!(saved.walls_in(OW, chunk_of(near, 0)), [Wall { pos: [near, 70, 0], kind: WallKind::Armored, cracked: true }]);
+        assert!(!saved.change_walls(OW, &[WallChange::Broken([x, 70, 0])]), "already gone");
+    }
+
+    #[test]
+    fn plan_chunk_with_a_thousand_walls_is_fast() {
+        let b = blast(1000);
+        let chunk = [2, 0];
+        let walls: Vec<Wall> = (0..1000)
+            .map(|i: i32| wall([32 + i % 16, 64 + i / 256 * 2, (i / 16) % 16], WallKind::ALL[(i % 4) as usize]))
+            .collect();
+        let mut best = Duration::MAX;
+        let mut changes = Vec::new();
+        for _ in 0..10 {
+            let started = Instant::now();
+            let (_, c) = plan_chunk(&b, chunk, &walls);
+            best = best.min(started.elapsed());
+            changes = c;
+        }
+        assert!(!changes.is_empty());
+        assert!(best <= Duration::from_millis(1), "{best:?}");
+        // The world's 10 000 walls cost a chunk only its own and its neighbours'.
+        let mut saved = Saved::default();
+        for i in 0..10_000 {
+            saved.place_wall(OW, [(i % 100) * 16, 64, (i / 100) * 16], WallKind::Reinforced, false);
+        }
+        let started = Instant::now();
+        let near = walls_near(&saved.walls, OW, [5, 5]);
+        assert!(started.elapsed() <= Duration::from_millis(1));
+        assert_eq!(near.len(), 5);
+    }
+
+    /// A box of air from `lo` to `hi` (inclusive) in solid rock.
+    fn room(lo: [i32; 3], hi: [i32; 3]) -> impl Fn([i32; 3]) -> Cell {
+        move |p| if (0..3).all(|a| (lo[a]..=hi[a]).contains(&p[a])) { Cell::Open } else { Cell::Wall }
+    }
+
+    #[test]
+    fn a_closed_room_is_sealed() {
+        let cells = sealed_room([1, 1, 1], &room([0, 0, 0], [2, 2, 2]), ROOM_LIMIT).expect("sealed");
+        assert_eq!(cells.len(), 27);
+        assert!(cells.contains(&[0, 0, 0]) && cells.contains(&[2, 2, 2]) && !cells.contains(&[3, 0, 0]));
+        // A room of exactly the limit is still sealed.
+        assert_eq!(ROOM_LIMIT, 4096);
+        assert!(sealed_room([0, 0, 0], &room([0, 0, 0], [15, 15, 15]), ROOM_LIMIT).is_some());
+    }
+
+    #[test]
+    fn a_room_too_big_or_open_is_not_sealed() {
+        assert!(sealed_room([0, 0, 0], &room([0, 0, 0], [16, 15, 15]), ROOM_LIMIT).is_none());
+        // A cave as big as the world, or a chunk not loaded (air without light): the limit ends it.
+        let started = Instant::now();
+        assert!(sealed_room([0, 0, 0], &|_| Cell::Open, ROOM_LIMIT).is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        // A hole to the sky anywhere in it.
+        let holed = |p: [i32; 3]| if p == [2, 3, 2] { Cell::Sky } else { room([0, 0, 0], [4, 3, 4])(p) };
+        assert!(sealed_room([0, 0, 0], &holed, ROOM_LIMIT).is_none());
+        // Starting in a wall, or under the sky.
+        assert!(sealed_room([9, 9, 9], &room([0, 0, 0], [2, 2, 2]), ROOM_LIMIT).is_none());
+        assert!(sealed_room([0, 0, 0], &|_| Cell::Sky, ROOM_LIMIT).is_none());
+    }
+
+    #[test]
+    fn an_open_door_unseals_a_room() {
+        // A room with a door in its east wall at (3, 0, 1), the open air past it.
+        let with_door = |open: bool| {
+            move |p: [i32; 3]| {
+                if p == [3, 0, 1] {
+                    if open { Cell::Open } else { Cell::Wall }
+                } else if p[0] >= 4 {
+                    Cell::Sky
+                } else {
+                    room([0, 0, 0], [2, 1, 2])(p)
+                }
+            }
+        };
+        assert_eq!(sealed_room([1, 0, 1], &with_door(false), ROOM_LIMIT).map(|c| c.len()), Some(18));
+        assert!(sealed_room([1, 0, 1], &with_door(true), ROOM_LIMIT).is_none());
+        // How a door's `open` reads.
+        assert_eq!(door_cell(Some("false")), Cell::Wall);
+        assert_eq!(door_cell(Some("true")), Cell::Open);
+        assert_eq!(door_cell(None), Cell::Wall);
+    }
+
+    #[test]
+    fn shelter_halves_under_a_roof_and_keeps_out_most_in_a_sealed_room() {
+        assert_eq!(shelter(true, false), 1.0);
+        assert_eq!(shelter(false, false), 0.5);
+        assert_eq!(shelter(false, true), 0.05);
+        assert_eq!(shelter(true, true), 0.05);
+        // The dose takes the sheltered background: twenty times less in a sealed room.
+        let zone = Zone { dimension: OW.into(), center: [0, 64, 0], radius: 300.0, peak: 40.0, start: 0, half_life: u64::MAX, floor: 1.0 };
+        let mut open = Saved { zones: vec![zone.clone()], ..Saved::default() };
+        let mut inside = Saved { zones: vec![zone], ..Saved::default() };
+        let (me, at) = (7u128, [0.5, 64.5, 0.5]);
+        let bg = open.expose(me, OW, at, 0.0).unwrap();
+        let sheltered = inside.expose_sheltered(me, OW, at, 0.0, shelter(false, true)).unwrap();
+        assert!((sheltered - bg / 20.0).abs() < 1e-9, "{bg} {sheltered}");
+        let dose = |s: &Saved| s.doses[&dose_key(me)].rad;
+        assert!(((dose(&open) + HEAL) / (dose(&inside) + HEAL) - 20.0).abs() < 1e-9);
+        // The window is told the shelter too, so the counter and the fog read what the dose takes.
+        let mut rad = inside.rad_for(me, OW, at);
+        assert_eq!(rad.shelter, 1.0);
+        let told = |rad: &Rad| Told { rad: rad.clone(), at: 0 }.background(OW, at, 0);
+        let whole = told(&rad);
+        assert!(whole > 0.0);
+        rad.shelter = 0.05;
+        assert!((told(&rad) - whole * 0.05).abs() < 1e-9);
+        let old: Rad = serde_json::from_str(r#"{"zones":[],"now":3,"dose":1.0}"#).unwrap();
+        assert_eq!(old.shelter, 1.0, "a message without it shelters nothing");
+    }
+
+    #[test]
+    fn walls_survive_a_save_and_load() {
+        let mut saved = Saved::default();
+        saved.place_wall(OW, [1, 64, 1], WallKind::Reinforced, false);
+        saved.place_wall(OW, [-1, 64, -1], WallKind::Lead, false);
+        saved.place_wall("minecraft:the_nether", [1, 64, 1], WallKind::Damper, true);
+        assert!(!saved.place_wall(OW, [1, 64, 1], WallKind::Reinforced, false), "already there");
+        assert!(saved.place_wall(OW, [1, 64, 1], WallKind::Armored, false), "another wall in its place");
+        saved.change_walls(OW, &[WallChange::Cracked([-1, 64, -1])]);
+        let loaded: Saved = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(loaded.walls, saved.walls);
+        assert_eq!(loaded.walls_in(OW, [0, 0]), [wall([1, 64, 1], WallKind::Armored)]);
+        assert_eq!(loaded.walls_in(OW, [-1, -1]), [Wall { pos: [-1, 64, -1], kind: WallKind::Lead, cracked: true }]);
+        assert_eq!(loaded.walls_in("minecraft:the_nether", [0, 0]).len(), 1);
+        assert!(loaded.walls_in("minecraft:the_end", [0, 0]).is_empty());
+        // A world saved before the bunker has none.
+        let old: Saved = serde_json::from_str(r#"{"tick":5,"next_id":0,"waves":{"waves":[]}}"#).unwrap();
+        assert!(old.walls.is_empty());
+        let mut saved = saved;
+        assert!(saved.remove_wall(OW, [1, 64, 1]));
+        assert!(!saved.remove_wall(OW, [1, 64, 1]));
+        assert!(saved.walls_in(OW, [0, 0]).is_empty());
+        assert!(!saved.walls.contains_key(&wall_key(OW, [0, 0])), "an empty chunk leaves no key");
+    }
+
+    // ---- the generator, the filter and the lamps ----
+
+    #[test]
+    fn the_generator_burns_fuel_twice_as_long_as_a_furnace() {
+        let mut g = Generator::default();
+        assert!(!g.burning());
+        assert_eq!(g.step(None), Step::IDLE);
+        let step = g.step(Some(1600));
+        assert!(step.took_fuel && step.made && g.burning());
+        assert_eq!(g.burn_max, 3200);
+        let mut ticks = 1;
+        while g.step(None).made {
+            ticks += 1;
+        }
+        assert_eq!(ticks, 3200);
+        assert!(!g.burning());
+        assert_eq!(g.step(Some(0)), Step::IDLE, "nothing that burns");
+        assert_eq!(g.data(), [0, 3200]);
+    }
+
+    #[test]
+    fn a_generator_powers_what_is_within_sixteen_blocks() {
+        assert_eq!(POWER_RADIUS, 16);
+        let g = [0, 64, 0];
+        assert!(powers(g, [16, 64, 0]) && powers(g, [0, 48, 0]) && powers(g, [9, 73, 9]));
+        assert!(!powers(g, [17, 64, 0]) && !powers(g, [12, 64, 12]));
+        assert!(powered(&[[100, 0, 0], g], [3, 64, 3]));
+        assert!(!powered(&[], [3, 64, 3]));
+        assert_eq!(FILTER_EVERY, 100);
     }
 }
