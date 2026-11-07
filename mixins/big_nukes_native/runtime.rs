@@ -1738,8 +1738,33 @@ pub enum HatchAct {
     Open,
     /// Put back.
     Shut,
+    /// Given back as an item at the pad: a block stands in its place.
+    Drop,
     /// Left as it is, and forgotten.
     Forget,
+}
+
+/// Whether the hatch may be put back where `block` is: air, or what a placed block takes the place of
+/// (water and lava that flowed in, snow, fire, grass).
+fn hatch_room(block: &str) -> bool {
+    is_air(block)
+        || matches!(
+            block,
+            "minecraft:water"
+                | "minecraft:lava"
+                | "minecraft:bubble_column"
+                | "minecraft:fire"
+                | "minecraft:soul_fire"
+                | "minecraft:snow"
+                | "minecraft:short_grass"
+                | "minecraft:tall_grass"
+                | "minecraft:fern"
+                | "minecraft:large_fern"
+                | "minecraft:dead_bush"
+                | "minecraft:vine"
+                | "minecraft:seagrass"
+                | "minecraft:tall_seagrass"
+        )
 }
 
 /// Where a missile is at a tick.
@@ -1800,15 +1825,21 @@ impl Flight {
 
     /// What is done to the hatch at `now`, `here` being the block in its place, None while its chunk isn't
     /// loaded (where everything reads as air): it waits for it. The hatch is taken away while it stands open,
-    /// and after, only the one taken is put back, on the air: one mined before, or a block put in its place,
-    /// and the flight forgets it.
+    /// and after, only the one taken is put back, where there is room (`hatch_room`); with a block in its place
+    /// it is given back as an item. One mined before is not made again: the flight forgets it.
     pub fn hatch_act(&self, now: u64, here: Option<&str>) -> Option<HatchAct> {
         self.hatch?;
         let here = here?;
         if self.hatch_open(now) {
             (self.hatch_moved != Some(true) && here == SILO_HATCH).then_some(HatchAct::Open)
         } else if now > self.liftoff() {
-            Some(if self.hatch_moved != Some(false) && is_air(here) { HatchAct::Shut } else { HatchAct::Forget })
+            Some(match self.hatch_moved {
+                Some(false) => HatchAct::Forget,
+                _ if hatch_room(here) => HatchAct::Shut,
+                Some(true) => HatchAct::Drop,
+                // Saved before it was kept: whether it was taken isn't known.
+                None => HatchAct::Forget,
+            })
         } else {
             None
         }
@@ -7504,8 +7535,14 @@ mod flight_tests {
         assert_eq!(f.hatch_act(open, Some("minecraft:air")), None);
         assert_eq!(f.hatch_act(after, Some("minecraft:air")), Some(HatchAct::Forget));
         assert_eq!(f.hatch_act(after, Some(SILO_HATCH)), Some(HatchAct::Forget));
-        // A block put in its place keeps it out.
-        assert_eq!(taken.hatch_act(after, Some("minecraft:stone")), Some(HatchAct::Forget));
+        // Water or lava that flowed in, snow, fire or grass make room for it, as for a block placed.
+        for free in ["minecraft:water", "minecraft:lava", "minecraft:cave_air", "minecraft:fire", "minecraft:snow", "minecraft:short_grass"] {
+            assert_eq!(taken.hatch_act(after, Some(free)), Some(HatchAct::Shut), "{free}");
+        }
+        // A block put in its place keeps it out: the hatch taken comes back as an item, not lost.
+        for solid in ["minecraft:stone", "minecraft:oak_planks", SILO_HATCH] {
+            assert_eq!(taken.hatch_act(after, Some(solid)), Some(HatchAct::Drop), "{solid}");
+        }
         // A chunk not loaded reads as air: the hatch waits for it, open or shut.
         assert_eq!(f.hatch_act(open, None), None);
         assert_eq!(taken.hatch_act(after, None), None);

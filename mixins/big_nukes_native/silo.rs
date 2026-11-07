@@ -1036,6 +1036,16 @@ fn hatch(game: &mut Game<'_>, dimension: &str, f: &rules::Flight, now: u64, chan
                 changes.push(Change::HatchShut(f.id));
             }
         }
+        // Over the pad, where it falls into the shaft; tried again the next tick if it couldn't be made.
+        Some(rules::HatchAct::Drop) => {
+            let item: Compound =
+                [(JavaString::from("Item"), Tag::compound([("id", Tag::String(JavaString::from(rules::SILO_HATCH))), ("count", Tag::Int(1))]))]
+                    .into_iter()
+                    .collect();
+            if game.native_summon(dimension, "minecraft:item", glue::middle(f.from), item).is_some() {
+                changes.push(Change::HatchShut(f.id));
+            }
+        }
         Some(rules::HatchAct::Forget) => changes.push(Change::HatchShut(f.id)),
         None => {}
     }
