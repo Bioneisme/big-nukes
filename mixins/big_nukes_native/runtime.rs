@@ -1002,11 +1002,15 @@ pub fn ring(d: f64) -> Ring {
     }
 }
 
-/// The crater's floor under a column at distance `d`: a bowl, deepest at the
-/// center, never into bedrock, but for the hole a blast of `BEDROCK_RADIUS` or more
-/// makes at its center, down to the world's floor.
-pub fn crater_floor(blast: &Blast, d: f64) -> i32 {
-    if blast.radius >= BEDROCK_RADIUS && d * f64::from(blast.radius) <= f64::from(BEDROCK_HOLE) {
+/// The crater's floor under column (`x`, `z`), at distance `d` (`edge`): a bowl,
+/// deepest at the center, never into bedrock, but for the hole a blast of
+/// `BEDROCK_RADIUS` or more makes at its center, down to the world's floor. The
+/// hole is a circle of `BEDROCK_HOLE` blocks round the center's column, whatever the
+/// border's swing.
+pub fn crater_floor(blast: &Blast, x: i32, z: i32, d: f64) -> i32 {
+    let (dx, dz) = (i64::from(x - blast.center[0]), i64::from(z - blast.center[2]));
+    let hole = i64::from(BEDROCK_HOLE);
+    if blast.radius >= BEDROCK_RADIUS && dx * dx + dz * dz <= hole * hole {
         return blast.world.min_y;
     }
     let depth = if d < CORE { CRATER_DEPTH * blast.radius as f64 * (1.0 - (d / CORE).powi(2)) } else { 0.0 };
@@ -1109,7 +1113,7 @@ pub fn plan_chunk(blast: &Blast, chunk: [i32; 2]) -> [ChunkEdit; 2] {
             };
             let below = blast.center[1] - PLANTS_BELOW;
             match ring(d) {
-                Ring::Core => plants.runs.extend(absolute(crater_floor(blast, d), AIR, None)),
+                Ring::Core => plants.runs.extend(absolute(crater_floor(blast, x, z, d), AIR, None)),
                 Ring::Middle => {
                     for f in [LEAVES, LOGS, GLASS].into_iter().chain(PLANTS) {
                         plants.runs.extend(absolute(below, AIR, Some(f)));
@@ -4392,11 +4396,11 @@ mod tests {
     #[test]
     fn the_crater_is_deepest_at_the_center_and_never_reaches_bedrock() {
         let b = blast([0, 70, 0], 250, 1, World::OVERWORLD);
-        assert_eq!(crater_floor(&b, 0.0), 70 - 62);
-        assert!(crater_floor(&b, 0.2) > crater_floor(&b, 0.0));
-        assert_eq!(crater_floor(&b, 0.35), 70);
+        assert_eq!(crater_floor(&b, 0, 0, 0.0), 70 - 62);
+        assert!(crater_floor(&b, 50, 0, 0.2) > crater_floor(&b, 0, 0, 0.0));
+        assert_eq!(crater_floor(&b, 87, 0, 0.35), 70);
         let deep = blast([0, -50, 0], 250, 1, World::OVERWORLD);
-        assert_eq!(crater_floor(&deep, 0.0), -64 + 5);
+        assert_eq!(crater_floor(&deep, 0, 0, 0.0), -64 + 5);
     }
 
     #[test]
@@ -7082,20 +7086,21 @@ mod tests {
     fn a_thousand_breaks_bedrock_at_the_center_only() {
         let w = World::OVERWORLD;
         let b = blast([0, 64, 0], BEDROCK_RADIUS, 9, w);
-        assert_eq!(crater_floor(&b, 0.0), w.min_y);
-        assert_eq!(crater_floor(&b, f64::from(BEDROCK_HOLE) / 1000.0), w.min_y);
-        assert!(crater_floor(&b, 30.0 / 1000.0) >= w.min_y + ABOVE_FLOOR);
-        for i in (0..=1000).filter(|i| *i != BEDROCK_HOLE as i32) {
-            let floor = crater_floor(&b, f64::from(i) / 1000.0);
-            if i < BEDROCK_HOLE as i32 {
-                assert_eq!(floor, w.min_y, "{i}");
+        let hole = BEDROCK_HOLE as i32;
+        assert_eq!(crater_floor(&b, 0, 0, 0.0), w.min_y);
+        assert_eq!(crater_floor(&b, hole, 0, edge(&b, hole, 0)), w.min_y);
+        assert!(crater_floor(&b, 30, 0, edge(&b, 30, 0)) >= w.min_y + ABOVE_FLOOR);
+        for x in 0..=1000 {
+            let floor = crater_floor(&b, x, 0, edge(&b, x, 0));
+            if x <= hole {
+                assert_eq!(floor, w.min_y, "{x}");
             } else {
-                assert!(floor >= w.min_y + ABOVE_FLOOR, "{i}");
+                assert!(floor >= w.min_y + ABOVE_FLOOR, "{x}");
             }
         }
         let short = blast([0, 64, 0], BEDROCK_RADIUS - 1, 9, w);
-        for i in 0..=1000 {
-            assert!(crater_floor(&short, f64::from(i) / 1000.0) >= w.min_y + ABOVE_FLOOR, "{i}");
+        for x in 0..=1000 {
+            assert!(crater_floor(&short, x, 0, edge(&short, x, 0)) >= w.min_y + ABOVE_FLOOR, "{x}");
         }
         // The center's column is emptied from the world's floor up: the void shows under it.
         let [plants, _] = plan_chunk(&b, chunk_of(0, 0));
@@ -7104,6 +7109,30 @@ mod tests {
         let [plants, _] = plan_chunk(&short, chunk_of(0, 0));
         let run = plants.runs.iter().find(|r| (r.x, r.z) == (0, 0) && r.only.is_none()).unwrap();
         assert_eq!(run.y, w.min_y + ABOVE_FLOOR);
+    }
+
+    #[test]
+    fn the_bedrock_hole_is_round_whatever_the_border() {
+        let w = World::OVERWORLD;
+        let r = BEDROCK_HOLE as i32;
+        let round: BTreeSet<[i32; 2]> =
+            (-r - 8..=r + 8).flat_map(|x| (-r - 8..=r + 8).map(move |z| [x, z])).filter(|[x, z]| x * x + z * z <= r * r).collect();
+        for seed in [1, 9, 77, 4242] {
+            let center = [100, 64, -300];
+            let b = blast(center, BEDROCK_RADIUS, seed, w);
+            let mut hole = BTreeSet::new();
+            for cx in -4..=4 {
+                for cz in -4..=4 {
+                    let chunk = chunk_of(center[0], center[2]);
+                    let [plants, _] = plan_chunk(&b, [chunk[0] + cx, chunk[1] + cz]);
+                    for run in plants.runs.iter().filter(|r| r.only.is_none() && r.y == w.min_y) {
+                        hole.insert([run.x - center[0], run.z - center[2]]);
+                    }
+                }
+            }
+            // Its rim is a circle of BEDROCK_HOLE round the center's column, the same for every blast.
+            assert_eq!(hole, round, "seed {seed}");
+        }
     }
 
     #[test]
@@ -7118,7 +7147,6 @@ mod tests {
         // Past the hole the Nether's floor stays.
         let [plants, _] = plan_chunk(&b, chunk_of(40, 0));
         let off = plants.runs.iter().find(|r| (r.x, r.z) == (40, 0) && r.only.is_none()).unwrap();
-        assert!(edge(&b, 40, 0) * 1000.0 > f64::from(BEDROCK_HOLE));
         assert_eq!(off.y, w.min_y + ABOVE_FLOOR);
     }
 
