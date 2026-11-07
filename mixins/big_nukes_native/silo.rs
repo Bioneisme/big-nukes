@@ -202,7 +202,7 @@ pub(in crate::game) fn forget() {
     lock(&SWEEPS).clear();
     *lock(&SESSION) = None;
     lock(&TAKEN).clear();
-    *lock(&LAST_CHARGE) = rules::Clicks::new();
+    *lock(&LAST_CHARGE) = rules::Clicks::new(rules::HELD_CLICK_TICKS);
 }
 
 fn text(line: &rules::Reply) -> Text {
@@ -1111,7 +1111,7 @@ const BEACON_TOLD: f64 = 64.0;
 
 /// The clicks heard on the beacons: the player, the beacon and the item in hand. The game asks once per hand,
 /// and repeats a click held down: it is answered once.
-static LAST_CHARGE: Mutex<rules::Clicks<(u128, [i32; 3], Option<String>)>> = Mutex::new(rules::Clicks::new());
+static LAST_CHARGE: Mutex<rules::Clicks<(u128, [i32; 3], Option<String>)>> = Mutex::new(rules::Clicks::new(rules::HELD_CLICK_TICKS));
 /// Beacons and consoles taken away, heard from the level, which may change a block while the state is locked.
 static TAKEN: Mutex<Vec<(String, [i32; 3])>> = Mutex::new(Vec::new());
 

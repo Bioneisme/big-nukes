@@ -569,24 +569,30 @@ pub const PAD_COUNTING: i32 = 3;
 /// The game repeats a right click held down every 4 ticks: a click on the same thing this many
 /// ticks or fewer after the last one heard is the same click, held.
 pub const HELD_CLICK_TICKS: u64 = 8;
+/// The same in milliseconds of the wall clock, for the guide: the window repeats a held click
+/// about every 200 ms, whatever the server's ticks do.
+pub const GUIDE_CLICK_MS: u64 = 400;
 
-/// The clicks heard lately, by what each was (the player, the block, the item in hand) and its
-/// last tick: a click held down is answered once, not at each of the game's repeats.
-#[derive(Debug, Default)]
+/// The clicks heard lately, by what each was (the player, the block, the item in hand) and when
+/// (in ticks or milliseconds, as `window` counts): a click held down is answered once, not at each
+/// of the game's repeats.
+#[derive(Debug)]
 pub struct Clicks<K> {
     last: Vec<(K, u64)>,
+    window: u64,
 }
 
 impl<K: PartialEq> Clicks<K> {
-    pub const fn new() -> Self {
-        Clicks { last: Vec::new() }
+    pub const fn new(window: u64) -> Self {
+        Clicks { last: Vec::new(), window }
     }
 
-    /// A click `key` at `now`: None for a new click, else the ticks since the one it goes on
+    /// A click `key` at `now`: None for a new click, else the time since the one it goes on
     /// from (0 for the other hand's turn of the same click). Each repeat keeps the click held;
-    /// one let go longer than `HELD_CLICK_TICKS` is forgotten.
+    /// one let go longer than `window` is forgotten.
     pub fn heard(&mut self, key: K, now: u64) -> Option<u64> {
-        self.last.retain(|(_, t)| *t <= now && now - *t <= HELD_CLICK_TICKS);
+        let window = self.window;
+        self.last.retain(|(_, t)| *t <= now && now - *t <= window);
         match self.last.iter_mut().find(|(k, _)| *k == key) {
             Some((_, t)) => {
                 let since = now - *t;
@@ -7396,7 +7402,7 @@ mod tests {
 
     #[test]
     fn a_held_click_is_heard_once_until_it_is_let_go() {
-        let mut clicks = Clicks::new();
+        let mut clicks = Clicks::new(HELD_CLICK_TICKS);
         let bomb = (7u128, [1, 2, 3], Some(REMOTE.to_owned()));
         assert_eq!(clicks.heard(bomb.clone(), 100), None, "a new click");
         assert_eq!(clicks.heard(bomb.clone(), 100), Some(0), "the other hand's turn of it");
@@ -7415,6 +7421,20 @@ mod tests {
         assert_eq!(clicks.heard(bomb.clone(), now + 4), Some(4));
         // A clock that went back (another world) starts afresh.
         assert_eq!(clicks.heard(bomb, 10), None);
+    }
+
+    #[test]
+    fn the_guide_hears_a_held_click_by_the_wall_clock() {
+        // The window repeats a held click every 4 of its ticks, about 200 ms, however the server's ticks go
+        // (lagging, or frozen with `/tick freeze`): the guide counts milliseconds.
+        let mut clicks = Clicks::new(GUIDE_CLICK_MS);
+        assert_eq!(clicks.heard(7u128, 1_000), None);
+        for ms in (1_200..=4_000).step_by(200) {
+            assert!(clicks.heard(7, ms).is_some(), "{ms}");
+        }
+        // Let go, a click half a second later is a new one.
+        assert_eq!(clicks.heard(7, 4_000 + GUIDE_CLICK_MS + 1), None);
+        assert!(GUIDE_CLICK_MS >= 300 && GUIDE_CLICK_MS <= 500);
     }
 }
 

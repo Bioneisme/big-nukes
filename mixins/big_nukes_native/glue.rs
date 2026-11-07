@@ -1425,7 +1425,7 @@ const SUNBREAKER_TOLD_WITHIN: f64 = 256.0;
 /// game asks once per hand: the off hand's turn of the same click is let go,
 /// so nothing goes in or is lit twice; and a click held down, which the game
 /// repeats, is answered once.
-static LAST_CLICK: Mutex<rules::Clicks<(u128, [i32; 3], Option<String>)>> = Mutex::new(rules::Clicks::new());
+static LAST_CLICK: Mutex<rules::Clicks<(u128, [i32; 3], Option<String>)>> = Mutex::new(rules::Clicks::new(rules::HELD_CLICK_TICKS));
 
 /// A bomb's one slot holds its detonator, out of every hopper's reach and hidden on
 /// its screen: a broken bomb drops it as a chest drops its items. The bombs that
@@ -2480,17 +2480,20 @@ fn keypad_click(at: [f32; 2], right: bool, button: &mut Option<i32>) {
 // open book lives in a static, and a page turned is heard at the next frame. The book
 // stays after the screen closes, so it opens again where it was left.
 
-/// The players who right-clicked with the guide lately: a click held down asks once, so a
-/// window that sees the book late (a laggy server) doesn't get it again after Escape.
-static GUIDE_CLICKS: Mutex<rules::Clicks<u128>> = Mutex::new(rules::Clicks::new());
+/// The players who right-clicked with the guide lately, by the wall clock: a click held down asks
+/// once, so a window that sees the book late (a laggy server) doesn't get it again after Escape.
+static GUIDE_CLICKS: Mutex<rules::Clicks<u128>> = Mutex::new(rules::Clicks::new(rules::GUIDE_CLICK_MS));
+/// The wall clock the guide's clicks are counted on: a laggy or frozen server's ticks would swallow real clicks.
+static GUIDE_EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
 /// A right click with the guide: the player's window opens it. The use is claimed
 /// even when the message can't go, so the guide never acts as a plain book.
 fn read_guide(game: &mut Game<'_>, claimed: &mut bool) {
     *claimed = true;
-    let (Some(who), Some((now, _))) = (game.native_acting_player(), clock(game)) else {
+    let Some(who) = game.native_acting_player() else {
         return;
     };
+    let now = GUIDE_EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64;
     if lock(&GUIDE_CLICKS).heard(who.uuid, now).is_some() {
         return;
     }
