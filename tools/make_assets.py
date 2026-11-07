@@ -24,6 +24,7 @@ FACING = {
     "launch_console": ("Launch Console", "Пульт запуска"),
     "strike_beacon": ("Strike Beacon", "Маяк авиаудара"),
     "sunbreaker_core": ("Sunbreaker Core", "Ядро «Солнцелома»"),
+    "decontaminator": ("Decontaminator", "Дезактиватор"),
 }
 TABLE = {"assembly_table": ("Assembly Table", "Сборочный стол"), "silo_hatch": ("Silo Hatch", "Люк шахты")}
 # Declared in code, one texture all round: the Sunbreaker's structure.
@@ -52,6 +53,7 @@ ITEMS = {
     "geiger_counter": ("Geiger Counter", "Счётчик Гейгера"),
     "missile": ("Missile", "Ракета"),
     "guide": ("Big Nukes Guide", "Руководство Big Nukes"),
+    "iodine_tablets": ("Iodine Tablets", "Таблетки йода"),
 }
 
 
@@ -91,7 +93,7 @@ MODELS = {
     "bomber_model": (BOMBER_MODEL, "Bomber", "Бомбардировщик"),
 }
 # Mob effects: id: (category, RGB, English, Russian)
-EFFECTS = {"radiation": ("harmful", 0x7FB238, "Radiation", "Радиация")}
+EFFECTS = {"radiation": ("harmful", 0x7FB238, "Radiation", "Радиация"), "iodine": ("beneficial", 0xB8682E, "Iodine", "Йод")}
 
 
 def write(path, data):

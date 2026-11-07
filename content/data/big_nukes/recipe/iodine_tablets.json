@@ -1,0 +1,14 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "ingredients": [
+    "minecraft:dried_kelp",
+    "minecraft:dried_kelp",
+    "minecraft:dried_kelp",
+    "minecraft:sugar"
+  ],
+  "result": {
+    "id": "big_nukes:iodine_tablets",
+    "count": 2
+  }
+}

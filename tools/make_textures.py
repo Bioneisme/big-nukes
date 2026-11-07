@@ -957,3 +957,132 @@ for y in range(16):
             halo.putpixel((x, y), (150, 255, 120, 110))
 save(halo, "item", "weapons_grade_uranium")
 print("textures written")
+
+
+# ---- iodine and the decontaminator (plan 9) ----
+# Drawn last and with their own random, so everything above stays the same. The screen's numbers are
+# glue.rs's (the decontaminator's screen) and runtime.rs's (RADIUS_BAR, FLAME_HEIGHT).
+decon_rng = random.Random(2617)
+WATER = (60, 150, 210)
+TABLET = (184, 104, 46)
+
+
+def decon_plate(base, spread=0.05, edge=EDGE):
+    im = Image.new("RGBA", (16, 16))
+    for y in range(16):
+        for x in range(16):
+            im.putpixel((x, y), shade(base, 1 + decon_rng.uniform(-spread, spread)))
+    return frame(im, edge)
+
+
+# The decontaminator: a pale cabinet with a sprayer behind round glass in front, a fan on top, and a water pipe up
+# each side over a hazard band.
+CABINET = (196, 200, 204)
+CABINET_EDGE = (70, 76, 84, 255)
+front = decon_plate(CABINET, 0.04, CABINET_EDGE)
+for y in range(1, 15):
+    for x in range(1, 15):
+        d = math.hypot(x - 7.5, y - 6.5)
+        if d < 3.6:
+            front.putpixel((x, y), shade(WATER, 0.8 + 0.09 * (3.6 - d)))
+        elif d < 4.7:
+            front.putpixel((x, y), (60, 66, 74, 255))
+for _ in range(4):
+    x, y = decon_rng.randrange(5, 11), decon_rng.randrange(4, 10)
+    if math.hypot(x - 7.5, y - 6.5) < 3.0:
+        front.putpixel((x, y), (200, 235, 255, 255))
+for x in (3, 4):
+    front.putpixel((x, 13), (90, 230, 110, 255))
+for x in range(7, 13):
+    front.putpixel((x, 13), (90, 96, 104, 255))
+save(front, "block", "decontaminator_front")
+
+side = decon_plate(CABINET, 0.04, CABINET_EDGE)
+stripes(side, (230, 200, 40, 255), (30, 30, 30, 255), [12, 13])
+for y in range(1, 15):
+    side.putpixel((3, y), shade(WATER, 0.9))
+    side.putpixel((4, y), shade(WATER, 0.7))
+for y in (3, 8):
+    for x in (2, 5):
+        side.putpixel((x, y), (120, 126, 134, 255))
+save(side, "block", "decontaminator_side")
+
+top = decon_plate((150, 156, 162), 0.04, CABINET_EDGE)
+for y in range(1, 15):
+    for x in range(1, 15):
+        d = math.hypot(x - 7.5, y - 7.5)
+        a = (math.degrees(math.atan2(y - 7.5, x - 7.5)) + 360) % 90
+        if d < 1.6:
+            top.putpixel((x, y), (210, 214, 220, 255))
+        elif d < 5.4 and 15 < a < 50:
+            top.putpixel((x, y), (176, 182, 190, 255))
+        elif d < 6.3:
+            top.putpixel((x, y), (40, 44, 50, 255))
+save(top, "block", "decontaminator_top")
+
+# The iodine tablets: a blister card of six brown tablets, one of them taken.
+card = Image.new("RGBA", (16, 16), CLEAR)
+rect(card, 2, 3, 11, 10, (206, 210, 216, 255))
+for x in range(2, 13):
+    card.putpixel((x, 3), (232, 234, 238, 255))
+    card.putpixel((x, 12), (128, 132, 140, 255))
+for y in range(3, 13):
+    card.putpixel((2, y), (232, 234, 238, 255))
+    card.putpixel((12, y), (128, 132, 140, 255))
+for row, ty in enumerate((4, 8)):
+    for col, tx in enumerate((3, 6, 9)):
+        taken = row == 1 and col == 2
+        for dy in range(3):
+            for dx in range(3):
+                if (dx, dy) in ((0, 0), (2, 0), (0, 2), (2, 2)):
+                    continue
+                c = (96, 100, 108, 255) if taken else shade(TABLET, 1.0 + decon_rng.uniform(-0.06, 0.06))
+                card.putpixel((tx + dx, ty + dy), c)
+        if not taken:
+            card.putpixel((tx + 1, ty), (240, 190, 120, 255))
+            card.putpixel((tx + 1, ty + 2), shade(TABLET, 0.6))
+save(card, "item", "iodine_tablets")
+
+# The iodine's effect icon, 18x18: one tablet, scored across, with a dark rim.
+icon = Image.new("RGBA", (18, 18), CLEAR)
+for y in range(18):
+    for x in range(18):
+        d = math.hypot(x - 8.5, y - 8.5)
+        if d < 6.2:
+            c = shade(TABLET, 1.15 - 0.05 * (y - 2.5) / 2)
+            if y in (8, 9) and abs(x - 8.5) < 5:
+                c = shade(TABLET, 0.65)
+            icon.putpixel((x, y), c)
+        elif d < 7.4:
+            icon.putpixel((x, y), (70, 36, 14, 255))
+for x, y in ((6, 5), (7, 4), (7, 5)):
+    icon.putpixel((x, y), (250, 214, 160, 255))
+save(icon, "mob_effect", "iodine")
+
+# The decontaminator's screen: a furnace's panel with a radius bar's trough over the fuel slot, the flame left of
+# the slot; right of the panel the lit flame (176, 0), under it the full bar (0, 166).
+gui = Image.new("RGBA", (192, 176), CLEAR)
+rect(gui, 0, 0, 176, 166, (198, 198, 198, 255))
+rect(gui, 0, 0, 176, 2, (255, 255, 255, 255))
+rect(gui, 0, 0, 2, 166, (255, 255, 255, 255))
+rect(gui, 0, 164, 176, 2, (85, 85, 85, 255))
+rect(gui, 174, 0, 2, 166, (85, 85, 85, 255))
+rect(gui, 33, 17, 110, 10, (255, 255, 255, 255))
+rect(gui, 33, 17, 109, 9, (55, 55, 55, 255))
+rect(gui, 34, 18, 108, 8, (139, 139, 139, 255))
+slot(gui, 80, 53)
+for row in range(3):
+    for col in range(9):
+        slot(gui, 8 + col * 18, 84 + row * 18)
+for col in range(9):
+    slot(gui, 8 + col * 18, 142)
+flame(gui, 62, 54, False)
+flame(gui, 176, 0, True)
+for x in range(108):
+    t = x / 107
+    base = tuple(int(WATER[i] + ((110, 220, 120)[i] - WATER[i]) * t) for i in range(3))
+    for y in range(8):
+        k = 1.25 if y == 0 else 0.7 if y == 7 else 1.0 - 0.03 * y
+        gui.putpixel((x, 166 + y), shade(base, k))
+save(gui, "gui", "decontaminator")
+print("plan 9 textures written")

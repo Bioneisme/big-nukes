@@ -38,6 +38,13 @@ file = "crates/horizon-client/src/game.rs"
 name = "big_nukes_silo"
 source = "silo.rs"
 
+# Iodine and the decontaminator (plan 9): their glue, beside the rest.
+[[module]]
+id = "decon"
+file = "crates/horizon-client/src/game.rs"
+name = "big_nukes_decon"
+source = "decon.rs"
+
 # The machines and the bombs, declared in code; the ores and the ash are the assets half's files.
 [[injection]]
 id = "blocks"

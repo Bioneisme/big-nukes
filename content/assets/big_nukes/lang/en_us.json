@@ -79,7 +79,7 @@
   "big_nukes.guide.carriers": "Missile & Bomber",
   "big_nukes.guide.carriers.text": "Missile: a launch pad at the bottom of a shaft, at least 6 blocks of air over it, and a silo hatch on top with open sky above. Put a missile from the assembly table and a tactical warhead or an atomic bomb in the pad's two slots.\n\nPlace a launch console within 8 blocks of the pad and right-click it. Type the target's X and Z and a code of 3 to 8 digits, on the keyboard or with its buttons: Tab moves between the fields, Enter launches. The code of the console's first launch becomes its code; three wrong codes lock it for 30 seconds. The target is 100 to 4096 blocks away.\n\nAfter a 5 second countdown the hatch opens and the missile climbs out in smoke. A camera follows it for the one who launched; the Camera button turns it off. The missile comes down on the target and goes off there, even far from any player.\n\nBomber: place a strike beacon and right-click it with a tactical warhead or an atomic bomb. 30 seconds later a bomber flies over, 120 blocks up, and drops the bomb on the beacon. Stand clear! Break the beacon before the drop and you get the bomb back.\n\nThe operator's /bignukes maxpower limit holds for both.",
   "big_nukes.guide.radiation": "Radiation",
-  "big_nukes.guide.radiation.text": "Big blasts leave a radioactive zone. Inside it your dose builds up: from 100 rad you grow weak and hungry, from 300 sick, from 600 very sick, and 1000 rad kills. Out of the zone the dose slowly falls.\n\nA Geiger counter in your hand clicks and shows the background and your dose.\n\nThe full hazmat suit keeps 95% out and wears down in a zone. Anti-rad takes 300 rad off.",
+  "big_nukes.guide.radiation.text": "Big blasts leave a radioactive zone. Inside it your dose builds up: from 100 rad you grow weak and hungry, from 300 sick, from 600 very sick, and 1000 rad kills. Out of the zone the dose slowly falls.\n\nA Geiger counter in your hand clicks and shows the background and your dose.\n\nThe full hazmat suit keeps 95% out and wears down in a zone. Anti-rad takes 300 rad off.\n\nIodine tablets, eaten before you go in, keep 50% of the radiation out for 5 minutes, with the suit or without it. Another tablet makes it 5 minutes again.\n\nThe decontaminator is made at the assembly table. It burns any furnace fuel 4 times as fast as a furnace, and while it burns its circle grows a block every 2 seconds, up to 48: the background inside falls to nothing and comes back over 8 blocks past the edge, and the ash on open ground turns back to grass. What it cleaned stays clean without fuel and after the block is broken, but a new blast brings the radiation back, and the decontaminator starts again from its center.",
   "big_nukes.guide.commands": "Commands",
   "big_nukes.guide.commands.text": "Stand at least 400 blocks away when an atomic bomb goes off.\n\n/bignukes guide gives you this book.\n\nFor operators:\n/bignukes blast <radius> [x y z] sets off a blast.\n/bignukes maxpower [16|50|250|1000|1024] limits how big a blast may be.",
   "block.big_nukes.centrifuge": "Centrifuge",
@@ -177,5 +177,14 @@
   "block.big_nukes.sunbreaker_core": "Sunbreaker Core",
   "block.big_nukes.implosion_shell": "Implosion Shell",
   "block.big_nukes.neutron_reflector": "Neutron Reflector",
-  "item.big_nukes.weapons_grade_uranium": "Weapons-Grade Uranium"
+  "item.big_nukes.weapons_grade_uranium": "Weapons-Grade Uranium",
+  "block.big_nukes.decontaminator": "Decontaminator",
+  "item.big_nukes.iodine_tablets": "Iodine Tablets",
+  "effect.big_nukes.iodine": "Iodine",
+  "big_nukes.tip.iodine_tablets": "Eat one before you go into a zone: for 5 minutes half the radiation is kept out.",
+  "big_nukes.tip.decontaminator": "Put fuel in it: it cleans a growing circle of up to 48 blocks of radiation and turns ash back to grass.",
+  "big_nukes.tip.decontaminator.2": "What it cleaned stays clean, but a new blast brings the radiation back. Hoppers bring fuel.",
+  "big_nukes.screen.decontaminator": "Decontaminator",
+  "big_nukes.screen.decontaminator.radius": "Radius %s / %s",
+  "big_nukes.screen.decontaminator.background": "Background here: %s rad/s"
 }

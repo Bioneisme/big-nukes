@@ -33,6 +33,10 @@
       "required": false
     },
     {
+      "id": "big_nukes:decontaminator",
+      "required": false
+    },
+    {
       "id": "big_nukes:assembly_table",
       "required": false
     },

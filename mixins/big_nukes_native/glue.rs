@@ -11,6 +11,8 @@ use crate::game::{
     big_nukes as rules,
     // The silo and the bomber (plan 7): their glue is a module of its own, silo.rs.
     big_nukes_silo as silo,
+    // Iodine and the decontaminator (plan 9): decon.rs.
+    big_nukes_decon as decon,
 };
 use horizon_client::{
     containers::{ModBlockEntity, ModContainer},
@@ -176,6 +178,7 @@ pub(in crate::game) fn blocks(blocks: &mut Vec<Block>) {
     // part shows its core's keypad.
     blocks.push(block(rules::IMPLOSION_SHELL, "minecraft:furnace", 3.0));
     blocks.push(block(rules::NEUTRON_REFLECTOR, "minecraft:furnace", 5.0));
+    decon::blocks(blocks, block);
     silo::blocks(blocks, block);
 }
 
@@ -918,7 +921,7 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
 
 /// The blocks with a block entity: the machines and the bombs. Its id is its block's.
 fn has_entity(block: &str) -> bool {
-    matches!(block, rules::CENTRIFUGE | rules::ASSEMBLY_TABLE)
+    matches!(block, rules::CENTRIFUGE | rules::ASSEMBLY_TABLE | rules::DECONTAMINATOR)
         || rules::BombKind::of_block(block).is_some()
         || is_part(block)
         || silo::has_entity(block)
@@ -941,6 +944,7 @@ pub(in crate::game) fn container(block: &str, container: &mut Option<ModContaine
     match block {
         rules::CENTRIFUGE => *container = Some(centrifuge_container()),
         rules::ASSEMBLY_TABLE => *container = Some(assembly_container()),
+        rules::DECONTAMINATOR => *container = Some(decon::container()),
         block if silo::has_entity(block) => *container = Some(silo::container(block)),
         block if is_part(block) => *container = Some(bomb_container(rules::BombKind::Sunbreaker)),
         _ => {
@@ -980,6 +984,7 @@ pub(in crate::game) fn screen(block: &str, screen: &mut Option<NativeScreen>) {
     match block {
         rules::CENTRIFUGE => *screen = Some(centrifuge_screen()),
         rules::ASSEMBLY_TABLE => *screen = Some(assembly_screen()),
+        rules::DECONTAMINATOR => *screen = Some(decon::screen()),
         block if keypad_bomb(block) || is_part(block) => *screen = Some(keypad_screen()),
         rules::LAUNCH_PAD => *screen = Some(silo::pad_screen()),
         rules::LAUNCH_CONSOLE => *screen = Some(silo::console_screen()),
@@ -991,6 +996,7 @@ pub(in crate::game) fn screen_draw(game: &Game<'_>, block: &str, data: &[i32], b
     match block {
         rules::CENTRIFUGE => centrifuge_screen_draw(game, data, batch, origin),
         rules::ASSEMBLY_TABLE => assembly_screen_draw(game, data, batch, origin),
+        rules::DECONTAMINATOR => decon::screen_draw(game, data, batch, origin),
         block if keypad_bomb(block) => keypad_draw(game, block, data, batch, origin),
         // A block of a Sunbreaker's structure shows its core's keypad, under the core's name.
         block if is_part(block) => keypad_draw(game, rules::SUNBREAKER_CORE, data, batch, origin),
@@ -1039,6 +1045,10 @@ pub(in crate::game) fn accepts(game: &Game<'_>, entity: &ModBlockEntity, slot: u
         *cancel = !rules::pad_takes(slot, &stack.item);
         return;
     }
+    if entity.id == rules::DECONTAMINATOR && !*cancel {
+        *cancel = !decon::accepts(game, slot, stack);
+        return;
+    }
     if entity.id != rules::CENTRIFUGE || *cancel {
         return;
     }
@@ -1071,7 +1081,7 @@ fn store(entity: &mut ModBlockEntity, centrifuge: &rules::Centrifuge) {
 // The game's own table, which no hook point offers: it may change with a new
 // Horizon revision, so it stays here. The same burn table as the quarry's.
 
-fn burn_time(game: &Game<'_>, stack: &ItemStack) -> i32 {
+pub(in crate::game) fn burn_time(game: &Game<'_>, stack: &ItemStack) -> i32 {
     game.res.providers().burn_time(world_items!(game), stack, false)
 }
 // --- end of internals ---
@@ -1149,6 +1159,10 @@ pub(in crate::game) fn quick_move(game: &Game<'_>, entity: &mut ModBlockEntity, 
     }
     if entity.id == rules::LAUNCH_PAD {
         silo::pad_quick_move(game, entity, container_slots, slot, stack, handled);
+        return;
+    }
+    if entity.id == rules::DECONTAMINATOR {
+        decon::quick_move(game, entity, container_slots, slot, stack, handled);
         return;
     }
     if entity.id != rules::CENTRIFUGE || slot < container_slots {
@@ -1285,7 +1299,8 @@ fn assembly_button(game: &Game<'_>, entity: &mut ModBlockEntity, id: i32) {
         if let Some(stack) = entity.items[slot].as_mut() {
             stack.count -= n;
             if stack.count == 0 {
-                entity.items[slot] = None;
+                // A water bucket leaves its bucket, as on a crafting table.
+                entity.items[slot] = rules::remainder(&stack.item).map(|left| ItemStack { count: n, ..stack_of(left) });
             }
         }
     }
