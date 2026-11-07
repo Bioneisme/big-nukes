@@ -855,7 +855,7 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
     let (force, free) = {
         let Some(mut guard) = glue::state(game) else { return };
         let st = guard.as_mut().expect("opened");
-        let mut force = Vec::new();
+        let (mut force, mut released) = (Vec::new(), Vec::new());
         // Saved only when something changed: most ticks only ask again for a chunk already forced.
         let forced = st.saved.forced.len();
         let mut changed = !fired.is_empty();
@@ -877,6 +877,11 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
                     if let Some(f) = st.saved.flights.iter_mut().find(|f| f.id == id) {
                         changed |= f.hatch.is_some();
                         f.hatch = None;
+                        // The pad's chunk was kept for the hatch only.
+                        let pad = rules::chunk_of(f.from[0], f.from[2]);
+                        if st.saved.release(id, dimension, pad) {
+                            released.push((dimension.to_owned(), pad));
+                        }
                     }
                 }
                 Change::Force(id, chunk) => {
@@ -893,14 +898,32 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
             st.saved.beacons.retain(|f| f.id != *id);
             st.saved.landed(*id, *center);
         }
-        let free = st.saved.unforce();
+        let mut free = st.saved.unforce();
+        free.extend(released);
         if changed || st.saved.forced.len() != forced {
             glue::save(st);
         }
         (force, free)
     };
+    // `/forceload` is one flag a chunk: one forced already (a player's base, say) is theirs, and the mod, which
+    // added nothing, never removes it.
+    let mut theirs = Vec::new();
     for chunk in force {
-        run_in(game, dimension, &format!("forceload add {} {}", chunk[0] * 16, chunk[1] * 16));
+        let [x, z] = [chunk[0] * 16, chunk[1] * 16];
+        if game.native_run_command(&format!("execute in {dimension} run forceload query {x} {z}")) {
+            theirs.push(chunk);
+        } else {
+            run_in(game, dimension, &format!("forceload add {x} {z}"));
+        }
+    }
+    if !theirs.is_empty()
+        && let Some(mut guard) = glue::state(game)
+    {
+        let st = guard.as_mut().expect("opened");
+        for chunk in theirs {
+            st.saved.theirs(dimension, chunk);
+        }
+        glue::save(st);
     }
     for (d, chunk) in free {
         run_in(game, &d, &format!("forceload remove {} {}", chunk[0] * 16, chunk[1] * 16));

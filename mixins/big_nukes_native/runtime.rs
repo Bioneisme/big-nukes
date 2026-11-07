@@ -2432,6 +2432,10 @@ pub struct Forced {
     pub landed: bool,
     #[serde(default)]
     pub center: Option<[i32; 3]>,
+    /// Forced already when the mod came to it (a player's `/forceload`, one flag a chunk): the mod never
+    /// lets it go.
+    #[serde(default)]
+    pub theirs: bool,
 }
 
 impl Waves {
@@ -2452,9 +2456,27 @@ impl Saved {
         if self.forced.iter().any(|f| f.id == id && f.dimension == dimension && f.chunk == chunk) {
             return false;
         }
-        let new = !self.forced.iter().any(|f| f.dimension == dimension && f.chunk == chunk);
-        self.forced.push(Forced { id, dimension: dimension.to_owned(), chunk, landed: false, center: None });
+        let held = self.forced.iter().find(|f| f.dimension == dimension && f.chunk == chunk);
+        let (new, theirs) = (held.is_none(), held.is_some_and(|f| f.theirs));
+        self.forced.push(Forced { id, dimension: dimension.to_owned(), chunk, landed: false, center: None, theirs });
         new
+    }
+
+    /// The game had `chunk` forced before the mod asked for it: whoever forced it lets it go, not the mod.
+    pub fn theirs(&mut self, dimension: &str, chunk: [i32; 2]) {
+        for f in self.forced.iter_mut().filter(|f| f.dimension == dimension && f.chunk == chunk) {
+            f.theirs = true;
+        }
+    }
+
+    /// Flight `id` no longer needs `chunk` (a pad's, once its hatch is back): true when the glue is to let it
+    /// go, as no other flight holds it and it was the mod's to force.
+    pub fn release(&mut self, id: u64, dimension: &str, chunk: [i32; 2]) -> bool {
+        let Some(i) = self.forced.iter().position(|f| f.id == id && f.dimension == dimension && f.chunk == chunk) else {
+            return false;
+        };
+        let gone = self.forced.remove(i);
+        !gone.theirs && !self.forced.iter().any(|f| f.dimension == dimension && f.chunk == chunk)
     }
 
     /// Flight `id` went off at `center`, or never will.
@@ -2485,7 +2507,7 @@ impl Saved {
         let mut free: Vec<(String, [i32; 2])> = Vec::new();
         for f in done {
             let held = self.forced.iter().any(|k| k.dimension == f.dimension && k.chunk == f.chunk);
-            if !held && !free.iter().any(|(d, c)| *d == f.dimension && *c == f.chunk) {
+            if !held && !f.theirs && !free.iter().any(|(d, c)| *d == f.dimension && *c == f.chunk) {
                 free.push((f.dimension, f.chunk));
             }
         }
@@ -7513,6 +7535,45 @@ mod flight_tests {
         saved.force(nether.id, &nether.dimension, [4, 4]);
         saved.landed(nether.id, Some([60, 70, 60]));
         assert_eq!(saved.to_wake(), ["minecraft:the_nether"]);
+    }
+
+    #[test]
+    fn the_mod_lets_go_only_of_the_chunks_it_forced_and_as_soon_as_it_can() {
+        let mut saved = Saved::default();
+        // The pad's chunk goes as soon as the hatch is back; the target's stays.
+        assert!(saved.force(1, OVERWORLD, [0, 0]) && saved.force(1, OVERWORLD, [62, 0]));
+        assert!(saved.release(1, OVERWORLD, [0, 0]), "the mod's to let go");
+        assert!(!saved.release(1, OVERWORLD, [0, 0]), "once");
+        assert_eq!(saved.forced.iter().map(|f| f.chunk).collect::<Vec<_>>(), [[62, 0]]);
+        // A chunk another flight holds stays forced until the last lets go.
+        saved.force(2, OVERWORLD, [5, 5]);
+        saved.force(3, OVERWORLD, [5, 5]);
+        assert!(!saved.release(2, OVERWORLD, [5, 5]));
+        assert!(saved.release(3, OVERWORLD, [5, 5]));
+        assert!(!saved.release(9, OVERWORLD, [5, 5]), "never held");
+        // A chunk the player had forced already (`/forceload` is one flag a chunk): the flights keep it, and
+        // the mod never lets it go, neither by release nor once the wave has worked it.
+        assert!(saved.force(4, OVERWORLD, [9, 9]));
+        saved.theirs(OVERWORLD, [9, 9]);
+        assert!(!saved.force(5, OVERWORLD, [9, 9]));
+        assert!(!saved.release(4, OVERWORLD, [9, 9]));
+        saved.landed(5, None);
+        assert!(saved.unforce().is_empty());
+        assert!(saved.forced.iter().all(|f| f.chunk != [9, 9]));
+        // Forced by the mod again later, it is asked about again.
+        assert!(saved.force(6, OVERWORLD, [9, 9]));
+        saved.landed(6, None);
+        saved.landed(1, None);
+        let mut free = saved.unforce();
+        free.sort();
+        assert_eq!(free, [(OVERWORLD.to_owned(), [9, 9]), (OVERWORLD.to_owned(), [62, 0])]);
+        // A chunk saved before this was the mod's own.
+        saved.force(7, OVERWORLD, [1, 1]);
+        saved.theirs(OVERWORLD, [1, 1]);
+        let mut v = serde_json::to_value(&saved.forced[0]).unwrap();
+        assert_eq!(v["theirs"], true);
+        v.as_object_mut().unwrap().remove("theirs");
+        assert!(!serde_json::from_value::<Forced>(v).unwrap().theirs);
     }
 
     #[test]

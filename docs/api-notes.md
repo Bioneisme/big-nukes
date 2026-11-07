@@ -213,8 +213,14 @@ Read in the source of 66f3981, not yet seen in the game:
   and its own `native_clock().game_time`, two ticks back for the display's glide.
 - The target's chunk is kept with `execute in <dim> run forceload add`, run from a level's tick where commands run,
   and the world keeps the list (`Saved.forced`) to remove it once the blast's wave has worked its center's chunk.
-  The pad's chunk is kept the same way from the launch, so the hatch is put back: `native_block` reads air where
+  The pad's chunk is kept the same way from the launch until the hatch is back: `native_block` reads air where
   nothing is loaded, so the hatch waits for `native_chunk_load`'s list (`glue::loaded`) rather than trust it.
+- `/forceload` is one flag a chunk (`streaming.forced` in 66f3981): a mod's `forceload remove` would unforce a chunk a
+  player forced before it. So before adding one the mod asks `forceload query <x> <z>`, which fails (and
+  `native_run_command` answers false) when the chunk isn't forced; a chunk forced already is the player's
+  (`Forced.theirs`) and never removed. A chunk the player forces after the mod did can't be told apart.
+  Horizon 66f3981 also has `native_force_chunk` (mod tickets, `/forceload` neither lists nor releases them, not
+  saved), still without an API number there: the cleaner way once it is released.
 - A world opened again has only the overworld open: the dimensions with a flight, a strike or a forced chunk are
   opened at its first server tick with `forceload query`, as a remote's blast does (`Saved::to_wake`).
 - The item helpers (`native_take_items`) take only plain stacks, the main hand first, so a renamed bomb on a beacon
