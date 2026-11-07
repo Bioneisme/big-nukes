@@ -87,7 +87,7 @@ pub const ITEMS: [(&str, u8, bool); 15] = [
 /// The guide: a book of the mod's own, whose screen is drawn by the mod (see "the guide" below).
 pub const GUIDE: &str = "big_nukes:guide";
 /// A player who was given the guide when they first joined.
-pub const GUIDE_TAG: &str = "big_nukes_guide_given";
+pub const GUIDE_TAG: &str = "big_nukes_guide_book";
 
 /// The command that gives `name` the guide.
 pub fn guide_give(name: &str) -> String {
@@ -2244,6 +2244,8 @@ pub struct Guide {
     pub spread: usize,
     /// The window's GUI size at the last frame, where the clicks are found.
     pub window: [f32; 2],
+    /// The wheel's turn not yet a whole notch, up positive.
+    pub scrolled: f64,
 }
 
 impl Guide {
@@ -2303,10 +2305,21 @@ impl Guide {
     }
 
     /// The wheel: up turns back, down turns on.
+    /// A touchpad sends fractions of a notch, which add up: a spread turns per whole notch.
     pub fn wheel(&mut self, y: f64) {
-        if y > 0.0 {
+        if y == 0.0 {
+            return;
+        }
+        if self.scrolled * y < 0.0 {
+            self.scrolled = 0.0;
+        }
+        self.scrolled += y;
+        while self.scrolled >= 1.0 - 1e-9 {
+            self.scrolled -= 1.0;
             self.prev();
-        } else if y < 0.0 {
+        }
+        while self.scrolled <= -1.0 + 1e-9 {
+            self.scrolled += 1.0;
             self.next();
         }
     }
@@ -3336,6 +3349,30 @@ mod tests {
         assert_eq!(g.spread, 0);
         g.wheel(0.0);
         assert_eq!(g.spread, 0);
+    }
+
+    #[test]
+    fn a_touchpad_swipe_turns_one_spread_per_notch() {
+        let mut g = long_guide();
+        // A touchpad sends small fractions of a notch: a page turns once they add up to one.
+        for _ in 0..9 {
+            g.wheel(-0.1);
+        }
+        assert_eq!(g.spread, 0);
+        g.wheel(-0.15);
+        assert_eq!(g.spread, 1);
+        // Turning the other way starts the count again.
+        g.wheel(0.5);
+        assert_eq!(g.spread, 1);
+        g.wheel(0.5);
+        assert_eq!(g.spread, 0);
+    }
+
+    #[test]
+    fn the_guide_tag_is_not_the_written_books() {
+        // The first guide was a written book given under "big_nukes_guide_given"; a new tag gives the new guide
+        // to players who had that one.
+        assert_ne!(GUIDE_TAG, "big_nukes_guide_given");
     }
 
     fn middle([x, y, w, h]: [f32; 4]) -> [f32; 2] {
