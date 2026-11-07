@@ -1148,7 +1148,7 @@ pub fn plan_chunk(blast: &Blast, chunk: [i32; 2], walls: &[Wall]) -> ([ChunkEdit
             match ring(d) {
                 Ring::Core => {
                     let floor = crater_floor(blast, d);
-                    let bottom = core_walls(blast, d, floor, top, near.column(x, z), &near, &mut plants, &mut changes);
+                    let bottom = core_walls(blast, floor, top, near.column(x, z), &near, &mut plants, &mut changes);
                     plants.runs.extend(absolute(bottom.unwrap_or(floor), AIR, None));
                 }
                 Ring::Middle => {
@@ -3433,11 +3433,7 @@ pub enum WallChange {
 
 /// The wave's strength at column (x, z): the radius at the center, nothing at the border.
 pub fn wave_strength(blast: &Blast, x: i32, z: i32) -> f64 {
-    strength_at(blast, edge(blast, x, z))
-}
-
-fn strength_at(blast: &Blast, d: f64) -> f64 {
-    blast.radius as f64 * (1.0 - d).max(0.0)
+    blast.radius as f64 * (1.0 - edge(blast, x, z)).max(0.0)
 }
 
 /// What a wave of `strength_here` does to `wall`, a block of a multilayer wall or not.
@@ -3533,10 +3529,8 @@ impl WallsAt {
 /// The walls of one column of the core, its highest first: each is judged down to the first that holds,
 /// which may crack (its cracked block goes into `plants`). The lowest place the crater reaches, if a wall
 /// held: just over it.
-#[allow(clippy::too_many_arguments)]
 fn core_walls(
     blast: &Blast,
-    d: f64,
     floor: i32,
     top: i32,
     column: &[Wall],
@@ -3544,7 +3538,8 @@ fn core_walls(
     plants: &mut ChunkEdit,
     changes: &mut Vec<WallChange>,
 ) -> Option<i32> {
-    let strength = strength_at(blast, d);
+    let Some(first) = column.first() else { return None };
+    let strength = wave_strength(blast, first.pos[0], first.pos[2]);
     for w in column.iter().filter(|w| w.pos[1] >= floor && w.pos[1] < top) {
         let fate = match wall_fate(strength, w, false) {
             WallFate::Stands => WallFate::Stands,
@@ -3581,12 +3576,12 @@ pub fn wall_key(dimension: &str, chunk: [i32; 2]) -> String {
 /// multilayer wall may reach into.
 pub fn walls_near(walls: &BTreeMap<String, Vec<Wall>>, dimension: &str, chunk: [i32; 2]) -> Vec<Wall> {
     let [cx, cz] = chunk;
-    [[cx, cz], [cx - 1, cz], [cx + 1, cz], [cx, cz - 1], [cx, cz + 1]]
-        .iter()
-        .filter_map(|c| walls.get(&wall_key(dimension, *c)))
-        .flatten()
-        .copied()
-        .collect()
+    [[cx, cz], [cx - 1, cz], [cx + 1, cz], [cx, cz - 1], [cx, cz + 1]].iter().flat_map(|c| walls_in(walls, dimension, *c)).copied().collect()
+}
+
+/// The walls standing in `chunk`, of the registry `walls` (`Saved.walls`).
+pub fn walls_in<'a>(walls: &'a BTreeMap<String, Vec<Wall>>, dimension: &str, chunk: [i32; 2]) -> &'a [Wall] {
+    walls.get(&wall_key(dimension, chunk)).map_or(&[], Vec::as_slice)
 }
 
 impl Saved {
@@ -3618,11 +3613,6 @@ impl Saved {
             self.walls.remove(&key);
         }
         removed
-    }
-
-    /// The walls standing in `chunk`.
-    pub fn walls_in(&self, dimension: &str, chunk: [i32; 2]) -> &[Wall] {
-        self.walls.get(&wall_key(dimension, chunk)).map_or(&[], Vec::as_slice)
     }
 
     /// What a chunk's plan did to its walls. Whether the registry changed.
@@ -9286,8 +9276,8 @@ mod bunker_tests {
         let near = out_to(&b, 0.15);
         saved.place_wall(OW, [near, 70, 0], WallKind::Armored, false);
         assert!(saved.change_walls(OW, &[WallChange::Broken([x, 70, 0]), WallChange::Cracked([near, 70, 0])]));
-        assert!(saved.walls_in(OW, chunk).is_empty());
-        assert_eq!(saved.walls_in(OW, chunk_of(near, 0)), [Wall { pos: [near, 70, 0], kind: WallKind::Armored, cracked: true }]);
+        assert!(walls_in(&saved.walls, OW, chunk).is_empty());
+        assert_eq!(walls_in(&saved.walls, OW, chunk_of(near, 0)), [Wall { pos: [near, 70, 0], kind: WallKind::Armored, cracked: true }]);
         assert!(!saved.change_walls(OW, &[WallChange::Broken([x, 70, 0])]), "already gone");
     }
 
@@ -9410,17 +9400,17 @@ mod bunker_tests {
         saved.change_walls(OW, &[WallChange::Cracked([-1, 64, -1])]);
         let loaded: Saved = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
         assert_eq!(loaded.walls, saved.walls);
-        assert_eq!(loaded.walls_in(OW, [0, 0]), [wall([1, 64, 1], WallKind::Armored)]);
-        assert_eq!(loaded.walls_in(OW, [-1, -1]), [Wall { pos: [-1, 64, -1], kind: WallKind::Lead, cracked: true }]);
-        assert_eq!(loaded.walls_in("minecraft:the_nether", [0, 0]).len(), 1);
-        assert!(loaded.walls_in("minecraft:the_end", [0, 0]).is_empty());
+        assert_eq!(walls_in(&loaded.walls, OW, [0, 0]), [wall([1, 64, 1], WallKind::Armored)]);
+        assert_eq!(walls_in(&loaded.walls, OW, [-1, -1]), [Wall { pos: [-1, 64, -1], kind: WallKind::Lead, cracked: true }]);
+        assert_eq!(walls_in(&loaded.walls, "minecraft:the_nether", [0, 0]).len(), 1);
+        assert!(walls_in(&loaded.walls, "minecraft:the_end", [0, 0]).is_empty());
         // A world saved before the bunker has none.
         let old: Saved = serde_json::from_str(r#"{"tick":5,"next_id":0,"waves":{"waves":[]}}"#).unwrap();
         assert!(old.walls.is_empty());
         let mut saved = saved;
         assert!(saved.remove_wall(OW, [1, 64, 1]));
         assert!(!saved.remove_wall(OW, [1, 64, 1]));
-        assert!(saved.walls_in(OW, [0, 0]).is_empty());
+        assert!(walls_in(&saved.walls, OW, [0, 0]).is_empty());
         assert!(!saved.walls.contains_key(&wall_key(OW, [0, 0])), "an empty chunk leaves no key");
     }
 

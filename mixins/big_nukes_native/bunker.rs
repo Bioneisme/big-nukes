@@ -3,8 +3,9 @@
 // next to the rest of the glue (`game::big_nukes_glue`, glue.rs), whose shared hooks hand
 // the blocks here by their ids.
 
-use crate::game::big_nukes as rules;
+use crate::game::{Game, big_nukes as rules, big_nukes_glue::lock};
 use horizon_mods::content::{Block, BlockProperties};
+use std::{collections::BTreeMap, sync::Mutex};
 
 // ---- the blocks ------------------------------------------------------------------
 //
@@ -44,4 +45,84 @@ pub(in crate::game) fn blocks(blocks: &mut Vec<Block>) {
     blocks.push(block(rules::FUEL_GENERATOR, "minecraft:furnace", 3.5, 6.0, None));
     blocks.push(block(rules::AIR_FILTER, "minecraft:furnace", 3.5, 6.0, None));
     blocks.push(block(rules::BUNKER_LAMP, "minecraft:waxed_copper_bulb", 3.0, 6.0, None));
+}
+
+// ---- the walls' registry -------------------------------------------------------------
+//
+// The world keeps its walls by chunk (`Saved.walls`). The level tells of every block set
+// through `Level.setBlock`, maybe while the state is locked: the walls placed and taken
+// away wait here until it opens (`take_heard`, from `glue::state`). The wave's own edits tell
+// no one: its plan answers what it cracked and broke, and the glue gives that back.
+
+/// Walls placed (`Some`: the wall and whether it is cracked) and taken away (`None`), heard from the level.
+static HEARD: Mutex<Vec<(String, [i32; 3], Option<(rules::WallKind, bool)>)>> = Mutex::new(Vec::new());
+
+/// A block at `pos` changed from `was` to `now` (block ids): a wall placed, replaced or taken away is queued.
+pub(in crate::game) fn block_changed(dimension: &str, pos: [i32; 3], was: &str, now: &str) {
+    let wall = rules::WallKind::of_block(now);
+    if was == now || (wall.is_none() && rules::WallKind::of_block(was).is_none()) {
+        return;
+    }
+    lock(&HEARD).push((dimension.to_owned(), pos, wall));
+}
+
+/// The walls heard since the state last opened go into the registry. Whether it changed.
+pub(in crate::game) fn take_heard(saved: &mut rules::Saved) -> bool {
+    let mut changed = false;
+    for (dimension, pos, wall) in std::mem::take(&mut *lock(&HEARD)) {
+        changed |= match wall {
+            Some((kind, cracked)) => saved.place_wall(&dimension, pos, kind, cracked),
+            None => saved.remove_wall(&dimension, pos),
+        };
+    }
+    changed
+}
+
+/// The walls a chunk's plan is given (`rules::walls_near`). The chunk is loaded, so its own are
+/// read from the world as they stand: one the registry has wrong (gone without the level telling,
+/// or cracked) is planned as it is, and its correction goes into `fixes` for the registry.
+pub(in crate::game) fn walls_for(
+    game: &Game<'_>,
+    walls: &BTreeMap<String, Vec<rules::Wall>>,
+    dimension: &str,
+    chunk: [i32; 2],
+    fixes: &mut Vec<([i32; 3], Option<(rules::WallKind, bool)>)>,
+) -> Vec<rules::Wall> {
+    let mut near = rules::walls_near(walls, dimension, chunk);
+    near.retain_mut(|w| {
+        if rules::chunk_of(w.pos[0], w.pos[2]) != chunk {
+            return true;
+        }
+        let block = game.native_block(w.pos);
+        if block == w.block() {
+            return true;
+        }
+        let now = rules::WallKind::of_block(&block);
+        fixes.push((w.pos, now));
+        match now {
+            Some((kind, cracked)) => {
+                (w.kind, w.cracked) = (kind, cracked);
+                true
+            }
+            None => false,
+        }
+    });
+    near
+}
+
+/// The corrections `walls_for` found, into the registry. Whether it changed.
+pub(in crate::game) fn fix_walls(saved: &mut rules::Saved, dimension: &str, fixes: Vec<([i32; 3], Option<(rules::WallKind, bool)>)>) -> bool {
+    let mut changed = false;
+    for (pos, wall) in fixes {
+        changed |= match wall {
+            Some((kind, cracked)) => saved.place_wall(dimension, pos, kind, cracked),
+            None => saved.remove_wall(dimension, pos),
+        };
+    }
+    changed
+}
+
+/// The world closing: what is queued goes.
+pub(in crate::game) fn forget() {
+    lock(&HEARD).clear();
 }

@@ -126,6 +126,8 @@ pub(in crate::game) fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Opti
             None => st.saved.unplace(&dimension, pos),
         };
     }
+    // The bunker's walls placed and taken away.
+    forgot |= bunker::take_heard(&mut st.saved);
     if forgot {
         save(st);
     }
@@ -767,6 +769,9 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     // The bombs a wave reaches go off as it gets to them: read before the edits take them.
     let placed = st.saved.placed.clone();
     let mut reached: Vec<([i32; 3], HashMap<[i32; 3], String>)> = Vec::new();
+    // The bunker's walls, read when each chunk is worked; what the work does to them goes back after.
+    let walls = &st.saved.walls;
+    let (mut wall_fixes, mut wall_changes) = (Vec::new(), Vec::new());
     let done = st.saved.waves.work(dimension, BUDGET, &|| started.elapsed(), &mut |blast, chunk| {
         if !loaded.contains(&chunk) {
             return false;
@@ -779,7 +784,10 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
                 reached.push((pos, blocks));
             }
         }
-        for edit in rules::plan_chunk(blast, chunk, &[]).0 {
+        let near = bunker::walls_for(game, walls, &blast.dimension, chunk, &mut wall_fixes);
+        let (edits, changes) = rules::plan_chunk(blast, chunk, &near);
+        wall_changes.extend(changes);
+        for edit in edits {
             if edit.runs.is_empty() {
                 continue;
             }
@@ -793,6 +801,8 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
         true
     });
     st.dirty |= done > 0;
+    st.dirty |= bunker::fix_walls(&mut st.saved, dimension, wall_fixes);
+    st.dirty |= st.saved.change_walls(dimension, &wall_changes);
     // A bulk edit tells no one of the blocks it changes: the bombs with a
     // receiver that a blast took are forgotten here. A bomb at a blast's center
     // that its crater missed (above the Nether's roof) goes now, so a bomb set
@@ -930,6 +940,7 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
     lock(&MIRRORS).clear();
     silo::forget();
     decon::forget();
+    bunker::forget();
 }
 
 // ---- the machines ---------------------------------------------------------------
@@ -2297,6 +2308,8 @@ pub(in crate::game) fn block_changed(
 ) {
     let was = &*level.facts.get(old).name;
     let now = &*level.facts.get(new).name;
+    // A wall of the bunker placed or taken away.
+    bunker::block_changed(silo::dimension_id(dimension), [pos.x, pos.y, pos.z], was, now);
     // A strike beacon or a console taken away.
     if now != was && matches!(was, rules::STRIKE_BEACON | rules::LAUNCH_CONSOLE) {
         silo::taken(silo::dimension_id(dimension), [pos.x, pos.y, pos.z]);
