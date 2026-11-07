@@ -1,0 +1,19 @@
+{
+  "variants": {
+    "facing=north": {
+      "model": "big_nukes:block/sunbreaker_core"
+    },
+    "facing=east": {
+      "model": "big_nukes:block/sunbreaker_core",
+      "y": 90
+    },
+    "facing=south": {
+      "model": "big_nukes:block/sunbreaker_core",
+      "y": 180
+    },
+    "facing=west": {
+      "model": "big_nukes:block/sunbreaker_core",
+      "y": 270
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "big_nukes:block/sunbreaker_core_side",
+    "down": "big_nukes:block/sunbreaker_core_top",
+    "up": "big_nukes:block/sunbreaker_core_top",
+    "north": "big_nukes:block/sunbreaker_core_front",
+    "south": "big_nukes:block/sunbreaker_core_side",
+    "west": "big_nukes:block/sunbreaker_core_side",
+    "east": "big_nukes:block/sunbreaker_core_side"
+  }
+}

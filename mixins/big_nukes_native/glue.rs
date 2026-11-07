@@ -171,6 +171,9 @@ pub(in crate::game) fn blocks(blocks: &mut Vec<Block>) {
     for kind in rules::BombKind::ALL {
         blocks.push(block(kind.id(), "minecraft:furnace", 2.0));
     }
+    // The Sunbreaker's structure: plain metal blocks, the shell softer than the reflector.
+    blocks.push(block(rules::IMPLOSION_SHELL, "minecraft:iron_block", 3.0));
+    blocks.push(block(rules::NEUTRON_REFLECTOR, "minecraft:iron_block", 5.0));
     silo::blocks(blocks, block);
 }
 
@@ -1252,7 +1255,7 @@ fn assembly_tick(entity: &mut ModBlockEntity) {
     }
 }
 
-/// Assemble: the recipe's parts out of the grid, one of its result into the output.
+/// Assemble: the recipe's parts out of the grid, its result into the output.
 /// Nothing happens without a recipe in the grid or room in the output.
 fn assembly_button(game: &Game<'_>, entity: &mut ModBlockEntity, id: i32) {
     if id != rules::ASSEMBLE_BUTTON {
@@ -1275,8 +1278,8 @@ fn assembly_button(game: &Game<'_>, entity: &mut ModBlockEntity, id: i32) {
         }
     }
     match entity.items[rules::ASSEMBLY_OUTPUT_SLOT].as_mut() {
-        Some(out) => out.count += 1,
-        None => entity.items[rules::ASSEMBLY_OUTPUT_SLOT] = Some(stack_of(done.result)),
+        Some(out) => out.count += done.count,
+        None => entity.items[rules::ASSEMBLY_OUTPUT_SLOT] = Some(ItemStack { count: done.count, ..stack_of(done.result) }),
     }
     assembly_tick(entity);
 }
@@ -1320,6 +1323,10 @@ fn assembly_screen_draw(game: &Game<'_>, data: &[i32], batch: &mut HudBatch, ori
     game.native_text(batch, &lang::get("container.inventory"), [x + 8.0, y + ASSEMBLY_INVENTORY_Y - 11.0], LABEL, false);
     let recipe = rules::assembly_of_data(data.first().copied().unwrap_or(0));
     let line = match recipe {
+        Some(r) if r.count > 1 => {
+            let made = format!("{} x{}", lang::get(&rules::name_key(r.result)), r.count);
+            lang::tr("big_nukes.screen.assembly_makes", &[&made])
+        }
         Some(r) => lang::tr("big_nukes.screen.assembly_makes", &[&lang::get(&rules::name_key(r.result))]),
         None => lang::get("big_nukes.screen.assembly_hint"),
     };

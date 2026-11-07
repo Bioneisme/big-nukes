@@ -170,5 +170,9 @@
   "big_nukes.tip.neutron_reflector": "The Sunbreaker's outer layer: the 98 blocks of the 5x5x5 cube's surface. Assembly table: 4 iron blocks, 1 enriched uranium make 4.",
   "big_nukes.tip.sunbreaker_part": "A right click on it reaches the core inside. Sneak to place a block against it.",
   "big_nukes.tip.weapons_grade_uranium": "Centrifuge: 4 enriched uranium make 1 in 60 s. The Sunbreaker's core takes 4.",
-  "big_nukes.sunbreaker.shell": "The Sunbreaker doesn't go off: its implosion shell has %s of %s blocks."
+  "big_nukes.sunbreaker.shell": "The Sunbreaker doesn't go off: its implosion shell has %s of %s blocks.",
+  "block.big_nukes.sunbreaker_core": "Sunbreaker Core",
+  "block.big_nukes.implosion_shell": "Implosion Shell",
+  "block.big_nukes.neutron_reflector": "Neutron Reflector",
+  "item.big_nukes.weapons_grade_uranium": "Weapons-Grade Uranium"
 }

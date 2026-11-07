@@ -29,11 +29,23 @@
       "required": false
     },
     {
+      "id": "big_nukes:sunbreaker_core",
+      "required": false
+    },
+    {
       "id": "big_nukes:assembly_table",
       "required": false
     },
     {
       "id": "big_nukes:silo_hatch",
+      "required": false
+    },
+    {
+      "id": "big_nukes:implosion_shell",
+      "required": false
+    },
+    {
+      "id": "big_nukes:neutron_reflector",
       "required": false
     },
     "big_nukes:uranium_ore",

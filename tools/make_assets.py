@@ -23,8 +23,11 @@ FACING = {
     "launch_pad": ("Launch Pad", "Пусковой стол"),
     "launch_console": ("Launch Console", "Пульт запуска"),
     "strike_beacon": ("Strike Beacon", "Маяк авиаудара"),
+    "sunbreaker_core": ("Sunbreaker Core", "Ядро «Солнцелома»"),
 }
 TABLE = {"assembly_table": ("Assembly Table", "Сборочный стол"), "silo_hatch": ("Silo Hatch", "Люк шахты")}
+# Declared in code, one texture all round: the Sunbreaker's structure.
+CUBE = {"implosion_shell": ("Implosion Shell", "Имплозивная оболочка"), "neutron_reflector": ("Neutron Reflector", "Нейтронный отражатель")}
 # Declared in files: id: (template, English, Russian, drop)
 FILES = {
     "uranium_ore": ("minecraft:iron_ore", "Uranium Ore", "Урановая руда", "big_nukes:raw_uranium"),
@@ -34,6 +37,7 @@ FILES = {
 ITEMS = {
     "raw_uranium": ("Raw Uranium", "Рудный уран"),
     "enriched_uranium": ("Enriched Uranium", "Обогащённый уран"),
+    "weapons_grade_uranium": ("Weapons-Grade Uranium", "Оружейный уран"),
     "nuclear_charge": ("Nuclear Charge", "Ядерный заряд"),
     "bomb_casing": ("Bomb Casing", "Корпус бомбы"),
     "fuse_detonator": ("Fuse Detonator", "Фитильный детонатор"),
@@ -128,6 +132,13 @@ for name, (en, ru) in TABLE.items():
     loot(name, f"big_nukes:{name}")
     lang["en_us"][f"block.big_nukes.{name}"] = en
     lang["ru_ru"][f"block.big_nukes.{name}"] = ru
+for name, (en, ru) in CUBE.items():
+    write(A / "blockstates" / f"{name}.json", {"variants": {"": {"model": f"big_nukes:block/{name}"}}})
+    write(A / "models" / "block" / f"{name}.json", {"parent": "minecraft:block/cube_all", "textures": {"all": f"big_nukes:block/{name}"}})
+    block_item(name)
+    loot(name, f"big_nukes:{name}")
+    lang["en_us"][f"block.big_nukes.{name}"] = en
+    lang["ru_ru"][f"block.big_nukes.{name}"] = ru
 for name, (template, en, ru, drop) in FILES.items():
     write(D / "horizon" / "block" / f"{name}.json", {"template": template})
     write(A / "blockstates" / f"{name}.json", {"variants": {"": {"model": f"big_nukes:block/{name}"}}})
@@ -161,10 +172,10 @@ write(A / "equipment" / "hazmat.json", {"layers": {
 # The blocks declared in code are there only with the native half: their entries are optional,
 # so the assets half alone still loads its tags (and with them its data).
 def entry(n):
-    return {"id": f"big_nukes:{n}", "required": False} if n in FACING or n in TABLE else f"big_nukes:{n}"
+    return {"id": f"big_nukes:{n}", "required": False} if n in FACING or n in TABLE or n in CUBE else f"big_nukes:{n}"
 
 
-pickaxe = [entry(n) for n in [*FACING, *TABLE, "uranium_ore", "deepslate_uranium_ore"]]
+pickaxe = [entry(n) for n in [*FACING, *TABLE, *CUBE, "uranium_ore", "deepslate_uranium_ore"]]
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "mineable" / "pickaxe.json", {"values": pickaxe})
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "mineable" / "shovel.json", {"values": ["big_nukes:ash"]})
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "needs_iron_tool.json",

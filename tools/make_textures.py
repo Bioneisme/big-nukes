@@ -876,4 +876,84 @@ for y in range(10):
         if (x <= 10 and 3 <= y <= 6) or (x > 10 and abs(y - 4.5) <= (15 - x) + 0.5):
             gui.putpixel((262 + x, 192 + y), INK)
 save(gui, "gui", "guide")
+
+# ---- the sunbreaker (plan 8) ----
+# Drawn last and with their own random, so everything above stays the same.
+sun_rng = random.Random(2613)
+GLOW = (120, 255, 150, 255)
+GLOW_DIM = (50, 150, 80, 255)
+
+
+def sun_plate(base, spread=0.05, edge=EDGE):
+    im = Image.new("RGBA", (16, 16))
+    for y in range(16):
+        for x in range(16):
+            im.putpixel((x, y), shade(base, 1 + sun_rng.uniform(-spread, spread)))
+    return frame(im, edge)
+
+
+# The core: dark armour plates whose seams glow, a lit eye in front.
+CORE = (34, 34, 40)
+for part in ("top", "side", "front"):
+    im = sun_plate(CORE, 0.08, (14, 14, 18, 255))
+    for i in range(1, 15):
+        for j in (5, 10):
+            im.putpixel((i, j), GLOW_DIM if sun_rng.random() < 0.7 else GLOW)
+            if part != "front":
+                im.putpixel((j, i), GLOW_DIM if sun_rng.random() < 0.7 else GLOW)
+    if part == "front":
+        for y in range(16):
+            for x in range(16):
+                d = math.hypot(x - 7.5, y - 7.5)
+                if d < 2.0:
+                    im.putpixel((x, y), (230, 255, 220, 255))
+                elif d < 3.4:
+                    im.putpixel((x, y), GLOW)
+                elif d < 4.4:
+                    im.putpixel((x, y), (20, 22, 26, 255))
+    elif part == "top":
+        for x, y in ((7, 7), (8, 7), (7, 8), (8, 8)):
+            im.putpixel((x, y), (230, 255, 220, 255))
+    save(im, "block", f"sunbreaker_core_{part}")
+
+# The implosion shell: a steel plate with two rows of shaped charges and their wire.
+shell = sun_plate((104, 108, 116))
+for row in (3, 9):
+    for col in (2, 7, 12):
+        for dy in range(4):
+            for dx in range(2):
+                c = (150, 54, 40, 255) if dx == 0 else (110, 36, 28, 255)
+                shell.putpixel((col + dx, row + dy), shade(c, 1 + sun_rng.uniform(-0.08, 0.08)))
+        shell.putpixel((col, row), (210, 120, 90, 255))
+    for x in range(1, 15):
+        if shell.getpixel((x, row + 4))[0] < 140:
+            shell.putpixel((x, row + 4), (196, 170, 60, 255))
+save(shell, "block", "implosion_shell")
+
+# The neutron reflector: polished blue-grey metal with a bevel and a sheen across it.
+refl = sun_plate((120, 138, 160), 0.03, (60, 70, 86, 255))
+for i in range(1, 15):
+    refl.putpixel((i, 1), (170, 186, 206, 255))
+    refl.putpixel((1, i), (170, 186, 206, 255))
+    refl.putpixel((i, 14), (88, 102, 122, 255))
+    refl.putpixel((14, i), (88, 102, 122, 255))
+for y in range(2, 14):
+    for x in range(2, 14):
+        if abs((x + y) - 12) <= 1:
+            refl.putpixel((x, y), shade((150, 168, 190), 1.12))
+        elif abs((x + y) - 17) == 0:
+            refl.putpixel((x, y), shade((150, 168, 190), 1.05))
+save(refl, "block", "neutron_reflector")
+
+# Weapons-grade uranium: the lump, brighter than the enriched one, with a glow round it.
+wg = item(LUMP, {"a": (40, 170, 40, 255), "b": (150, 255, 100, 255), "c": (240, 255, 215, 255)})
+halo = wg.copy()
+for y in range(16):
+    for x in range(16):
+        if wg.getpixel((x, y))[3] == 0 and any(
+            0 <= x + dx < 16 and 0 <= y + dy < 16 and wg.getpixel((x + dx, y + dy))[3] == 255
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+        ):
+            halo.putpixel((x, y), (150, 255, 120, 110))
+save(halo, "item", "weapons_grade_uranium")
 print("textures written")
