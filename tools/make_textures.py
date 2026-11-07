@@ -770,7 +770,7 @@ for y in range(3, 13):
 save(book, "item", "guide")
 
 # The screen: the spread, the bookmarks, the arrows, a slot and a recipe's arrow.
-W, H, BOOK_W, BOOK_H = 288, 228, 288, 192
+W, H, BOOK_W, BOOK_H = 288, 264, 288, 192
 gui = Image.new("RGBA", (W, H), CLEAR)
 for y in range(BOOK_H):
     for x in range(BOOK_W):
@@ -822,11 +822,13 @@ for x in range(40, BOOK_W - 40):
         gui.putpixel((x, 181), (150, 116, 60, 255))
 
 # The bookmarks: a ribbon a chapter, its left end cut in a notch; the open ones lighter.
-TAB_W, TAB_H = 26, 18
+# Eight to a closed and an open row; the ninth on starts a pair of rows under the arrows.
+TAB_W, TAB_H, TABS_A_ROW = 26, 18, 8
 COLOURS = [(178, 46, 40), (214, 120, 36), (214, 182, 48), (74, 146, 58), (44, 136, 136), (56, 90, 170),
-           (122, 70, 160), (112, 112, 122)]
+           (122, 70, 160), (112, 112, 122), (204, 78, 142)]
 for i, colour in enumerate(COLOURS):
-    for row, open_ in ((192, False), (210, True)):
+    top = 192 + i // TABS_A_ROW * 2 * TAB_H
+    for row, open_ in ((top, False), (top + TAB_H, True)):
         base = shade(colour, 1.18) if open_ else colour
         for y in range(TAB_H):
             notch = abs(y - (TAB_H - 1) / 2)
@@ -839,10 +841,10 @@ for i, colour in enumerate(COLOURS):
                     c = shade(base, 0.6)
                 else:
                     c = shade(base, 1 + guide_rng.uniform(-0.05, 0.05))
-                gui.putpixel((i * TAB_W + x, row + y), c)
+                gui.putpixel((i % TABS_A_ROW * TAB_W + x, row + y), c)
         if open_:
             for x in range(4, TAB_W):
-                gui.putpixel((i * TAB_W + x, row + 1), (255, 248, 220, 255))
+                gui.putpixel((i % TABS_A_ROW * TAB_W + x, row + 1), (255, 248, 220, 255))
 
 
 # The arrows, light on the leather; the lit ones brighter.

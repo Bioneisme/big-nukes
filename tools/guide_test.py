@@ -23,7 +23,7 @@ WORLD = "bn-guide"
 GUIDE = "big_nukes:guide"
 SHOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "shots")
 # runtime.rs: BOOK_SIZE, TAB_OPEN_X, TAB_TOP, TAB_STEP, TAB_SIZE, NEXT_AT, PREV_AT.
-BOOK_W, BOOK_H, TAB_OPEN_X, TAB_TOP, TAB_STEP, TAB_H = 288, 192, -26, 14, 20, 18
+BOOK_W, BOOK_H, TAB_OPEN_X, TAB_TOP, TAB_STEP, TAB_H = 288, 192, -26, 11, 19, 18
 NEXT_AT, PREV_AT = (258, 176, 18, 10), (12, 176, 18, 10)
 failed = []
 
@@ -88,13 +88,17 @@ ctl("key", "left", "tap")
 ox, oy = origin()
 ctl("scroll-at", ox + 140, oy + 90, -1)
 shot("3-wheel")
-# The bookmarks, top to bottom: the assembly chapter, the radiation chapter.
+# The bookmarks, top to bottom: the assembly chapter, the missile and bomber's, the radiation chapter, the last one.
 click(TAB_OPEN_X + 13, TAB_TOP + 2 * TAB_STEP + TAB_H // 2)
 shot("4-assembly")
 click(NEXT_AT[0] + 9, NEXT_AT[1] + 5)
 shot("5-assembly-recipes")
 click(TAB_OPEN_X + 13, TAB_TOP + 6 * TAB_STEP + TAB_H // 2)
-shot("6-radiation")
+shot("6a-carriers")
+click(TAB_OPEN_X + 13, TAB_TOP + 7 * TAB_STEP + TAB_H // 2)
+shot("6b-radiation")
+click(TAB_OPEN_X + 13, TAB_TOP + 8 * TAB_STEP + TAB_H // 2)
+shot("6c-commands")
 check("clicks keep the screen open", screen() == "mod", str(screen()))
 ctl("key", "esc", "tap")
 ctl("wait", 3)

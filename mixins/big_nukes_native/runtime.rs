@@ -2952,7 +2952,7 @@ pub struct Chapter {
     pub recipes: bool,
 }
 
-pub const CHAPTERS: [Chapter; 8] = [
+pub const CHAPTERS: [Chapter; 9] = [
     Chapter {
         title: "big_nukes.guide.uranium",
         text: "big_nukes.guide.uranium.text",
@@ -2996,6 +2996,13 @@ pub const CHAPTERS: [Chapter; 8] = [
         recipes: false,
     },
     Chapter {
+        title: "big_nukes.guide.carriers",
+        text: "big_nukes.guide.carriers.text",
+        tab: MISSILE,
+        icons: &[MISSILE, LAUNCH_PAD, SILO_HATCH, LAUNCH_CONSOLE, STRIKE_BEACON],
+        recipes: false,
+    },
+    Chapter {
         title: "big_nukes.guide.radiation",
         text: "big_nukes.guide.radiation.text",
         tab: GEIGER_COUNTER,
@@ -3034,8 +3041,8 @@ pub const RECIPE_RESULT_X: f32 = 78.0;
 pub const TAB_SIZE: [f32; 2] = [26.0, 18.0];
 pub const TAB_X: f32 = -22.0;
 pub const TAB_OPEN_X: f32 = -26.0;
-pub const TAB_TOP: f32 = 14.0;
-pub const TAB_STEP: f32 = 20.0;
+pub const TAB_TOP: f32 = 11.0;
+pub const TAB_STEP: f32 = 19.0;
 /// The arrows, in the footer's corners, and the page number's line between them.
 pub const PREV_AT: [f32; 4] = [12.0, 176.0, 18.0, 10.0];
 pub const NEXT_AT: [f32; 4] = [258.0, 176.0, 18.0, 10.0];
@@ -3043,15 +3050,19 @@ pub const NUMBER_Y: f32 = 177.0;
 
 /// The texture: the spread at its top left, then a row of closed bookmarks and a row
 /// of open ones (one colour a chapter), the arrows (lit ones below), a slot and a
-/// recipe's arrow. tools/make_textures.py draws it with the same numbers.
-pub const GUIDE_TEXTURE: [f32; 2] = [288.0, 228.0];
+/// recipe's arrow; under them the bookmarks past the eighth, a closed and an open row.
+/// tools/make_textures.py draws it with the same numbers.
+pub const GUIDE_TEXTURE: [f32; 2] = [288.0, 264.0];
+/// The bookmarks a pair of rows holds.
+pub const TABS_A_ROW: usize = 8;
 pub const SLOT_SRC: [f32; 4] = [244.0, 192.0, 18.0, 18.0];
 pub const RECIPE_ARROW_SRC: [f32; 4] = [262.0, 192.0, 16.0, 10.0];
 
 /// Chapter `i`'s bookmark in the texture.
 pub fn tab_src(i: usize, open: bool) -> [f32; 4] {
-    let y = if open { 210.0 } else { 192.0 };
-    [i as f32 * TAB_SIZE[0], y, TAB_SIZE[0], TAB_SIZE[1]]
+    let rows = (i / TABS_A_ROW) as f32 * 2.0 * TAB_SIZE[1];
+    let y = 192.0 + rows + if open { TAB_SIZE[1] } else { 0.0 };
+    [(i % TABS_A_ROW) as f32 * TAB_SIZE[0], y, TAB_SIZE[0], TAB_SIZE[1]]
 }
 
 /// An arrow in the texture: back or on, lit while the mouse is over it.
@@ -4205,15 +4216,19 @@ mod tests {
     }
 
     #[test]
-    fn the_guide_has_eight_chapters_in_both_languages() {
+    fn the_guide_has_nine_chapters_in_both_languages() {
         let (en, ru) = (language("en_us"), language("ru_ru"));
         let titles: Vec<&str> = CHAPTERS.iter().map(|c| en.get(c.title).map_or(c.title, String::as_str)).collect();
-        assert_eq!(titles, ["Uranium", "Centrifuge", "Assembly", "Bombs", "Detonators", "Remote", "Radiation", "Commands"]);
+        assert_eq!(
+            titles,
+            ["Uranium", "Centrifuge", "Assembly", "Bombs", "Detonators", "Remote", "Missile & Bomber", "Radiation", "Commands"]
+        );
         let known: BTreeSet<&str> = ITEMS
             .iter()
             .map(|i| i.0)
             .chain(BombKind::ALL.map(BombKind::id))
             .chain([CENTRIFUGE, ASSEMBLY_TABLE])
+            .chain(SILO_BLOCKS)
             .chain(FILE_BLOCKS)
             .collect();
         for c in &CHAPTERS {
@@ -4232,6 +4247,31 @@ mod tests {
         }
         let with_recipes: Vec<&str> = CHAPTERS.iter().filter(|c| c.recipes).map(|c| c.title).collect();
         assert_eq!(with_recipes, ["big_nukes.guide.assembly"]);
+        // The missile and the beacon are made at the assembly table: their recipes show in its chapter.
+        assert!([MISSILE, STRIKE_BEACON].iter().all(|id| ASSEMBLIES.iter().any(|a| a.result == *id)));
+        // The carriers' chapter pictures the silo, its console and the beacon, and tells the code's numbers.
+        let carriers = CHAPTERS.iter().find(|c| c.title == "big_nukes.guide.carriers").expect("the carriers' chapter");
+        assert_eq!(carriers.tab, MISSILE);
+        assert_eq!(carriers.icons, [MISSILE, LAUNCH_PAD, SILO_HATCH, LAUNCH_CONSOLE, STRIKE_BEACON]);
+        let numbers = [
+            SHAFT_ROOM.to_string(),
+            CONSOLE_REACH.to_string(),
+            CODE_MIN_DIGITS.to_string(),
+            CODE_DIGITS.to_string(),
+            (LOCK_TICKS / 20).to_string(),
+            MISSILE_MIN_RANGE.to_string(),
+            MISSILE_MAX_RANGE.to_string(),
+            (LAUNCH_COUNTDOWN / 20).to_string(),
+            (STRIKE_COUNTDOWN / 20).to_string(),
+            (PLANE_HEIGHT as u32).to_string(),
+        ];
+        for lang in [&en, &ru] {
+            let text = &lang[carriers.text];
+            for n in &numbers {
+                assert!(text.split(|c: char| !c.is_ascii_digit()).any(|w| w == n), "{n} in {text}");
+            }
+            assert!(text.contains("/bignukes maxpower"), "{text}");
+        }
         // The written book's numbered pages are gone.
         assert!(!en.contains_key("big_nukes.guide.1"));
     }
@@ -4383,7 +4423,7 @@ mod tests {
         assert_eq!(guide_hit(middle(NEXT_AT)), Some(GuideClick::Next));
         assert_eq!(guide_hit([PAGE_X[0] + 10.0, PAGE_TOP + 10.0]), None);
         assert_eq!(guide_hit([TAB_OPEN_X - 1.0, TAB_TOP + 4.0]), None);
-        assert_eq!(guide_hit([TAB_OPEN_X + 2.0, TAB_TOP + TAB_SIZE[1] + 1.0]), None, "between two bookmarks");
+        assert_eq!(guide_hit([TAB_OPEN_X + 2.0, TAB_TOP + TAB_SIZE[1] + 0.5]), None, "between two bookmarks");
         // A click through the screen: the origin is where the book is drawn.
         let mut g = long_guide();
         g.window = [480.0, 270.0];
@@ -4396,6 +4436,11 @@ mod tests {
         assert!(g.click(at(middle(PREV_AT))));
         assert!(!g.click(at([PAGE_X[1] + 5.0, PAGE_TOP + 5.0])));
         assert_eq!(g.chapter(), 4);
+        // Every bookmark opens its chapter, the last one too.
+        for i in (0..CHAPTERS.len()).rev() {
+            assert!(g.click(at(middle(tab(i)))), "{i}");
+            assert_eq!((g.chapter(), g.spread), (i, g.starts[i] / 2), "{i}");
+        }
     }
 
     #[test]
@@ -4421,8 +4466,10 @@ mod tests {
         assert_eq!(icons_x(3), 32.0);
         assert!(icons_x(6) >= 0.0);
         assert!(ROW + 3.0 * 18.0 <= GuideLine::Recipe(0).rows() as f32 * ROW);
-        // Eight bookmarks down the book's edge.
-        assert!(TAB_TOP + (CHAPTERS.len() - 1) as f32 * TAB_STEP + TAB_SIZE[1] <= BOOK_SIZE[1] - 8.0);
+        // The bookmarks down the book's edge, clear of its corners, as far from the bottom as from the top.
+        let bottom = TAB_TOP + (CHAPTERS.len() - 1) as f32 * TAB_STEP + TAB_SIZE[1];
+        assert!(TAB_TOP >= 8.0 && bottom <= BOOK_SIZE[1] - 8.0, "{TAB_TOP} {bottom}");
+        assert!((BOOK_SIZE[1] - bottom - TAB_TOP).abs() <= 1.0, "{TAB_TOP} {bottom}");
         assert!(TAB_STEP > TAB_SIZE[1]);
         assert!(TAB_X > TAB_OPEN_X && TAB_X + TAB_SIZE[0] > 0.0, "a bookmark tucks under the cover");
         // Every part the screen draws is in the texture.
@@ -4437,8 +4484,15 @@ mod tests {
             parts.push(tab_src(i, false));
             parts.push(tab_src(i, true));
         }
-        for [x, y, w, h] in parts {
+        for [x, y, w, h] in parts.iter().copied() {
             assert!(x >= 0.0 && y >= 0.0 && x + w <= GUIDE_TEXTURE[0] && y + h <= GUIDE_TEXTURE[1], "{x} {y} {w} {h}");
+        }
+        // No two parts share a pixel: each bookmark has a colour of its own.
+        for (n, a) in parts.iter().enumerate() {
+            for b in &parts[n + 1..] {
+                let apart = a[0] + a[2] <= b[0] || b[0] + b[2] <= a[0] || a[1] + a[3] <= b[1] || b[1] + b[3] <= a[1];
+                assert!(apart, "{a:?} {b:?}");
+            }
         }
         assert_eq!(GUIDE_GUI, "big_nukes:gui/guide");
     }
