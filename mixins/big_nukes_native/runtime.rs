@@ -2806,7 +2806,6 @@ pub fn dose_key(uuid: u128) -> String {
     format!("{uuid:032x}")
 }
 
-
 /// A UUID as commands take it: `00000000-0000-0000-0000-000000000000`.
 pub fn uuid_text(uuid: u128) -> String {
     let h = format!("{uuid:032x}");
@@ -2820,9 +2819,6 @@ impl Saved {
         self.zones.retain(|z| !z.gone(now));
         self.zones.len() != before
     }
-
-    /// A second of the player's exposure at `pos`, with `protection` kept out:
-    /// the background there, or None when a second hasn't passed since the last.
 
     /// A second of the player's exposure at `pos`, with `protection` kept out and the share `shelter`
     /// (`shelter`) of the background let in where they are: the background they take, or None when a
@@ -3645,7 +3641,6 @@ fn core_walls(
     }
 }
 
-/// The registry's key of a chunk's walls.
 /// Whether a place with `sky_light` is under the open sky. The sky's light leaks through doors, windows and
 /// leaves, a level less a block, so only the full 15 is the sky itself: a room whose door lets light in is
 /// still closed.
@@ -3679,6 +3674,7 @@ pub fn below_crater(blast: &Blast, pos: [i32; 3]) -> bool {
     ring(d) == Ring::Core && pos[1] < crater_floor(blast, d)
 }
 
+/// The registry's key of a chunk's walls.
 pub fn wall_key(dimension: &str, chunk: [i32; 2]) -> String {
     format!("{dimension}:{}:{}", chunk[0], chunk[1])
 }
