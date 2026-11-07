@@ -663,7 +663,12 @@ pub(in crate::game) fn fog(game: &Game<'_>, camera: [f64; 3], fog_type: FogType,
     if fog_type != FogType::Atmospheric {
         return;
     }
-    if let Some((color, start, end)) = rules::tint_fog(shown, fog.color, fog.environmental_start, fog.environmental_end) {
+    // The overworld's fog darkens with the night, and the zone's with it; the other dimensions keep no time.
+    let light = match (game.native_player(), game.native_clock()) {
+        (Some(p), Some(clock)) if p.dimension == "minecraft:overworld" => rules::sky_light(clock.day_time),
+        _ => 1.0,
+    };
+    if let Some((color, start, end)) = rules::tint_fog(shown, fog.color, fog.environmental_start, fog.environmental_end, light) {
         fog.color = color;
         fog.environmental_start = start;
         fog.environmental_end = end;

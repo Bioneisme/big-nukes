@@ -3036,18 +3036,31 @@ pub fn ease(shown: f64, target: f64, seconds: f64) -> f64 {
     shown + (target - shown) * (1.0 - (-seconds.max(0.0) / FOG_EASE).exp())
 }
 
+/// The sky's light at the world's time of day `day_time`, 0 to 1, as vanilla's
+/// fog colour follows it (`FogRenderer`, from `DimensionType.timeOfDay`): full by
+/// day, none at night, eased at dusk and dawn.
+pub fn sky_light(day_time: i64) -> f32 {
+    let d = (day_time.rem_euclid(24_000) as f64 / 24_000.0 - 0.25).rem_euclid(1.0);
+    let e = 0.5 - (d * std::f64::consts::PI).cos() / 2.0;
+    let angle = (d * 2.0 + e) / 3.0;
+    ((angle * std::f64::consts::TAU).cos() * 2.0 + 0.5).clamp(0.0, 1.0) as f32
+}
+
 /// The world's fog (its colour, the start and the end of the fog of the
 /// surroundings) with a zone's of `strength` over it: the colour toward the
-/// zone's, the end in toward 64 blocks and the start toward the eyes. None for
-/// no fog, and when the result isn't one the game takes.
-pub fn tint_fog(strength: f64, color: [f32; 4], start: f32, end: f32) -> Option<([f32; 4], f32, f32)> {
+/// zone's, darkened by the sky's `light` (`sky_light`) as the world's own is, the
+/// end in toward 64 blocks and the start toward the eyes. None for no fog, and
+/// when the result isn't one the game takes.
+pub fn tint_fog(strength: f64, color: [f32; 4], start: f32, end: f32, light: f32) -> Option<([f32; 4], f32, f32)> {
     let s = strength.min(1.0) as f32;
     if !(s > 0.0) || !start.is_finite() || !end.is_finite() {
         return None;
     }
+    let light = if light.is_finite() { light.clamp(0.0, 1.0) } else { 1.0 };
+    let tint = [FOG_TINT[0] * (light * 0.94 + 0.06), FOG_TINT[1] * (light * 0.94 + 0.06), FOG_TINT[2] * (light * 0.91 + 0.09)];
     let mut tinted = color;
     for i in 0..3 {
-        tinted[i] = (color[i] + (FOG_TINT[i] - color[i]) * s).clamp(0.0, 1.0);
+        tinted[i] = (color[i] + (tint[i] - color[i]) * s).clamp(0.0, 1.0);
     }
     if start >= FOG_OFF {
         return Some((tinted, start, end));
@@ -6867,7 +6880,30 @@ mod tests {
     }
 
     fn zone_fog(bg: f64, color: [f32; 4], start: f32, end: f32) -> Option<([f32; 4], f32, f32)> {
-        tint_fog(fog_strength(bg), color, start, end)
+        tint_fog(fog_strength(bg), color, start, end, 1.0)
+    }
+
+    #[test]
+    fn the_zone_fog_darkens_with_the_sky() {
+        // The sky's light by the time of day, as vanilla's fog colour follows it: full at noon, none at midnight.
+        assert_eq!(sky_light(6000), 1.0);
+        assert_eq!(sky_light(18_000), 0.0);
+        assert_eq!(sky_light(6000 + 24_000 * 3), 1.0, "any day");
+        assert!(sky_light(12_500) > 0.0 && sky_light(12_500) < 1.0, "dusk");
+        for t in (0..24_000).step_by(250) {
+            assert!((0.0..=1.0).contains(&sky_light(t)), "{t}");
+        }
+        // A full zone's fog at midnight is the night's, not a bright green over the dark.
+        let night = [0.04, 0.05, 0.08, 1.0];
+        let (c, _, _) = tint_fog(1.0, night, 0.0, 1024.0, sky_light(18_000)).unwrap();
+        assert!(c[..3].iter().all(|v| *v < 0.06), "{c:?}");
+        let (noon, _, _) = tint_fog(1.0, [0.6, 0.7, 0.9, 1.0], 0.0, 1024.0, sky_light(6000)).unwrap();
+        assert!(noon.iter().zip([0.55, 0.62, 0.45, 1.0]).all(|(a, b)| (a - b).abs() < 1e-6), "{noon:?}");
+        // At dusk it is between, and still green over grey.
+        let (dusk, _, _) = tint_fog(1.0, [0.3, 0.3, 0.3, 1.0], 0.0, 1024.0, sky_light(12_800)).unwrap();
+        assert!(dusk[1] < noon[1] && dusk[1] > c[1] && dusk[1] > dusk[2], "{dusk:?}");
+        // The light doesn't touch the distances, nor the fog's alpha.
+        assert_eq!(tint_fog(1.0, night, 0.0, 1024.0, 0.0).map(|(c, s, e)| (c[3], s, e)), Some((1.0, 0.0, 64.0)));
     }
 
     #[test]
