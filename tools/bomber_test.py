@@ -82,13 +82,14 @@ shutil.rmtree(os.path.join(GAME, "saves", WORLD), ignore_errors=True)
 cx, cy, cz = open_world()
 # The beacon on a glass floor high over the mountains, so the ground under it is the floor.
 bx, by, bz = cx + 4, 200, cz
-chat(f"tp @s {bx + 2.5} {by} {bz + 0.5}")
-ctl("wait", 40)
+# The floor first, then the player on it: a player put in the air falls before the glass is there.
 chat(f"fill {bx - 6} {by - 1} {bz - 6} {bx + 6} {by - 1} {bz + 6} minecraft:glass")
 chat(f"setblock {bx} {by} {bz} big_nukes:strike_beacon")
-ctl("wait", 5)
+chat(f"tp @s {bx + 2.5} {by} {bz + 0.5}")
+ctl("wait", 40)
 
-# A beacon broken before the pass gives its bomb back.
+# A beacon broken before the pass gives its bomb back. In survival, as creative keeps what it uses.
+chat("gamemode survival")
 call(bx, by, bz)
 inv = ctl("inventory").get("counts", {})
 check("the beacon takes the warhead", inv.get("big_nukes:tactical_warhead", 0) == 0, json.dumps(inv))
@@ -100,6 +101,7 @@ check("a broken beacon drops its bomb", "passed" in items.lower(), items)
 ctl("wait", 20)
 check("and the call is off", not saved().get("beacons"), json.dumps(saved().get("beacons"))[:300])
 chat("kill @e[type=minecraft:item]")
+chat("gamemode creative")
 
 # The pass.
 chat(f"setblock {bx} {by} {bz} big_nukes:strike_beacon")
@@ -107,8 +109,9 @@ ctl("wait", 5)
 call(bx, by, bz)
 said = json.dumps(ctl("messages", 10), ensure_ascii=False)
 check("the beacon says when the bomber comes", "Bomber called" in said or "бомбардировщик" in said.lower(), said[-300:])
-# Watch from 60 blocks south, out of the blast, looking at the beacon.
-chat(f"tp @s {bx + 0.5} {by + 20} {bz + 60.5} 180 15")
+# Watch from 60 blocks south, out of the blast, looking at the beacon: a spectator, who doesn't fall.
+chat("gamemode spectator")
+chat(f"tp @s {bx + 0.5} {by + 15} {bz + 60.5} 180 -5")
 seen = 0
 for _ in range(45):
     ctl("wait", 20)
