@@ -3802,25 +3802,47 @@ pub fn door_cell(open: Option<&str>) -> Cell {
     if open == Some("true") { Cell::Open } else { Cell::Wall }
 }
 
-/// The room of air from `start`, as `block` sees each place, going through faces: its places, or
-/// none when it reaches the sky, has more than `limit` of them, or `start` isn't air.
-pub fn sealed_room(start: [i32; 3], block: &dyn Fn([i32; 3]) -> Cell, limit: usize) -> Option<HashSet<[i32; 3]>> {
+/// What a filter's flood found from a place.
+#[derive(Debug)]
+pub enum Flood {
+    /// A sealed room, its places.
+    Sealed(HashSet<[i32; 3]>),
+    /// No room: it reached the sky or the limit, or started in a wall. The air it went through before it knew.
+    Open(HashSet<[i32; 3]>),
+}
+
+/// Whether a filter at `pos` goes round its room at tick `now`: once each `FILTER_EVERY`, on a second's tick of
+/// its own drawn from its place, so filters side by side don't all flood on one tick.
+pub fn filter_due(pos: [i32; 3], now: u64) -> bool {
+    let every = FILTER_EVERY / SECOND;
+    let [x, y, z] = pos.map(|v| u64::from(v as u32));
+    let phase = mix(x ^ mix(y ^ mix(z))) % every;
+    now % SECOND == 0 && (now / SECOND + phase) % every == 0
+}
+
+/// The room of air from `start`, as `block` sees each place (each read once), going through faces: sealed,
+/// its places; or open when it reaches the sky, has more than `limit` of them, or `start` isn't air, with
+/// the air it went through: a flood from any of it would end the same.
+pub fn sealed_room(start: [i32; 3], block: &dyn Fn([i32; 3]) -> Cell, limit: usize) -> Flood {
     if block(start) != Cell::Open {
-        return None;
+        return Flood::Open(HashSet::new());
     }
     let mut room = HashSet::from([start]);
+    let mut walls = HashSet::new();
     let mut queue = VecDeque::from([start]);
     while let Some([x, y, z]) = queue.pop_front() {
         for p in [[x + 1, y, z], [x - 1, y, z], [x, y + 1, z], [x, y - 1, z], [x, y, z + 1], [x, y, z - 1]] {
-            if room.contains(&p) {
+            if room.contains(&p) || walls.contains(&p) {
                 continue;
             }
             match block(p) {
-                Cell::Wall => {}
-                Cell::Sky => return None,
+                Cell::Wall => {
+                    walls.insert(p);
+                }
+                Cell::Sky => return Flood::Open(room),
                 Cell::Open => {
                     if room.len() >= limit {
-                        return None;
+                        return Flood::Open(room);
                     }
                     room.insert(p);
                     queue.push_back(p);
@@ -3828,7 +3850,7 @@ pub fn sealed_room(start: [i32; 3], block: &dyn Fn([i32; 3]) -> Cell, limit: usi
             }
         }
     }
-    Some(room)
+    Flood::Sealed(room)
 }
 
 /// Whether a generator at `generator` powers what is at `pos`: within `POWER_RADIUS`, block to block.
@@ -9633,29 +9655,37 @@ mod bunker_tests {
         move |p| if (0..3).all(|a| (lo[a]..=hi[a]).contains(&p[a])) { Cell::Open } else { Cell::Wall }
     }
 
+    /// The room `sealed_room` found sealed, if it did.
+    fn sealed(start: [i32; 3], block: &dyn Fn([i32; 3]) -> Cell, limit: usize) -> Option<HashSet<[i32; 3]>> {
+        match sealed_room(start, block, limit) {
+            Flood::Sealed(cells) => Some(cells),
+            Flood::Open(_) => None,
+        }
+    }
+
     #[test]
     fn a_closed_room_is_sealed() {
-        let cells = sealed_room([1, 1, 1], &room([0, 0, 0], [2, 2, 2]), ROOM_LIMIT).expect("sealed");
+        let cells = sealed([1, 1, 1], &room([0, 0, 0], [2, 2, 2]), ROOM_LIMIT).expect("sealed");
         assert_eq!(cells.len(), 27);
         assert!(cells.contains(&[0, 0, 0]) && cells.contains(&[2, 2, 2]) && !cells.contains(&[3, 0, 0]));
         // A room of exactly the limit is still sealed.
         assert_eq!(ROOM_LIMIT, 4096);
-        assert!(sealed_room([0, 0, 0], &room([0, 0, 0], [15, 15, 15]), ROOM_LIMIT).is_some());
+        assert!(sealed([0, 0, 0], &room([0, 0, 0], [15, 15, 15]), ROOM_LIMIT).is_some());
     }
 
     #[test]
     fn a_room_too_big_or_open_is_not_sealed() {
-        assert!(sealed_room([0, 0, 0], &room([0, 0, 0], [16, 15, 15]), ROOM_LIMIT).is_none());
+        assert!(sealed([0, 0, 0], &room([0, 0, 0], [16, 15, 15]), ROOM_LIMIT).is_none());
         // A cave as big as the world, or a chunk not loaded (air without light): the limit ends it.
         let started = Instant::now();
-        assert!(sealed_room([0, 0, 0], &|_| Cell::Open, ROOM_LIMIT).is_none());
+        assert!(sealed([0, 0, 0], &|_| Cell::Open, ROOM_LIMIT).is_none());
         assert!(started.elapsed() < Duration::from_secs(1));
         // A hole to the sky anywhere in it.
         let holed = |p: [i32; 3]| if p == [2, 3, 2] { Cell::Sky } else { room([0, 0, 0], [4, 3, 4])(p) };
-        assert!(sealed_room([0, 0, 0], &holed, ROOM_LIMIT).is_none());
+        assert!(sealed([0, 0, 0], &holed, ROOM_LIMIT).is_none());
         // Starting in a wall, or under the sky.
-        assert!(sealed_room([9, 9, 9], &room([0, 0, 0], [2, 2, 2]), ROOM_LIMIT).is_none());
-        assert!(sealed_room([0, 0, 0], &|_| Cell::Sky, ROOM_LIMIT).is_none());
+        assert!(sealed([9, 9, 9], &room([0, 0, 0], [2, 2, 2]), ROOM_LIMIT).is_none());
+        assert!(sealed([0, 0, 0], &|_| Cell::Sky, ROOM_LIMIT).is_none());
     }
 
     #[test]
@@ -9672,12 +9702,51 @@ mod bunker_tests {
                 }
             }
         };
-        assert_eq!(sealed_room([1, 0, 1], &with_door(false), ROOM_LIMIT).map(|c| c.len()), Some(18));
-        assert!(sealed_room([1, 0, 1], &with_door(true), ROOM_LIMIT).is_none());
+        assert_eq!(sealed([1, 0, 1], &with_door(false), ROOM_LIMIT).map(|c| c.len()), Some(18));
+        assert!(sealed([1, 0, 1], &with_door(true), ROOM_LIMIT).is_none());
         // How a door's `open` reads.
         assert_eq!(door_cell(Some("false")), Cell::Wall);
         assert_eq!(door_cell(Some("true")), Cell::Open);
         assert_eq!(door_cell(None), Cell::Wall);
+    }
+
+    #[test]
+    fn a_flood_reads_each_place_once_and_keeps_what_it_explored() {
+        use std::cell::RefCell;
+        // A 3x3x3 room in rock round a pillar, which touches six of its cells: each place is read once.
+        let reads = RefCell::new(std::collections::HashMap::new());
+        let counted = |p: [i32; 3]| {
+            *reads.borrow_mut().entry(p).or_insert(0) += 1;
+            if p == [1, 1, 1] { Cell::Wall } else { room([0, 0, 0], [2, 2, 2])(p) }
+        };
+        assert!(matches!(sealed_room([0, 0, 0], &counted, ROOM_LIMIT), Flood::Sealed(c) if c.len() == 26));
+        assert!(reads.borrow().values().all(|n| *n == 1), "{:?}", reads.borrow().iter().filter(|r| *r.1 > 1).collect::<Vec<_>>());
+        assert_eq!(reads.borrow().len(), 26 + 1 + 54);
+        // A room open to the sky, or too big, answers the air it went through before it knew.
+        let holed = |p: [i32; 3]| if p == [4, 3, 4] { Cell::Sky } else { room([0, 0, 0], [4, 3, 4])(p) };
+        let Flood::Open(explored) = sealed_room([0, 0, 0], &holed, ROOM_LIMIT) else { panic!("sealed") };
+        assert!(explored.contains(&[0, 0, 0]) && explored.contains(&[4, 2, 4]) && !explored.contains(&[4, 3, 4]));
+        let Flood::Open(explored) = sealed_room([0, 0, 0], &|_| Cell::Open, ROOM_LIMIT) else { panic!("sealed") };
+        assert_eq!(explored.len(), ROOM_LIMIT);
+        let Flood::Open(explored) = sealed_room([9, 9, 9], &room([0, 0, 0], [2, 2, 2]), ROOM_LIMIT) else { panic!("sealed") };
+        assert!(explored.is_empty(), "a wall to start in");
+    }
+
+    #[test]
+    fn the_filters_go_round_their_rooms_each_at_its_own_second() {
+        let every = FILTER_EVERY / SECOND;
+        let filters: Vec<[i32; 3]> = (0..10).flat_map(|x| (0..10).map(move |z| [x, 64, z])).collect();
+        let mut at_second = vec![0; every as usize];
+        for f in &filters {
+            // Due once each FILTER_EVERY, on a second's tick, the same second each time.
+            let due: Vec<u64> = (1..=2 * FILTER_EVERY).filter(|t| filter_due(*f, *t)).collect();
+            assert_eq!(due.len(), 2, "{f:?} {due:?}");
+            assert!(due.iter().all(|t| t % SECOND == 0));
+            assert_eq!(due[1] - due[0], FILTER_EVERY);
+            at_second[(due[0] / SECOND % every) as usize] += 1;
+        }
+        // A hundred filters side by side don't all go on the same tick.
+        assert!(at_second.iter().all(|n| *n <= 40), "{at_second:?}");
     }
 
     #[test]

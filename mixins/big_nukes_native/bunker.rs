@@ -172,8 +172,7 @@ struct Room {
     filter: [i32; 3],
     /// Its cells when sealed, none when not.
     cells: Option<HashSet<[i32; 3]>>,
-    /// When the filter last went round it, and when it last had power.
-    checked: u64,
+    /// When the filter last had power.
     powered: u64,
 }
 
@@ -334,8 +333,10 @@ fn cell(game: &Game<'_>, pos: [i32; 3]) -> rules::Cell {
     if through == rules::Cell::Open && rules::open_to_sky(game.native_light(pos).1) { rules::Cell::Sky } else { through }
 }
 
-/// Once a second: the filter has power or not; with power, every `FILTER_EVERY` it goes round its room from
-/// each face, and the sealed rooms it reaches are kept as one. Its screen shows what it found.
+/// Once a second: the filter has power or not; with power, every `FILTER_EVERY` at its own second
+/// (`rules::filter_due`) it goes round its room from each face, and the sealed rooms it reaches are kept as
+/// one. A face whose air an earlier face's flood went through is the same room, and isn't flooded again. Its
+/// screen shows what it found.
 fn filter_tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity) {
     let now = now();
     if now % rules::SECOND != 0 {
@@ -348,7 +349,7 @@ fn filter_tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity) 
         let i = match rooms.iter().position(|r| r.dimension == dimension && r.filter == pos) {
             Some(i) => i,
             None => {
-                rooms.push(Room { dimension: dimension.clone(), filter: pos, cells: None, checked: 0, powered: 0 });
+                rooms.push(Room { dimension: dimension.clone(), filter: pos, cells: None, powered: 0 });
                 rooms.len() - 1
             }
         };
@@ -357,25 +358,25 @@ fn filter_tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity) 
             room.powered = now;
         } else {
             room.cells = None;
-            room.checked = 0;
         }
-        powered && (room.checked == 0 || now >= room.checked + rules::FILTER_EVERY)
+        powered && rules::filter_due(pos, now)
     };
     if due {
         let mut sealed: Option<HashSet<[i32; 3]>> = None;
+        let mut open = HashSet::new();
         let [x, y, z] = pos;
         for start in [[x, y + 1, z], [x + 1, y, z], [x - 1, y, z], [x, y, z + 1], [x, y, z - 1], [x, y - 1, z]] {
-            if sealed.as_ref().is_some_and(|s| s.contains(&start)) {
+            if open.contains(&start) || sealed.as_ref().is_some_and(|s| s.contains(&start)) {
                 continue;
             }
-            if let Some(room) = rules::sealed_room(start, &|p| cell(game, p), rules::ROOM_LIMIT) {
-                sealed.get_or_insert_with(HashSet::new).extend(room);
+            match rules::sealed_room(start, &|p| cell(game, p), rules::ROOM_LIMIT) {
+                rules::Flood::Sealed(room) => sealed.get_or_insert_with(HashSet::new).extend(room),
+                rules::Flood::Open(explored) => open.extend(explored),
             }
         }
         let mut rooms = lock(&ROOMS);
         if let Some(room) = rooms.iter_mut().find(|r| r.dimension == dimension && r.filter == pos) {
             room.cells = sealed;
-            room.checked = now;
         }
     }
     let size = lock(&ROOMS).iter().find(|r| r.dimension == dimension && r.filter == pos).and_then(|r| r.cells.as_ref().map(HashSet::len));
