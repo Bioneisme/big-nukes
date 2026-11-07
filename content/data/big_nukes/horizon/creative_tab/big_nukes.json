@@ -2,6 +2,7 @@
   "title": "itemGroup.big_nukes.big_nukes",
   "icon": "big_nukes:atomic_bomb",
   "items": [
+    "big_nukes:guide",
     "big_nukes:atomic_bomb",
     "big_nukes:tactical_warhead",
     "big_nukes:demolition_charge",

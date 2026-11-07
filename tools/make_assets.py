@@ -47,6 +47,7 @@ ITEMS = {
     "anti_rad": ("Anti-Rad", "Антирад"),
     "geiger_counter": ("Geiger Counter", "Счётчик Гейгера"),
     "missile": ("Missile", "Ракета"),
+    "guide": ("Big Nukes Guide", "Руководство Big Nukes"),
 }
 
 

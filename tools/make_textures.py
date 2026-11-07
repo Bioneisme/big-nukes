@@ -4,7 +4,8 @@
     python tools/make_textures.py
 
 Writes content/assets/big_nukes/textures/{block,item}/*.png, gui/centrifuge.png, the hazmat suit's
-entity/equipment/{humanoid,humanoid_leggings}/hazmat.png and mob_effect/radiation.png.
+entity/equipment/{humanoid,humanoid_leggings}/hazmat.png, mob_effect/radiation.png and the guide's
+screen, gui/guide.png.
 """
 import math
 import random
@@ -722,4 +723,155 @@ def quarters(colours):
 
 save(quarters([(234, 234, 228), (200, 36, 32), (60, 62, 66), (22, 22, 24)]), "item", "missile_model")
 save(quarters([(70, 76, 66), (128, 134, 126), (90, 140, 170), (20, 20, 20)]), "item", "bomber_model")
+# ---- the guide (plan 6) ----
+# Drawn last and with their own random, so everything above stays the same. The screen's
+# numbers are runtime.rs's (BOOK_SIZE, PAGES, tab_src, arrow_src, SLOT_SRC, RECIPE_ARROW_SRC).
+guide_rng = random.Random(2611)
+LEATHER = (74, 44, 26)
+LEATHER_EDGE = (36, 20, 12, 255)
+LEATHER_LIGHT = (112, 72, 42, 255)
+STITCH = (156, 116, 72, 255)
+BRASS = (196, 158, 72, 255)
+BRASS_DARK = (128, 98, 40, 255)
+PARCHMENT = (233, 221, 184)
+PAGE_EDGE = (186, 166, 126, 255)
+INK = (96, 72, 44, 255)
+
+
+def grain(base, spread):
+    return shade(base, 1 + guide_rng.uniform(-spread, spread))
+
+
+# The item: a green book with a gold-rimmed trefoil, its pages showing on the right.
+book = Image.new("RGBA", (16, 16), CLEAR)
+for y in range(1, 15):
+    for x in range(2, 14):
+        if x == 13:
+            c = (236, 226, 196, 255) if 1 < y < 14 else (60, 40, 24, 255)
+        elif x in (2, 3):
+            c = (198, 160, 60, 255) if y in (3, 12) else shade((30, 48, 26), 1 + guide_rng.uniform(-0.08, 0.08))
+        else:
+            c = grain((48, 82, 40), 0.08)
+        if y in (1, 14) and x < 13:
+            c = (22, 30, 18, 255)
+        book.putpixel((x, y), c)
+for y in range(1, 15):
+    book.putpixel((1, y), (22, 30, 18, 255))
+    book.putpixel((14, y), (22, 30, 18, 255) if y in (1, 14) else (150, 136, 104, 255))
+for y in range(3, 13):
+    for x in range(4, 13):
+        dx, dy = x - 8 + 0.5, y - 7.5 + 0.5
+        r = math.hypot(dx, dy)
+        a = (math.degrees(math.atan2(dy, dx)) + 360 + 30) % 120
+        if r < 1.0 or (1.9 < r < 3.6 and 30 < a < 90):
+            book.putpixel((x, y), (24, 22, 16, 255))
+        elif r < 4.3:
+            book.putpixel((x, y), (226, 190, 48, 255))
+save(book, "item", "guide")
+
+# The screen: the spread, the bookmarks, the arrows, a slot and a recipe's arrow.
+W, H, BOOK_W, BOOK_H = 288, 228, 288, 192
+gui = Image.new("RGBA", (W, H), CLEAR)
+for y in range(BOOK_H):
+    for x in range(BOOK_W):
+        gui.putpixel((x, y), grain(LEATHER, 0.07))
+for x in range(BOOK_W):
+    gui.putpixel((x, 0), LEATHER_EDGE)
+    gui.putpixel((x, BOOK_H - 1), LEATHER_EDGE)
+    gui.putpixel((x, 1), LEATHER_LIGHT)
+for y in range(BOOK_H):
+    gui.putpixel((0, y), LEATHER_EDGE)
+    gui.putpixel((BOOK_W - 1, y), LEATHER_EDGE)
+    if 0 < y < BOOK_H - 1:
+        gui.putpixel((1, y), LEATHER_LIGHT)
+# Brass corners.
+for i in range(7):
+    for j in range(7 - i):
+        for x, y in ((i, j), (BOOK_W - 1 - i, j), (i, BOOK_H - 1 - j), (BOOK_W - 1 - i, BOOK_H - 1 - j)):
+            gui.putpixel((x, y), BRASS if i + j < 6 else BRASS_DARK)
+# The pages, a stack of edges under each, and the gutter's shadow toward the spine.
+PAGES = [(6, 6, 136, 164), (146, 6, 136, 164)]
+for side, (px, py, pw, ph) in enumerate(PAGES):
+    for y in range(py, py + ph):
+        for x in range(px, px + pw):
+            gutter = (px + pw - 1 - x) if side == 0 else (x - px)
+            k = 1 - 0.16 * max(0, 1 - gutter / 10)
+            outer = x - px if side == 0 else px + pw - 1 - x
+            k -= 0.05 * max(0, 1 - outer / 4)
+            gui.putpixel((x, y), shade(PARCHMENT, k * (1 + guide_rng.uniform(-0.025, 0.025))))
+    for x in range(px, px + pw):
+        gui.putpixel((x, py), PAGE_EDGE)
+        for n, y in enumerate(range(py + ph, py + ph + 3)):
+            gui.putpixel((x, y), shade(PARCHMENT, 0.86 - 0.1 * n) if (x + n) % 3 else PAGE_EDGE)
+    for y in range(py, py + ph):
+        gui.putpixel((px if side == 0 else px + pw - 1, y), PAGE_EDGE)
+# The spine between them, down to the footer, which keeps its middle for the page number.
+for y in range(3, 173):
+    for x in range(142, 146):
+        gui.putpixel((x, y), (54, 30, 16, 255) if x in (142, 145) else (92, 58, 32, 255))
+# Stitches round the cover's inner edge, where no page lies.
+for x in range(8, BOOK_W - 8, 4):
+    gui.putpixel((x, 3), STITCH)
+    gui.putpixel((x, BOOK_H - 4), STITCH)
+for y in range(8, BOOK_H - 8, 4):
+    gui.putpixel((3, y), STITCH)
+    gui.putpixel((BOOK_W - 4, y), STITCH)
+# A gold rule across the footer, between the arrows.
+for x in range(40, BOOK_W - 40):
+    if x < 120 or x > 168:
+        gui.putpixel((x, 181), (150, 116, 60, 255))
+
+# The bookmarks: a ribbon a chapter, its left end cut in a notch; the open ones lighter.
+TAB_W, TAB_H = 26, 18
+COLOURS = [(178, 46, 40), (214, 120, 36), (214, 182, 48), (74, 146, 58), (44, 136, 136), (56, 90, 170),
+           (122, 70, 160), (112, 112, 122)]
+for i, colour in enumerate(COLOURS):
+    for row, open_ in ((192, False), (210, True)):
+        base = shade(colour, 1.18) if open_ else colour
+        for y in range(TAB_H):
+            notch = abs(y - (TAB_H - 1) / 2)
+            for x in range(TAB_W):
+                if x < 4 - notch / 2.2:
+                    continue
+                if y == 0:
+                    c = shade(base, 1.25)
+                elif y == TAB_H - 1 or x < 5 - notch / 2.2:
+                    c = shade(base, 0.6)
+                else:
+                    c = shade(base, 1 + guide_rng.uniform(-0.05, 0.05))
+                gui.putpixel((i * TAB_W + x, row + y), c)
+        if open_:
+            for x in range(4, TAB_W):
+                gui.putpixel((i * TAB_W + x, row + 1), (255, 248, 220, 255))
+
+
+# The arrows, light on the leather; the lit ones brighter.
+def page_arrow(ox, oy, right, colour):
+    for y in range(10):
+        for x in range(18):
+            fx = 17 - x if right else x
+            head = fx <= 6 and abs(y - 4.5) <= fx * 0.75 + 0.25
+            shaft = 6 < fx < 17 and 3 <= y <= 6
+            if head or shaft:
+                gui.putpixel((ox + x, oy + y), colour if 0 < y < 9 and fx > 0 else shade(colour[:3], 0.7))
+
+
+for right, x in ((False, 208), (True, 226)):
+    page_arrow(x, 192, right, (204, 172, 110, 255))
+    page_arrow(x, 202, right, (255, 232, 156, 255))
+# A slot on the parchment, and a recipe's arrow.
+for y in range(18):
+    for x in range(18):
+        if x == 17 or y == 17:
+            c = (250, 242, 214, 255)
+        elif x == 0 or y == 0:
+            c = (120, 94, 60, 255)
+        else:
+            c = (206, 190, 150, 255)
+        gui.putpixel((244 + x, 192 + y), c)
+for y in range(10):
+    for x in range(16):
+        if (x <= 10 and 3 <= y <= 6) or (x > 10 and abs(y - 4.5) <= (15 - x) + 0.5):
+            gui.putpixel((262 + x, 192 + y), INK)
+save(gui, "gui", "guide")
 print("textures written")

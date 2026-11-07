@@ -18,7 +18,7 @@ use horizon_client::{
     hud::HudBatch,
     items::ItemStack,
     lang,
-    mod_api::{EquipmentSlot, NativeCommand, NativeScreen, NativeServerPlayer, ServerTickPhase, WorldPhase},
+    mod_api::{EquipmentSlot, NativeCommand, NativeScreen, NativeScreenView, NativeServerPlayer, ServerTickPhase, WorldPhase},
     particles::{ParticleOptions, ParticleType},
     text::{self, ClickEvent, Style, Text},
 };
@@ -243,8 +243,8 @@ pub(in crate::game) fn logged_in(game: &mut Game<'_>, player: u128, name: &str) 
         ..Style::default()
     };
     for line in [
-        "Big Nukes: the assets mod is missing. Install big_nukes too: ",
-        "Big Nukes: не установлен мод с ассетами. Поставьте ещё big_nukes: ",
+        "Big Nukes: its assets didn't load. If big_nukes is installed, restart the game; if not, install it: ",
+        "Big Nukes: ассеты не загрузились. Если мод big_nukes установлен, перезапустите игру; если нет, поставьте его: ",
     ] {
         let line = Text::literal(line).append(Text::styled(ASSETS_PAGE, link.clone()));
         game.native_tell(player, line);
@@ -1979,6 +1979,10 @@ pub(in crate::game) fn use_item_on(game: &mut Game<'_>, stack: &ItemStack, claim
 }
 
 pub(in crate::game) fn use_item(game: &mut Game<'_>, stack: &ItemStack, claimed: &mut bool) {
+    if !*claimed && &*stack.item == rules::GUIDE && game.native_on(rules::ID) {
+        read_guide(game, claimed);
+        return;
+    }
     if *claimed || &*stack.item != rules::REMOTE || !game.native_on(rules::ID) {
         return;
     }
@@ -2205,4 +2209,139 @@ fn keypad_click(at: [f32; 2], right: bool, button: &mut Option<i32>) {
         return;
     }
     *button = keys().find(|(_, r)| inside(at, *r)).map(|(id, _)| id);
+}
+
+// ---- the guide -------------------------------------------------------------------
+//
+// A right click with the guide, on the server, asks the player's window to open it.
+// The window opens the mod's own screen (API 111), whose hooks only read the game: the
+// open book lives in a static, and a page turned is heard at the next frame. The book
+// stays after the screen closes, so it opens again where it was left.
+
+/// A right click with the guide: the player's window opens it. The use is claimed
+/// even when the message can't go, so the guide never acts as a plain book.
+fn read_guide(game: &mut Game<'_>, claimed: &mut bool) {
+    *claimed = true;
+    let Some(who) = game.native_acting_player() else {
+        return;
+    };
+    if let Err(e) = game.native_net_send_to_player(who.uuid, rules::GUIDE_CHANNEL, &[]) {
+        log::warn!("[big_nukes] opening the guide: {e}");
+    }
+}
+
+static GUIDE_BOOK: Mutex<Option<rules::Guide>> = Mutex::new(None);
+static PAGE_TURNED: Mutex<bool> = Mutex::new(false);
+
+/// The server's message: the book is laid out in the window's language and opened.
+pub(in crate::game) fn guide_asked(game: &mut Game<'_>, channel: &str) {
+    if channel != rules::GUIDE_CHANNEL || !game.native_on(rules::ID) {
+        return;
+    }
+    let mut guide = rules::Guide::new(&lang::get, &|text: &str| game.native_text_width(text));
+    if let Some(old) = lock(&GUIDE_BOOK).take() {
+        guide.window = old.window;
+        guide.go(old.spread);
+    }
+    *lock(&GUIDE_BOOK) = Some(guide);
+    if !game.native_mod_screen_open(rules::ID) {
+        log::info!("[big_nukes] the guide can't open over the screen that is open");
+    }
+}
+
+fn guide_shown(game: &Game<'_>, screen: &NativeScreenView<'_>) -> bool {
+    screen.id == "mod" && game.native_mod_screen() == Some(rules::ID)
+}
+
+/// Does `act` to the open book; a page it turns is heard at the next frame.
+fn turn<R>(guide: &mut rules::Guide, act: impl FnOnce(&mut rules::Guide) -> R) -> R {
+    let before = guide.spread;
+    let done = act(guide);
+    if guide.spread != before {
+        *lock(&PAGE_TURNED) = true;
+    }
+    done
+}
+
+/// An item's name in the window's language: a block's item is named as its block.
+fn item_title(id: &str) -> String {
+    let path = id.replace(':', ".");
+    let item = format!("item.{path}");
+    if lang::has(&item) { lang::get(&item) } else { lang::get(&format!("block.{path}")) }
+}
+
+pub(in crate::game) fn guide_render(game: &Game<'_>, batch: &mut HudBatch, screen: &NativeScreenView<'_>) {
+    if !guide_shown(game, screen) {
+        return;
+    }
+    let draws = {
+        let mut book = lock(&GUIDE_BOOK);
+        let Some(guide) = book.as_mut() else {
+            return;
+        };
+        guide.window = [batch.width, batch.height];
+        guide.draw(screen.mouse, &|text: &str| game.native_text_width(text), &item_title)
+    };
+    // Without the assets half there is no texture: plain colours stand in for it.
+    let textured = game.native_sprite_size(rules::GUIDE_GUI) == Some(rules::GUIDE_TEXTURE);
+    game.native_fill(batch, [0.0, 0.0, batch.width, batch.height], rules::GUIDE_DIM);
+    for draw in draws {
+        match draw {
+            rules::GuideDraw::Sprite(src, dst) if textured => {
+                game.native_sprite(batch, rules::GUIDE_GUI, src, dst);
+            }
+            rules::GuideDraw::Sprite(src, dst) if src == [0.0, 0.0, rules::BOOK_SIZE[0], rules::BOOK_SIZE[1]] => {
+                game.native_fill(batch, dst, 0xFF4A_2C1A);
+                for [x, y, w, h] in rules::PAGES {
+                    game.native_fill(batch, [dst[0] + x, dst[1] + y, w, h], 0xFFE9_DDB8);
+                }
+            }
+            rules::GuideDraw::Sprite(_, dst) => game.native_fill(batch, dst, 0xFF8A_6A40),
+            rules::GuideDraw::Fill(rect, argb) => game.native_fill(batch, rect, argb),
+            rules::GuideDraw::Text(text, at, rgb) => game.native_text(batch, &text, at, rgb, false),
+            rules::GuideDraw::Item(id, at) => {
+                game.native_item(batch, id, at, 16.0);
+            }
+        }
+    }
+}
+
+pub(in crate::game) fn guide_mouse(game: &Game<'_>, screen: &NativeScreenView<'_>, button: i32, canceled: &mut bool) {
+    if guide_shown(game, screen)
+        && let Some(guide) = lock(&GUIDE_BOOK).as_mut()
+    {
+        if button == 0 {
+            turn(guide, |g| g.click(screen.mouse));
+        }
+        *canceled = true;
+    }
+}
+
+pub(in crate::game) fn guide_wheel(game: &Game<'_>, screen: &NativeScreenView<'_>, scroll: [f64; 2], canceled: &mut bool) {
+    if guide_shown(game, screen)
+        && let Some(guide) = lock(&GUIDE_BOOK).as_mut()
+    {
+        turn(guide, |g| g.wheel(scroll[1]));
+        *canceled = true;
+    }
+}
+
+/// The arrow keys turn the pages; Escape and the rest are the game's.
+pub(in crate::game) fn guide_key(game: &Game<'_>, screen: &NativeScreenView<'_>, key: &str, canceled: &mut bool) {
+    if guide_shown(game, screen)
+        && let Some(guide) = lock(&GUIDE_BOOK).as_mut()
+        && turn(guide, |g| g.key(key))
+    {
+        *canceled = true;
+    }
+}
+
+/// A page turned since the last frame: the book's own sound, where the player stands.
+pub(in crate::game) fn guide_frame(game: &mut Game<'_>) {
+    if !std::mem::take(&mut *lock(&PAGE_TURNED)) {
+        return;
+    }
+    if let Some(p) = game.native_player() {
+        game.native_play_local_sound("minecraft:item.book.page_turn", [p.x, p.y + 1.62, p.z], 1.0, 1.0, 0);
+    }
 }
