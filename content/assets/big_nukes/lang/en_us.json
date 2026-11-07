@@ -173,7 +173,7 @@
   "big_nukes.sunbreaker.shell": "The Sunbreaker doesn't go off: its implosion shell has %s of %s blocks.",
   "big_nukes.sunbreaker.state": "Sunbreaker: shell %s/%s, reflector %s/%s, radius %s.",
   "big_nukes.sunbreaker.state.open": "Sunbreaker: shell %s/%s, reflector %s/%s. Without a whole shell it won't go off.",
-  "big_nukes.sunbreaker.far": "The Sunbreaker's structure can't be read from here: come to its dimension, close enough for its chunk to be loaded.",
+  "big_nukes.sunbreaker.unread": "The Sunbreaker's core hasn't read its structure yet: come near it once, so it can.",
   "block.big_nukes.sunbreaker_core": "Sunbreaker Core",
   "block.big_nukes.implosion_shell": "Implosion Shell",
   "block.big_nukes.neutron_reflector": "Neutron Reflector",

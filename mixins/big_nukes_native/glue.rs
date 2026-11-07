@@ -351,6 +351,7 @@ pub(in crate::game) fn refused(why: rules::Refused) -> Text {
         rules::Refused::Dimension => Text::translate("big_nukes.blast.dimension", &[]),
         rules::Refused::Maxpower { radius, maxpower } => Text::translate("big_nukes.maxpower.over", &[n(radius), n(maxpower)]),
         rules::Refused::Gone => Text::translate("big_nukes.remote.gone", &[]),
+        rules::Refused::Unread => Text::translate("big_nukes.sunbreaker.unread", &[]),
         rules::Refused::Structure(rules::StructureProblem::Shell(shell)) => {
             Text::translate("big_nukes.sunbreaker.shell", &[n(shell), n(rules::SHELL_BLOCKS)])
         }
@@ -791,11 +792,9 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
                 take_bomb(game, dimension, pos);
                 news.extend(st.saved.waves.news(dimension, st.saved.tick).into_iter().filter(|n| n.id == id));
             }
-            // A Sunbreaker whose shell the wave broke first fizzles, and goes with it.
+            // A Sunbreaker without a whole shell doesn't go off and stays: a crater that reaches its core takes it.
             Err(rules::Refused::Structure(problem)) => {
-                log::info!("[big_nukes] the sunbreaker at {pos:?} in {dimension} fizzled: {problem:?}");
-                take_bomb(game, dimension, pos);
-                st.dirty = true;
+                log::info!("[big_nukes] the sunbreaker at {pos:?} in {dimension} didn't go off: {problem:?}");
             }
             Err(_) => {}
         }
@@ -1975,6 +1974,14 @@ fn bomb_tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity) {
     };
     let was = bomb.clone();
     let dimension = game.native_dimension();
+    // A Sunbreaker's core reads its structure once a second, for a remote that fires it from afar.
+    if bomb.kind == rules::BombKind::Sunbreaker && now % rules::SECOND == 0 {
+        let power = bomb.kind.power(pos, &|p| game.native_block(p));
+        if let Some(mut guard) = state(game) {
+            let st = guard.as_mut().expect("opened");
+            st.dirty |= st.saved.read_power(&dimension, pos, power);
+        }
+    }
     if let Some(left) = bomb.left(now) {
         counting(game, pos, &bomb, left);
     }
@@ -2214,13 +2221,10 @@ pub(in crate::game) fn use_item(game: &mut Game<'_>, stack: &ItemStack, claimed:
             }
         }
     }
-    let recorded = state(game).and_then(|g| g.as_ref().and_then(|st| st.saved.recorded(dimension, pos)));
-    if recorded == Some(rules::BombKind::Sunbreaker) && !here {
-        game.native_tell(who.uuid, Text::translate("big_nukes.sunbreaker.far", &[]));
-        return;
-    }
+    // From afar a Sunbreaker goes off with the radius its core last read.
     let blocks = if here { structure_now(game, pos) } else { HashMap::new() };
-    let line = match start(game, dimension, |saved| saved.fire_bomb(dimension, pos, &read_from(&blocks))) {
+    let reader = read_from(&blocks);
+    let line = match start(game, dimension, |saved| saved.fire_bomb(dimension, pos, here.then_some(&reader as &dyn Fn([i32; 3]) -> String))) {
         Ok(_) => {
             if here {
                 // The bomb goes with its blast, and its detonator with it.
