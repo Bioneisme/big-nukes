@@ -116,7 +116,9 @@ def s_near():
     cx, cy, cz = here()
     for tag, dx in (("bn_core", 12), ("bn_edge", 56)):
         chat(f"fill {cx + dx - 1} {cy + 2} {cz - 1} {cx + dx + 1} {cy + 5} {cz + 1} minecraft:air")
-        chat(f'summon minecraft:cow {cx + dx} {cy + 3} {cz} {{NoAI:1b,NoGravity:1b,Tags:["{tag}"]}}')
+        # 40 health: the blast's zone hurts a mob each second too, which a cow's 10 wouldn't outlast till the check.
+        chat(f'summon minecraft:cow {cx + dx} {cy + 3} {cz} {{NoAI:1b,NoGravity:1b,Tags:["{tag}"],'
+             f'attributes:[{{id:"minecraft:max_health",base:40}}],Health:40f}}')
     ctl("wait", 10)
     base = brightness("near-base")
     seen = log_len()
@@ -139,7 +141,7 @@ def s_near():
     check("a cow in the core dies", not passed(chat("execute if entity @e[tag=bn_core]")))
     health = " ".join(chat("data get entity @e[tag=bn_edge,limit=1] Health"))
     m = re.search(r"([0-9.]+)f", health)
-    check("a cow at the edge lives, hurt", m is not None and 0 < float(m.group(1)) < 10, health)
+    check("a cow at the edge lives, hurt", m is not None and 0 < float(m.group(1)) < 40, health)
     ctl("quit")
     time.sleep(8)
 
