@@ -239,8 +239,8 @@ pub(in crate::game) fn logged_in(game: &mut Game<'_>, player: u128, name: &str) 
         ..Style::default()
     };
     for line in [
-        "Big Nukes: the assets mod is missing. Install big_nukes too: ",
-        "Big Nukes: не установлен мод с ассетами. Поставьте ещё big_nukes: ",
+        "Big Nukes: its assets didn't load. If big_nukes is installed, restart the game; if not, install it: ",
+        "Big Nukes: ассеты не загрузились. Если мод big_nukes установлен, перезапустите игру; если нет, поставьте его: ",
     ] {
         let line = Text::literal(line).append(Text::styled(ASSETS_PAGE, link.clone()));
         game.native_tell(player, line);
