@@ -318,7 +318,7 @@ fn lamp_tick(game: &mut Game<'_>, pos: [i32; 3]) {
 }
 
 /// A place as a filter's room sees it: air goes through, and so does a door, a trapdoor or a gate
-/// standing open; air with the sky's light in it is open to the sky; anything else is a wall.
+/// standing open; air under the open sky (`open_to_sky`) is the sky; anything else is a wall.
 fn cell(game: &Game<'_>, pos: [i32; 3]) -> rules::Cell {
     let block = game.native_block(pos);
     let through = match block.as_str() {
@@ -328,7 +328,7 @@ fn cell(game: &Game<'_>, pos: [i32; 3]) -> rules::Cell {
             None => rules::Cell::Wall,
         },
     };
-    if through == rules::Cell::Open && game.native_light(pos).1 > 0 { rules::Cell::Sky } else { through }
+    if through == rules::Cell::Open && rules::open_to_sky(game.native_light(pos).1) { rules::Cell::Sky } else { through }
 }
 
 /// Once a second: the filter has power or not; with power, every `FILTER_EVERY` it goes round its room from
@@ -391,7 +391,7 @@ pub(in crate::game) fn shelter(game: &Game<'_>, who: &NativeServerPlayer) -> f64
     let feet = [x.floor() as i32, y.floor() as i32, z.floor() as i32];
     let head = [feet[0], (y + 1.0).floor() as i32, feet[2]];
     let eyes = [feet[0], (y + EYES).floor() as i32, feet[2]];
-    let sky = game.native_light(eyes).1 > 0;
+    let sky = rules::open_to_sky(game.native_light(eyes).1);
     let now = now();
     let sealed = lock(&ROOMS).iter().any(|r| {
         r.dimension == who.dimension

@@ -3590,6 +3590,13 @@ fn core_walls(
 }
 
 /// The registry's key of a chunk's walls.
+/// Whether a place with `sky_light` is under the open sky. The sky's light leaks through doors, windows and
+/// leaves, a level less a block, so only the full 15 is the sky itself: a room whose door lets light in is
+/// still closed.
+pub fn open_to_sky(sky_light: u8) -> bool {
+    sky_light >= 15
+}
+
 /// How far up a wall of the bunker still roofs a player under it.
 pub const ROOF_REACH: i32 = 32;
 
@@ -9135,6 +9142,15 @@ mod bunker_tests {
         // Built the other way up (the concrete inside on top), it doesn't.
         let upside = series([100, 67, 3], [0, 1, 0]);
         assert!(upside.iter().all(|w| !multilayer_at(&lookup(&upside), c, w.pos)));
+    }
+
+    #[test]
+    fn only_full_sky_light_is_the_open_sky() {
+        // Sky light leaks through a door, a window or leaves and fades a level a block: only the full 15 is the sky.
+        assert!(open_to_sky(15));
+        for leaked in [14, 11, 1, 0] {
+            assert!(!open_to_sky(leaked), "{leaked}");
+        }
     }
 
     #[test]
