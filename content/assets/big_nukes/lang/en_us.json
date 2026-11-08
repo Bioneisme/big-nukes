@@ -2,6 +2,8 @@
   "big_nukes.mod.description": "Bombs whose shockwave rolls across the land.",
   "big_nukes.missing.native": "Big Nukes: the native mod is missing, so there are no bombs. Install big_nukes_native too:",
   "big_nukes.blast.started": "A blast of radius %s: its wave is on the way.",
+  "big_nukes.save.failed": "Big Nukes could not save its state (%s). It keeps trying; free some disk space if it is full.",
+  "big_nukes.save.lost": "Big Nukes could not save its state (%s): the blasts, radiation and bunkers since its last save will be lost when the world closes.",
   "big_nukes.blast.usage": "Usage: /bignukes blast <radius %s to %s> [x y z]",
   "big_nukes.blast.dimension": "Big Nukes can't blast in this dimension.",
   "big_nukes.screen.centrifuge": "Centrifuge",

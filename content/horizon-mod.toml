@@ -1,6 +1,6 @@
 id = "big_nukes"
 name = "Big Nukes (assets)"
-version = "0.1.2"
+version = "0.1.3"
 description = "Textures, models, text and recipes for the Big Nukes native mod. Install both."
 authors = ["bioneisme"]
 api = "0.2"

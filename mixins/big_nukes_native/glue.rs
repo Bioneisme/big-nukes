@@ -68,6 +68,10 @@ pub(in crate::game) struct State {
     /// Players whose window was last told of some radiation: they are told once
     /// more when there is none, so it lets go.
     told: BTreeSet<u128>,
+    /// The last save's error while saving fails: the state stays dirty and is tried again.
+    save_error: Option<String>,
+    /// Whether the players were told of the failing save (once until a save succeeds).
+    save_told: bool,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -114,6 +118,8 @@ pub(in crate::game) fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Opti
             wake,
             mobs: HashMap::new(),
             told: BTreeSet::new(),
+            save_error: None,
+            save_told: false,
         });
     }
     let broken = std::mem::take(&mut *lock(&BROKEN));
@@ -142,17 +148,50 @@ pub(in crate::game) fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Opti
     Some(guard)
 }
 
-pub(in crate::game) fn save(st: &mut State) {
-    st.dirty = false;
-    let write = || -> std::io::Result<()> {
-        fs::create_dir_all(&st.dir)?;
-        let tmp = st.dir.join("waves.json.tmp");
-        fs::write(&tmp, serde_json::to_vec(&st.saved)?)?;
-        fs::rename(tmp, st.dir.join("waves.json"))
-    };
-    if let Err(e) = write() {
-        log::warn!("[big_nukes] saving waves.json: {e}");
+/// Writes the state. A failed write leaves it dirty, so the periodic save tries
+/// again; the error is kept for the players to be told (`save_trouble`).
+pub(in crate::game) fn save(st: &mut State) -> bool {
+    match rules::save_to(&st.saved, &mut st.dirty, &mut rules::Disk(&st.dir)) {
+        Ok(()) => {
+            if st.save_error.take().is_some() {
+                log::info!("[big_nukes] {} saved again", rules::SAVE_FILE);
+            }
+            st.save_told = false;
+            true
+        }
+        Err(e) => {
+            log::warn!("[big_nukes] saving {}: {e}; it is tried again", rules::SAVE_FILE);
+            st.save_error = Some(e.to_string());
+            false
+        }
     }
+}
+
+/// The line for the players when saving fails, once until a save succeeds.
+fn save_trouble(st: &mut State) -> Option<Text> {
+    let error = st.save_error.as_ref().filter(|_| !st.save_told)?;
+    st.save_told = true;
+    Some(Text::translate("big_nukes.save.failed", &[Text::literal(error.clone())]))
+}
+
+/// Every player on the server is told `line`.
+fn tell_everyone(game: &mut Game<'_>, line: &Text) {
+    for p in game.native_server_players() {
+        game.native_tell(p.uuid, line.clone());
+    }
+}
+
+/// The server is stopping, its players still there: the state is saved now, and
+/// if that fails they are told, as the world's close can only write it in the log.
+pub(in crate::game) fn server_stopping(game: &mut Game<'_>) {
+    let Some(mut guard) = state(game) else { return };
+    let st = guard.as_mut().expect("opened");
+    if save(st) {
+        return;
+    }
+    let error = st.save_error.clone().unwrap_or_default();
+    drop(guard);
+    tell_everyone(game, &Text::translate("big_nukes.save.lost", &[Text::literal(error)]));
 }
 
 // ---- declarations -------------------------------------------------------------------
@@ -739,8 +778,12 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     if st.dirty && st.saved.tick % SAVE_EVERY == 0 {
         save(st);
     }
+    let trouble = save_trouble(st);
     let wake = std::mem::take(&mut st.wake);
     drop(guard);
+    if let Some(line) = trouble {
+        tell_everyone(game, &line);
+    }
     // The commands run with the state let go: a death they cause is heard at once.
     for (name, stage, damage) in sick {
         sicken(game, &name, stage, damage);
@@ -950,8 +993,14 @@ pub(in crate::game) fn lifecycle(phase: WorldPhase) {
         return;
     }
     let mut state = lock(&STATE);
-    if let Some(st) = state.as_mut() {
-        save(st);
+    if let Some(st) = state.as_mut()
+        && !save(st)
+    {
+        log::error!(
+            "[big_nukes] the world closed without its Big Nukes state saved ({}): the blasts, radiation and bunkers since the last good save in {} are lost",
+            st.save_error.as_deref().unwrap_or("?"),
+            st.dir.display()
+        );
     }
     *state = None;
     *lock(&LOADED) = None;

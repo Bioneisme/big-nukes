@@ -1436,6 +1436,36 @@ pub fn parse_blast(args: &[&str], at: [f64; 3]) -> Option<(u32, [i32; 3])> {
     Some((radius, center))
 }
 
+/// The file in `DIR` that keeps a world's `Saved`.
+pub const SAVE_FILE: &str = "waves.json";
+
+/// Where a world's state is written.
+pub trait Store {
+    /// Writes `bytes` as the file `name`, whole or not at all.
+    fn put(&mut self, name: &str, bytes: &[u8]) -> std::io::Result<()>;
+}
+
+/// The world's folder: a temporary file renamed over the old one, so a failed
+/// write leaves the last good file as it was.
+pub struct Disk<'a>(pub &'a std::path::Path);
+
+impl Store for Disk<'_> {
+    fn put(&mut self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+        std::fs::create_dir_all(self.0)?;
+        let tmp = self.0.join(format!("{name}.tmp"));
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(tmp, self.0.join(name))
+    }
+}
+
+/// Saves `saved`. `dirty` is cleared only when the write succeeds, and set when
+/// it fails, so the periodic save tries again once the disk can take it.
+pub fn save_to(saved: &Saved, dirty: &mut bool, store: &mut impl Store) -> std::io::Result<()> {
+    let written = serde_json::to_vec(saved).map_err(std::io::Error::other).and_then(|bytes| store.put(SAVE_FILE, &bytes));
+    *dirty = written.is_err();
+    written
+}
+
 /// What a world keeps in `<world>/horizon-big-nukes/waves.json`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Saved {
@@ -10854,5 +10884,64 @@ mod bunker_tests {
         assert_eq!(filter_data(true, Some(100_000))[2], i16::MAX as i32);
         let big = Generator { burn: 40_000, burn_max: 40_000 };
         assert_eq!(big.data(), [i16::MAX as i32, i16::MAX as i32]);
+    }
+}
+
+#[cfg(test)]
+mod save_retry_tests {
+    use super::*;
+
+    /// A disk that fails its first `fails` writes, then keeps what it is given.
+    struct Flaky {
+        fails: usize,
+        kept: BTreeMap<String, Vec<u8>>,
+    }
+
+    impl Store for Flaky {
+        fn put(&mut self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+            if self.fails > 0 {
+                self.fails -= 1;
+                return Err(std::io::Error::other("disk full"));
+            }
+            self.kept.insert(name.to_string(), bytes.to_vec());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_failed_save_stays_dirty_and_the_next_one_writes_the_state() {
+        let mut saved = Saved::default();
+        saved.tick = 77;
+        let mut disk = Flaky { fails: 1, kept: BTreeMap::new() };
+        let mut dirty = true;
+        assert!(save_to(&saved, &mut dirty, &mut disk).is_err());
+        assert!(dirty, "a failed write keeps the state to save");
+        assert!(disk.kept.is_empty());
+        save_to(&saved, &mut dirty, &mut disk).expect("the disk is back");
+        assert!(!dirty);
+        let back: Saved = serde_json::from_slice(&disk.kept[SAVE_FILE]).unwrap();
+        assert_eq!(back.tick, 77);
+    }
+
+    #[test]
+    fn a_forced_save_that_fails_marks_the_state_dirty() {
+        // A save made at once (a bomb placed or broken) with nothing else pending:
+        // when it fails, the periodic save must take it up.
+        let mut disk = Flaky { fails: 1, kept: BTreeMap::new() };
+        let mut dirty = false;
+        assert!(save_to(&Saved::default(), &mut dirty, &mut disk).is_err());
+        assert!(dirty);
+    }
+
+    #[test]
+    fn the_disk_store_replaces_the_file_whole() {
+        let dir = std::env::temp_dir().join(format!("bn-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut disk = Disk(&dir);
+        disk.put(SAVE_FILE, b"{\"a\":1}").unwrap();
+        disk.put(SAVE_FILE, b"{\"b\":2}").unwrap();
+        assert_eq!(std::fs::read(dir.join(SAVE_FILE)).unwrap(), b"{\"b\":2}");
+        assert!(!dir.join(format!("{SAVE_FILE}.tmp")).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

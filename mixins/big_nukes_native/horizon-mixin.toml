@@ -1,6 +1,6 @@
 [mod]
 id = "big_nukes_native"
-version = "0.1.2"
+version = "0.1.3"
 priority = 100
 
 # The Horizon source this bundle is planned and built on: Nightly 2026-11-07
@@ -381,6 +381,16 @@ bindings = [
   { name = "player", ty = "&horizon_client::mod_api::NativeServerPlayer", value = "player" },
   { name = "command", ty = "&str", value = "command" },
   { name = "ran", ty = "&mut bool", value = "&mut *ran" },
+]
+
+# The server stopping with its players still connected: the state is saved, and they hear if it fails (API 44).
+[[injection]]
+id = "server-stopping"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_server_stopping"
+helper = "server_stopping.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
 ]
 
 # The server's ticks, counted (API 4).
