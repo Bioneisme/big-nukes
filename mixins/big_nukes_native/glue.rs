@@ -97,15 +97,32 @@ pub(in crate::game) fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The world's saved state. A `waves.json` that exists but can't be read or parsed is moved aside to
+/// `waves.json.corrupt` first, so the defaults used instead never overwrite it on the next save.
+fn read_saved(dir: &std::path::Path) -> rules::Saved {
+    let path = dir.join("waves.json");
+    let problem = match fs::read(&path) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(saved) => return saved,
+            Err(e) => e.to_string(),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return rules::Saved::default(),
+        Err(e) => e.to_string(),
+    };
+    let aside = dir.join("waves.json.corrupt");
+    match fs::rename(&path, &aside) {
+        Ok(()) => log::warn!("[big_nukes] waves.json: {problem}; kept it as {}, starting fresh", aside.display()),
+        Err(e) => log::warn!("[big_nukes] waves.json: {problem}; could not move it aside ({e})"),
+    }
+    rules::Saved::default()
+}
+
 /// The open world's state, read from its folder the first time.
 pub(in crate::game) fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Option<State>>> {
     let dir = game.native_world_dir()?.join(rules::DIR);
     let mut guard = lock(&STATE);
     if guard.as_ref().is_none_or(|s| s.dir != dir) {
-        let saved: rules::Saved = fs::read(dir.join("waves.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).map_err(|e| log::warn!("[big_nukes] waves.json: {e}")).ok())
-            .unwrap_or_default();
+        let saved = read_saved(&dir);
         log::info!("[big_nukes] Big Nukes {} in {}", rules::VERSION, dir.display());
         let wake = saved.to_wake();
         *guard = Some(State {
