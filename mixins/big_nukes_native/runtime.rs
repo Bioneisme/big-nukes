@@ -9,7 +9,7 @@ use std::{
 };
 
 pub const ID: &str = "big_nukes_native";
-pub const VERSION: &str = "0.1.0";
+pub const VERSION: &str = "0.2.0";
 /// The mod's folder in a world's folder.
 pub const DIR: &str = "horizon-big-nukes";
 /// A loot table only the assets half brings: the sign that it's installed.
@@ -1498,9 +1498,13 @@ pub struct Saved {
     /// The charged strike beacons, their bombers not yet come and gone.
     #[serde(default)]
     pub beacons: Vec<Flight>,
-    /// The chunks the flights keep loaded with `/forceload`.
+    /// The chunks the flights keep loaded, held by the game's chunk tickets (`/forceload` before 0.2.0).
     #[serde(default)]
     pub forced: Vec<Forced>,
+    /// Whether `forced` is held by chunk tickets: false in a world from before 0.2.0, whose chunks the mod
+    /// held with `/forceload` (`Saved::to_tickets`).
+    #[serde(default)]
+    pub tickets: bool,
     /// The circles the decontaminators cleaned, theirs still where they were broken.
     #[serde(default)]
     pub cleans: Vec<Clean>,
@@ -1528,6 +1532,7 @@ impl Default for Saved {
             consoles: BTreeMap::new(),
             beacons: Vec::new(),
             forced: Vec::new(),
+            tickets: false,
             cleans: Vec::new(),
             walls: BTreeMap::new(),
         }
@@ -2615,11 +2620,14 @@ impl Saved {
 
 // ---- the target's chunk ------------------------------------------------------------
 //
-// A missile's target is kept loaded with `/forceload` from its liftoff, so its
+// A missile's target is kept loaded by a chunk ticket from its liftoff, so its
 // ground can be read and its blast's center worked, and its pad from the launch
 // until the hatch is back, so the hatch isn't lost; the world keeps the forced
 // chunks (`Saved.forced`), and each is let go once its wave has changed its
 // center's chunk, or at once for a flight that never went off.
+
+/// The owner of the chunk tickets the flights hold (`native_force_chunk_in`).
+pub const TICKET_OWNER: &str = "big_nukes:flights";
 
 /// Ticks past its descent a missile waits for its target's ground before it lands on a guess.
 pub const SURFACE_WAIT: u64 = 200;
@@ -2677,7 +2685,9 @@ impl Saved {
         new
     }
 
-    /// The game had `chunk` forced before the mod asked for it: whoever forced it lets it go, not the mod.
+    /// The game had `chunk` forced before the mod asked for it: whoever forced it lets it go, not the mod. Before
+    /// 0.2.0 only: the glue asked `/forceload` then; tickets are the mod's own (the tests make old worlds with it).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn theirs(&mut self, dimension: &str, chunk: [i32; 2]) {
         for f in self.forced.iter_mut().filter(|f| f.dimension == dimension && f.chunk == chunk) {
             f.theirs = true;
@@ -2700,6 +2710,30 @@ impl Saved {
             f.landed = true;
             f.center = center;
         }
+    }
+
+    /// Once a world, when it opens: from 0.2.0 the flights' chunks are held by the game's chunk tickets. The
+    /// chunks the mod forced with `/forceload` before (not a player's) are given back, once, for the glue to
+    /// `forceload remove`; every chunk is the mod's own ticket from then on.
+    pub fn to_tickets(&mut self) -> Vec<(String, [i32; 2])> {
+        if self.tickets {
+            return Vec::new();
+        }
+        self.tickets = true;
+        let mut free: Vec<(String, [i32; 2])> = Vec::new();
+        for f in &mut self.forced {
+            if !f.theirs && !free.iter().any(|(d, c)| *d == f.dimension && *c == f.chunk) {
+                free.push((f.dimension.clone(), f.chunk));
+            }
+            f.theirs = false;
+        }
+        free
+    }
+
+    /// Each chunk the flights keep, once: tickets aren't saved, so the open world holds them again.
+    pub fn held(&self) -> Vec<(String, [i32; 2])> {
+        let set: BTreeSet<(String, [i32; 2])> = self.forced.iter().map(|f| (f.dimension.clone(), f.chunk)).collect();
+        set.into_iter().collect()
     }
 
     /// The dimensions to open when the world is opened again: those other than the overworld where a flight or a
@@ -4351,6 +4385,38 @@ pub fn flash_alpha(t_ticks: f64, dist: f64, radius: u32) -> u8 {
     let r = radius as f64;
     let peak = ((12.0 * r - dist) / (10.0 * r)).clamp(0.0, 1.0);
     (255.0 * peak * (-t_ticks / 20.0).exp()).round() as u8
+}
+
+/// The ringing in the ears after a close blast: the sound event, played clearly through the muffle.
+pub const EAR_RINGING: &str = "big_nukes:ear.ringing";
+
+/// How a close blast leaves the ears: `amount` of every sound's volume taken away and `lowpass` dulling it
+/// (0 to 1, `native_muffle_sounds`), both fading back over `ticks`, and the ringing's `volume`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ringing {
+    pub amount: f32,
+    pub lowpass: f32,
+    pub ticks: u32,
+    pub volume: f32,
+}
+
+/// The ringing `dist` blocks from a blast of `radius`: in full within the radius, less and shorter farther
+/// out, and none from four radii, so it scales with the bomb as the shake does.
+pub fn ringing(dist: f64, radius: u32) -> Option<Ringing> {
+    let r = f64::from(radius.max(1));
+    let s = ((4.0 * r - dist) / (3.0 * r)).clamp(0.0, 1.0);
+    (s > 0.0).then(|| Ringing {
+        amount: (0.35 + 0.55 * s) as f32,
+        lowpass: (0.5 + 0.45 * s) as f32,
+        ticks: (60.0 + 300.0 * s).round() as u32,
+        volume: (0.25 + 0.55 * s) as f32,
+    })
+}
+
+/// Whether the ears ring now, `t_ticks` after a blast `dist` blocks off: as its front arrives, and not for a
+/// blast heard late.
+pub fn rings_now(t_ticks: f64, dist: f64) -> bool {
+    (0.0..20.0).contains(&(t_ticks - dist / FRONT_SPEED))
 }
 
 /// A sound to play, `delay` ticks from now.
@@ -10943,5 +11009,102 @@ mod save_retry_tests {
         assert_eq!(std::fs::read(dir.join(SAVE_FILE)).unwrap(), b"{\"b\":2}");
         assert!(!dir.join(format!("{SAVE_FILE}.tmp")).exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod ticket_tests {
+    use super::*;
+
+    const OVERWORLD: &str = "minecraft:overworld";
+
+    #[test]
+    fn a_world_from_before_lets_go_of_the_mods_forceloads_once() {
+        let mut saved = Saved::default();
+        assert!(!saved.tickets, "a world from before 0.2.0");
+        saved.force(1, OVERWORLD, [0, 0]);
+        saved.force(2, OVERWORLD, [9, 9]);
+        saved.theirs(OVERWORLD, [9, 9]);
+        saved.force(3, OVERWORLD, [0, 0]);
+        saved.force(4, "minecraft:the_nether", [2, 2]);
+        // The mod's own `/forceload`s go, once each; the player's stays theirs to let go.
+        assert_eq!(
+            saved.to_tickets(),
+            [(OVERWORLD.to_owned(), [0, 0]), ("minecraft:the_nether".to_owned(), [2, 2])]
+        );
+        assert!(saved.tickets);
+        assert!(saved.to_tickets().is_empty(), "once");
+        assert!(saved.forced.iter().all(|f| !f.theirs), "the tickets are the mod's own");
+        // The flights keep what they held, now by ticket, and a ticket the mod holds is the mod's to let go.
+        assert!(saved.release(2, OVERWORLD, [9, 9]));
+    }
+
+    #[test]
+    fn a_new_world_has_nothing_to_let_go() {
+        let mut saved = Saved::default();
+        assert!(saved.to_tickets().is_empty());
+        assert!(saved.tickets);
+        let back: Saved = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert!(back.tickets, "kept with the world");
+    }
+
+    #[test]
+    fn the_held_chunks_are_held_again_when_the_world_opens() {
+        let mut saved = Saved::default();
+        saved.to_tickets();
+        saved.force(1, OVERWORLD, [0, 0]);
+        saved.force(1, OVERWORLD, [62, 0]);
+        saved.force(2, OVERWORLD, [62, 0]);
+        saved.force(3, "minecraft:the_end", [-4, 7]);
+        // Tickets aren't saved: the world's record is, and the open world holds each chunk once again.
+        let back: Saved = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(
+            back.held(),
+            [
+                ("minecraft:overworld".to_owned(), [0, 0]),
+                ("minecraft:overworld".to_owned(), [62, 0]),
+                ("minecraft:the_end".to_owned(), [-4, 7]),
+            ]
+        );
+        assert!(Saved::default().held().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ringing_tests {
+    use super::*;
+
+    #[test]
+    fn ears_ring_hardest_and_longest_at_the_blast() {
+        let at = ringing(0.0, 250).expect("rings");
+        assert!((at.amount - 0.9).abs() < 1e-6 && (at.lowpass - 0.95).abs() < 1e-6);
+        assert_eq!(at.ticks, 360);
+        // Full within the radius, then less and shorter the farther, and nothing from four radii.
+        assert_eq!(ringing(250.0, 250), Some(at));
+        let mid = ringing(500.0, 250).expect("rings");
+        let edge = ringing(990.0, 250).expect("rings");
+        assert!(at.amount > mid.amount && mid.amount > edge.amount);
+        assert!(at.ticks > mid.ticks && mid.ticks > edge.ticks);
+        assert!(edge.ticks >= 60 && edge.amount >= 0.35 && edge.volume < mid.volume);
+        assert_eq!(ringing(1000.0, 250), None);
+        assert_eq!(ringing(5000.0, 250), None);
+    }
+
+    #[test]
+    fn the_ringing_scales_with_the_bomb() {
+        // 200 blocks off an atomic bomb rings; 200 blocks off a demolition charge doesn't.
+        assert!(ringing(200.0, 250).is_some());
+        assert_eq!(ringing(200.0, 16), None);
+        assert_eq!(ringing(32.0, 16).map(|r| r.ticks), ringing(500.0, 250).map(|r| r.ticks));
+    }
+
+    #[test]
+    fn the_ears_ring_when_the_front_arrives() {
+        let dist = 300.0;
+        let arrives = dist / FRONT_SPEED;
+        assert!(!rings_now(arrives - 1.0, dist));
+        assert!(rings_now(arrives, dist));
+        assert!(rings_now(arrives + 19.0, dist));
+        assert!(!rings_now(arrives + 20.0, dist), "a blast heard late doesn't ring");
     }
 }

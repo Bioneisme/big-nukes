@@ -138,6 +138,16 @@ def bomber_flyby():
     return loud((buzz * 1.5 + engine * 2.0) * near, 2.2, 0.85)
 
 
+def ear_ringing():
+    """The ringing in the ears after a close blast, 6 s: two soft high tones a little apart, so it beats, coming
+    in over a fifth of a second and fading slowly. No noise: it plays clearly through the game's muffle."""
+    n = seconds(6.0)
+    t = np.arange(n) / RATE
+    tone = np.sin(2 * np.pi * 4180 * t) + 0.6 * np.sin(2 * np.pi * 4232 * t) + 0.15 * np.sin(2 * np.pi * 8360 * t)
+    env = np.minimum(t / 0.2, 1.0) * np.exp(-t / 2.2)
+    return normalize(tone * env, 0.45)
+
+
 def write(name, x):
     os.makedirs(OUT, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -159,6 +169,7 @@ SOUNDS = {
     "geiger_click": geiger_click,
     "missile_launch": missile_launch,
     "bomber_flyby": bomber_flyby,
+    "ear_ringing": ear_ringing,
 }
 
 if __name__ == "__main__":

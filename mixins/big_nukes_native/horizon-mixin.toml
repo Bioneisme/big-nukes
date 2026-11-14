@@ -1,12 +1,12 @@
 [mod]
 id = "big_nukes_native"
-version = "0.1.3"
+version = "0.2.0"
 priority = 100
 
-# The Horizon source this bundle is planned and built on: Nightly 2026-11-07
-# (`nightly-source/2026-11-07-6560641`). It needs API 126 (`native_edit_blocks`).
+# The Horizon source this bundle is planned and built on: Nightly 2026-11-13
+# (`nightly-source/2026-11-13-9f42064`). It needs API 126 (`native_edit_blocks`).
 [compatibility]
-horizon_revision = "6560641ba51a452f6bc2407baa4eb1b3be517ca8"
+horizon_revision = "9f42064c11efe7ef3e5ed2baad7ddc2a3b36eea0"
 
 # The rules: no game type, also the mod's Cargo library (its tests).
 [[module]]
@@ -64,6 +64,7 @@ helper = "embedded_content.rs"
 bindings = [
   { name = "root", ty = "&std::path::Path", value = "root" },
   { name = "enabled", ty = "&std::collections::BTreeSet<String>", value = "enabled" },
+  { name = "disabled", ty = "&std::collections::BTreeSet<String>", value = "disabled" },
   { name = "dev", ty = "&[std::path::PathBuf]", value = "dev" },
 ]
 

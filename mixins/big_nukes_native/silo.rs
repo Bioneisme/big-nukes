@@ -921,28 +921,18 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
         }
         (force, free)
     };
-    // `/forceload` is one flag a chunk: one forced already (a player's base, say) is theirs, and the mod, which
-    // added nothing, never removes it.
-    let mut theirs = Vec::new();
+    // The game's chunk tickets hold them, the mod's own: a player's `/forceload` of the same chunk is a flag
+    // of its own, which the mod neither asks about nor lets go.
     for chunk in force {
-        let [x, z] = [chunk[0] * 16, chunk[1] * 16];
-        if game.native_run_command(&format!("execute in {dimension} run forceload query {x} {z}")) {
-            theirs.push(chunk);
+        if game.native_force_chunk_in(rules::TICKET_OWNER, dimension, chunk, true) {
+            log::info!("[big_nukes] holding chunk {chunk:?} of {dimension} by ticket");
         } else {
-            run_in(game, dimension, &format!("forceload add {x} {z}"));
+            log::warn!("[big_nukes] couldn't hold chunk {chunk:?} of {dimension}");
         }
-    }
-    if !theirs.is_empty()
-        && let Some(mut guard) = glue::state(game)
-    {
-        let st = guard.as_mut().expect("opened");
-        for chunk in theirs {
-            st.saved.theirs(dimension, chunk);
-        }
-        glue::save(st);
     }
     for (d, chunk) in free {
-        run_in(game, &d, &format!("forceload remove {} {}", chunk[0] * 16, chunk[1] * 16));
+        game.native_force_chunk_in(rules::TICKET_OWNER, &d, chunk, false);
+        log::info!("[big_nukes] let go of chunk {chunk:?} of {d}");
     }
     for (id, _) in fired {
         for part in 0..3 {

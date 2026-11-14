@@ -34,7 +34,8 @@ raw uranium, or type `/bignukes guide`.
 | Sunbreaker | 600 to 1000 | Built where it stands. At 1000 it breaks through the bedrock and leaves a hole into the void |
 
 A blast is seen from far beyond your render distance: a flash, a fireball rising into a mushroom cloud, and a ring of
-dust rolling out at 50 blocks a second. The sound and the shaking come with the front, not with the flash. Behind the
+dust rolling out at 50 blocks a second. The sound and the shaking come with the front, not with the flash, and close to a blast your ears ring:
+for a few seconds the world goes dull and quiet under a high whine, longer the closer you stood. Behind the
 front, the core is a crater; further out the plants, the glass and the water are gone and the ground is ash, with
 fires; at the edge the glass breaks and the leaves fall. Creatures die in the core and are hurt less the further out
 they are.
@@ -211,7 +212,7 @@ Anyone can type `/bignukes guide`.
 ## Good to know
 
 - Every player needs the mod. It runs with your account's permissions, as every native mod does.
-- It is pinned to Horizon Nightly 2026-11-07 (6560641).
+- It is pinned to Horizon Nightly 2026-11-13 (9f42064).
 - It is made for single player and play with friends: anyone can set off a bomb anywhere.
 - The ground past your render distance is changed when its chunks load; the cloud and the ring are seen from any
   distance.

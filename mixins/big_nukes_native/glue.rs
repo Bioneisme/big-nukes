@@ -70,6 +70,10 @@ pub(in crate::game) struct State {
     told: BTreeSet<u128>,
     /// The last save's error while saving fails: the state stays dirty and is tried again.
     save_error: Option<String>,
+    /// The flights' chunks to hold again by ticket at the end of the server's tick (tickets aren't saved).
+    regrab: Vec<(String, [i32; 2])>,
+    /// The chunks a world from before 0.2.0 had `/forceload`ed for its flights, given back once.
+    unforceload: Vec<(String, [i32; 2])>,
     /// Whether the players were told of the failing save (once until a save succeeds).
     save_told: bool,
 }
@@ -102,24 +106,29 @@ pub(in crate::game) fn state(game: &Game<'_>) -> Option<MutexGuard<'static, Opti
     let dir = game.native_world_dir()?.join(rules::DIR);
     let mut guard = lock(&STATE);
     if guard.as_ref().is_none_or(|s| s.dir != dir) {
-        let saved: rules::Saved = fs::read(dir.join("waves.json"))
+        let mut saved: rules::Saved = fs::read(dir.join("waves.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).map_err(|e| log::warn!("[big_nukes] waves.json: {e}")).ok())
             .unwrap_or_default();
         log::info!("[big_nukes] Big Nukes {} in {}", rules::VERSION, dir.display());
         let wake = saved.to_wake();
+        let old = !saved.tickets;
+        let unforceload = saved.to_tickets();
+        let regrab = saved.held();
         *guard = Some(State {
             dir,
             saved,
             warned: BTreeSet::new(),
             opened: BTreeSet::new(),
             ash: None,
-            dirty: false,
+            dirty: old,
             wake,
             mobs: HashMap::new(),
             told: BTreeSet::new(),
             save_error: None,
             save_told: false,
+            regrab,
+            unforceload,
         });
     }
     let broken = std::mem::take(&mut *lock(&BROKEN));
@@ -592,10 +601,36 @@ pub(in crate::game) fn flash(game: &Game<'_>, batch: &mut HudBatch) {
 
 /// Every drawn frame, whatever the screen (death, inventory, chat): the renderer's
 /// list of blasts, newest first.
+/// The blasts whose ringing this window has already heard.
+static RANG: Mutex<BTreeSet<u64>> = Mutex::new(BTreeSet::new());
+
+/// The ears ring as a close blast's front arrives: the game's sounds muffled and dulled for a while, the
+/// harder and the longer the closer (`rules::ringing`), with a high ringing heard clearly through it.
+fn ring(game: &mut Game<'_>, felt: &[(f64, f64, rules::News)]) {
+    let Some(player) = game.native_player() else { return };
+    let eyes = [player.x, player.y + 1.62, player.z];
+    let mut rang = lock(&RANG);
+    for (t, d, news) in felt {
+        if !rules::rings_now(*t, *d) || rang.contains(&news.id) {
+            continue;
+        }
+        rang.insert(news.id);
+        if let Some(r) = rules::ringing(*d, news.radius) {
+            if game.native_muffle_sounds(r.amount, r.lowpass, r.ticks, &[rules::EAR_RINGING]) {
+                game.native_play_local_sound(rules::EAR_RINGING, eyes, r.volume, 1.0, 0);
+                log::info!("[big_nukes] blast {} rings the ears: {:.2} muffled for {} ticks", news.id, r.amount, r.ticks);
+            }
+        }
+    }
+    // Forgotten once no blast it rang for is felt.
+    rang.retain(|id| felt.iter().any(|(_, _, n)| n.id == *id));
+}
+
 pub(in crate::game) fn frame(game: &mut Game<'_>) {
     let partial = game.native_camera().map_or(0.0, |c| c.partial_tick as f64);
     let mut felt = felt(game, partial);
     rules::newest_first(&mut felt);
+    ring(game, &felt);
     *horizon_client::gfx::native_render::big_nukes_sky::SKY.lock().unwrap_or_else(|e| e.into_inner()) = felt
         .iter()
         .map(|(t, _, n)| {
@@ -780,6 +815,8 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     }
     let trouble = save_trouble(st);
     let wake = std::mem::take(&mut st.wake);
+    let regrab = std::mem::take(&mut st.regrab);
+    let unforceload = std::mem::take(&mut st.unforceload);
     drop(guard);
     if let Some(line) = trouble {
         tell_everyone(game, &line);
@@ -799,6 +836,16 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     // wave waits for its chunks to load, as anywhere else.
     for dimension in wake {
         game.native_run_command(&format!("execute in {dimension} run forceload query"));
+    }
+    // The flights' chunks, held by the game's chunk tickets, which a world doesn't keep: held again as it opens
+    // (a ticket in a level not open yet opens it). A world from before 0.2.0 gives back its `/forceload`s once.
+    for (dimension, chunk) in regrab {
+        if !game.native_force_chunk_in(rules::TICKET_OWNER, &dimension, chunk, true) {
+            log::warn!("[big_nukes] couldn't hold chunk {chunk:?} of {dimension}");
+        }
+    }
+    for (dimension, [x, z]) in unforceload {
+        game.native_run_command(&format!("execute in {dimension} run forceload remove {} {}", x * 16, z * 16));
     }
     decon::server_tick(game);
     let asked = std::mem::take(&mut *lock(&GUIDES));
@@ -968,6 +1015,8 @@ pub(in crate::game) fn native(edit: rules::ChunkEdit) -> NativeBlockEdit {
                 only: r.only,
             })
             .collect(),
+        // As before 9f42064: no neighbour is told, and no block entity data is written.
+        ..Default::default()
     }
 }
 

@@ -1,4 +1,13 @@
 {
+  "ear.ringing": {
+    "subtitle": "subtitles.big_nukes.ear_ringing",
+    "sounds": [
+      {
+        "name": "big_nukes:ear_ringing",
+        "stream": false
+      }
+    ]
+  },
   "blast.near": {
     "subtitle": "subtitles.big_nukes.blast",
     "sounds": [

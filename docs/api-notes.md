@@ -5,6 +5,25 @@ the mod moved to Nightly 2026-11-07 (6560641), API 411, in 0.1.2. There `native_
 `native_level_send_particles` with no level are named `native_play_sound_in_place` and `native_send_particles_in_place`
 (PR #7387).
 
+0.2.0 moved to Nightly 2026-11-13 (9f42064), `NATIVE_HOOKS_API` 415, Horizon Mixins 5a64af9 (the bundle says
+`"hooks": 415`, so the launcher never builds it on an older Horizon):
+
+- `game::mods::content_root` takes `(root, enabled, disabled, dev)` there (PR #11083): the embedded content's
+  injection binds and passes `disabled` too. #11083 also lets a native entry ship one combined `.hmod` (code and
+  content), but its content is a mod whose id is the native id (`big_nukes_native`): the blocks it declares in
+  `data/<id>/horizon/` and the blocks the code declares would be `big_nukes_native:*`, and a content namespace
+  `big_nukes` beside it clashes with the namespace the code's `big_nukes:*` blocks make
+  (`mod_content::accept_declared`). Keeping the ids worlds hold means keeping the `.hnmod` with the content inside.
+- `NativeBlockEdit` gained `neighbour_updates` and `block_entities`: the mod leaves them at their defaults (no
+  neighbour told, no block entity data), as before.
+- The flights' chunks are held with chunk tickets, `native_force_chunk_in(owner, dimension, [x, z], hold)` (API 413,
+  PR #12046), owner `big_nukes:flights`. Tickets aren't saved: the world's list (`Saved.forced`) is held again when
+  the world opens (`Saved::held`), and a world from before 0.2.0 gives its `/forceload`s back once
+  (`Saved::to_tickets`; a player's own, `Forced.theirs`, stays). A ticket in a level not open yet opens it.
+- `native_muffle_sounds(amount, lowpass, ticks, exempt)` (PR #12033, client) muffles the game's sounds as ears
+  ringing after a close blast hear them; `big_nukes:ear.ringing` is exempt and plays clearly through it. The window
+  calls it as a blast's front reaches the player (`rules::ringing`, `rules::rings_now`).
+
 ## The assets half
 
 The native half knows the assets half is installed when the loot table `big_nukes:marker` exists
