@@ -124,7 +124,7 @@ impl BombKind {
 
 /// The items: id, how many stack, and whether they are rare. Each copies its
 /// `template` with the `components` patch.
-pub const ITEMS: [(&str, u8, bool); 19] = [
+pub const ITEMS: [(&str, u8, bool); 20] = [
     ("big_nukes:raw_uranium", 64, false),
     ("big_nukes:enriched_uranium", 64, true),
     (WEAPONS_GRADE_URANIUM, 64, true),
@@ -142,6 +142,7 @@ pub const ITEMS: [(&str, u8, bool); 19] = [
     (IODINE, 16, false),
     (GEIGER_COUNTER, 1, false),
     (MISSILE, 1, true),
+    (SPLITTING_MISSILE, 1, true),
     (GUIDE, 1, false),
     (RATION, 16, false),
 ];
@@ -157,12 +158,13 @@ pub fn guide_give(name: &str) -> String {
 }
 
 /// What each block and item says under its name about how to use it: lang keys, one line each.
-const TIPS: [(&str, &[&str]); 48] = [
+const TIPS: [(&str, &[&str]); 49] = [
     ("big_nukes:demolition_charge", &["big_nukes.tip.demolition_charge", "big_nukes.tip.demolition_charge.2"]),
     ("big_nukes:tactical_warhead", &["big_nukes.tip.tactical_warhead", "big_nukes.tip.tactical_warhead.2"]),
     ("big_nukes:atomic_bomb", &["big_nukes.tip.atomic_bomb", "big_nukes.tip.atomic_bomb.2"]),
     ("big_nukes:neutron_bomb", &["big_nukes.tip.neutron_bomb", "big_nukes.tip.neutron_bomb.2"]),
     ("big_nukes:dirty_bomb", &["big_nukes.tip.dirty_bomb", "big_nukes.tip.dirty_bomb.2"]),
+    (SPLITTING_MISSILE, &["big_nukes.tip.splitting_missile", "big_nukes.tip.splitting_missile.2"]),
     ("big_nukes:fuse_detonator", &["big_nukes.tip.fuse_detonator"]),
     ("big_nukes:keypad_detonator", &["big_nukes.tip.keypad_detonator", "big_nukes.tip.keypad_detonator.2"]),
     ("big_nukes:receiver_detonator", &["big_nukes.tip.receiver_detonator"]),
@@ -462,7 +464,7 @@ pub struct Assembly {
     pub parts: &'static [(&'static str, u32)],
 }
 
-pub const ASSEMBLIES: [Assembly; 22] = [
+pub const ASSEMBLIES: [Assembly; 23] = [
     Assembly { result: "big_nukes:nuclear_charge", count: 1, parts: &[(ENRICHED_URANIUM, 1), ("minecraft:tnt", 4)] },
     Assembly { result: "big_nukes:bomb_casing", count: 1, parts: &[("minecraft:iron_block", 4), ("minecraft:redstone", 4)] },
     Assembly {
@@ -500,6 +502,7 @@ pub const ASSEMBLIES: [Assembly; 22] = [
         count: 1,
         parts: &[("big_nukes:bomb_casing", 2), ("minecraft:iron_block", 3), ("minecraft:blaze_powder", 4)],
     },
+    Assembly { result: SPLITTING_MISSILE, count: 1, parts: &[(MISSILE, 1), ("big_nukes:tactical_warhead", 3)] },
     Assembly {
         result: STRIKE_BEACON,
         count: 1,
@@ -1841,6 +1844,12 @@ pub const MISSILE: &str = "big_nukes:missile";
 /// The block over the shaft, taken away while the missile goes out.
 pub const SILO_HATCH: &str = "big_nukes:silo_hatch";
 /// The shortest and longest flight across the ground.
+/// A missile of three tactical warheads that part over the target and fall round it.
+pub const SPLITTING_MISSILE: &str = "big_nukes:splitting_missile";
+/// The side of the triangle its warheads fall on, in blocks: typed on the console, or the default.
+pub const SPREAD_MIN: u32 = 40;
+pub const SPREAD_MAX: u32 = 120;
+pub const SPREAD_DEFAULT: u32 = 80;
 pub const MISSILE_MIN_RANGE: u32 = 100;
 pub const MISSILE_MAX_RANGE: u32 = 4096;
 /// The countdown after the launch, and the ticks before its end that the hatch opens.
@@ -1937,6 +1946,10 @@ pub struct Flight {
     /// A bomber's: its bomb has been taken out of the beacon's slot.
     #[serde(default)]
     pub emptied: bool,
+    /// One of a splitting missile's warheads that rides in the one seen: unseen until it parts over its target,
+    /// with no hatch of its own.
+    #[serde(default)]
+    pub rider: bool,
 }
 
 /// What a flight does to its hatch (`Flight::hatch_act`).
@@ -2186,10 +2199,37 @@ impl BombKind {
     }
 }
 
+/// The three places a splitting missile's warheads fall: the corners of a triangle with sides of `spread`
+/// round `aim`, turned by `seed`.
+pub fn split_targets(aim: [i32; 2], spread: u32, seed: u64) -> [[i32; 2]; 3] {
+    let r = f64::from(spread) / 3f64.sqrt();
+    let turn = (mix(seed) % 3600) as f64 / 3600.0 * std::f64::consts::TAU;
+    [0.0, 1.0, 2.0].map(|k| {
+        let a = turn + k * std::f64::consts::TAU / 3.0;
+        [aim[0] + (r * a.cos()).round() as i32, aim[1] + (r * a.sin()).round() as i32]
+    })
+}
+
+/// The spread typed on the console: `SPREAD_DEFAULT` when left empty.
+pub fn spread_of(typed: &str) -> Result<u32, LaunchRefusal> {
+    if typed.is_empty() {
+        return Ok(SPREAD_DEFAULT);
+    }
+    if !typed.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(LaunchRefusal::NotANumber);
+    }
+    typed.parse::<u32>().ok().filter(|v| (SPREAD_MIN..=SPREAD_MAX).contains(v)).ok_or(LaunchRefusal::Spread)
+}
+
+/// Whether the missile in a pad's slot is a splitting one.
+pub fn splits(missile: Option<&str>) -> bool {
+    missile == Some(SPLITTING_MISSILE)
+}
+
 /// What a pad's slot takes: the missile in its slot, a warhead that flies in the other.
 pub fn pad_takes(slot: usize, item: &str) -> bool {
     match slot {
-        PAD_MISSILE_SLOT => item == MISSILE,
+        PAD_MISSILE_SLOT => item == MISSILE || item == SPLITTING_MISSILE,
         PAD_WARHEAD_SLOT => BombKind::of_block(item).is_some_and(BombKind::flies),
         _ => false,
     }
@@ -2197,6 +2237,10 @@ pub fn pad_takes(slot: usize, item: &str) -> bool {
 
 /// What a pad holds in its two slots: the warhead it launches, or what it lacks.
 pub fn pad_load(missile: Option<&str>, warhead: Option<&str>) -> Result<BombKind, ShaftProblem> {
+    // A splitting missile carries its own: a warhead in the slot stays there.
+    if splits(missile) {
+        return Ok(BombKind::Tactical);
+    }
     if missile != Some(MISSILE) {
         return Err(ShaftProblem::NoMissile);
     }
@@ -2206,7 +2250,7 @@ pub fn pad_load(missile: Option<&str>, warhead: Option<&str>) -> Result<BombKind
 /// Whether a pad shows the missile in its slot, warhead or not: not while a flight stands in its shaft
 /// (`Saved::pad_busy`), which shows its own.
 pub fn pad_shows(missile_slot: Option<&str>, busy: bool) -> bool {
-    missile_slot == Some(MISSILE) && !busy
+    (missile_slot == Some(MISSILE) || splits(missile_slot)) && !busy
 }
 
 /// What is done to a pad's display at a tick (`pad_act`).
@@ -2260,6 +2304,8 @@ pub enum LaunchRefusal {
     /// The ticks left of the lock.
     Locked(u64),
     Maxpower,
+    /// A spread outside `SPREAD_MIN` to `SPREAD_MAX`.
+    Spread,
 }
 
 /// The key of a console in `Saved.consoles`.
@@ -2434,13 +2480,15 @@ pub const CONSOLE_DATA: usize = 3;
 pub const FIELD_X: usize = 0;
 pub const FIELD_Z: usize = 1;
 pub const FIELD_CODE: usize = 2;
+/// A splitting missile's spread.
+pub const FIELD_SPREAD: usize = 3;
 /// The most characters a field takes.
 pub const FIELD_CHARS: usize = 8;
 
 /// What the console screen has typed, and where.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConsoleInput {
-    pub fields: [String; 3],
+    pub fields: [String; 4],
     pub focus: usize,
 }
 
@@ -2456,8 +2504,9 @@ pub enum Keyed {
 impl ConsoleInput {
     /// A character typed into the focused field: digits, and a minus first in x or z. Whether it went in.
     pub fn typed(&mut self, c: char) -> bool {
-        let field = &mut self.fields[self.focus.min(FIELD_CODE)];
-        let fits = c.is_ascii_digit() || (c == '-' && field.is_empty() && self.focus != FIELD_CODE);
+        let focus = self.focus.min(FIELD_SPREAD);
+        let field = &mut self.fields[focus];
+        let fits = c.is_ascii_digit() || (c == '-' && field.is_empty() && (focus == FIELD_X || focus == FIELD_Z));
         if !fits || field.len() >= FIELD_CHARS {
             return false;
         }
@@ -2473,7 +2522,7 @@ impl ConsoleInput {
                 Keyed::Edited
             }
             "key.keyboard.backspace" => {
-                self.fields[self.focus.min(FIELD_CODE)].pop();
+                self.fields[self.focus.min(FIELD_SPREAD)].pop();
                 Keyed::Edited
             }
             "key.keyboard.enter" | "key.keyboard.keypad.enter" => Keyed::Launch,
@@ -2482,7 +2531,7 @@ impl ConsoleInput {
     }
 
     pub fn clear(&mut self) {
-        self.fields[self.focus.min(FIELD_CODE)].clear();
+        self.fields[self.focus.min(FIELD_SPREAD)].clear();
     }
 
     pub fn set_focus(&mut self, field: usize) {
@@ -2493,8 +2542,8 @@ impl ConsoleInput {
 
     /// The launch the fields ask of the console at `console`.
     pub fn request(&self, console: [i32; 3], camera: bool) -> LaunchMessage {
-        let [x, z, code] = self.fields.clone();
-        LaunchMessage { console, x, z, code, camera }
+        let [x, z, code, spread] = self.fields.clone();
+        LaunchMessage { console, x, z, code, camera, spread }
     }
 }
 
@@ -2507,6 +2556,9 @@ pub struct LaunchMessage {
     pub z: String,
     pub code: String,
     pub camera: bool,
+    /// A splitting missile's spread, as typed: empty from a window before there was one.
+    #[serde(default)]
+    pub spread: String,
 }
 
 impl LaunchMessage {
@@ -2518,7 +2570,7 @@ impl LaunchMessage {
 /// A launch as a client sent it: none when it isn't one, or a field is longer than the screen types.
 pub fn read_launch(data: &[u8]) -> Option<LaunchMessage> {
     let m: LaunchMessage = serde_json::from_slice(data).ok()?;
-    [&m.x, &m.z, &m.code].iter().all(|f| f.len() <= FIELD_CHARS).then_some(m)
+    [&m.x, &m.z, &m.code, &m.spread].iter().all(|f| f.len() <= FIELD_CHARS).then_some(m)
 }
 
 /// A line to show or tell: a language key and its arguments.
@@ -2566,6 +2618,7 @@ impl LaunchRefusal {
             LaunchRefusal::WrongCode(left) => Reply::new("big_nukes.console.wrong_code", &[&left]),
             LaunchRefusal::Locked(ticks) => Reply::new("big_nukes.console.locked", &[&seconds_of(ticks)]),
             LaunchRefusal::Maxpower => Reply::new("big_nukes.console.maxpower", &[]),
+            LaunchRefusal::Spread => Reply::new("big_nukes.console.spread", &[&SPREAD_MIN, &SPREAD_MAX]),
         }
     }
 }
@@ -2678,9 +2731,38 @@ impl Saved {
             hatch: Some(hatch),
             hatch_moved: Some(false),
             emptied: false,
+            rider: false,
         };
         self.flights.push(flight.clone());
         Ok(flight)
+    }
+
+    /// A splitting missile launched now from the pad under `from` at `aim`: three tactical warheads, one flight
+    /// each, to the corners of a triangle of side `spread` round the aim (`split_targets`). The first is the one
+    /// seen, with the hatch; the others ride in it. A corner past the world's edge is dropped.
+    pub fn launch_split(&mut self, dimension: &str, from: [i32; 3], aim: [i32; 2], spread: u32, hatch: i32) -> Result<Flight, LaunchRefusal> {
+        let kind = BombKind::Tactical;
+        if !self.allows(kind.level(kind.radius())) {
+            return Err(LaunchRefusal::Maxpower);
+        }
+        // The seed the first flight gets (`launch`), so its record shows how the triangle is turned.
+        let seed = mix(self.tick ^ mix(self.next_id + 1));
+        let targets = split_targets(aim, spread, seed);
+        let inside = |t: &[i32; 2]| t.iter().all(|v| i64::from(*v).abs() <= WORLD_EDGE);
+        let mut leader = None;
+        for to in targets.into_iter().filter(inside) {
+            match leader {
+                None => leader = Some(self.launch(dimension, from, to, kind, hatch)?),
+                Some(_) => {
+                    let f = self.launch(dimension, from, to, kind, hatch)?;
+                    let rider = self.flights.iter_mut().find(|r| r.id == f.id).expect("just launched");
+                    rider.rider = true;
+                    rider.hatch = None;
+                    rider.hatch_moved = None;
+                }
+            }
+        }
+        leader.ok_or(LaunchRefusal::OutsideWorld)
     }
 
     /// The missile still in the shaft over the pad under `from`: counting down or climbing out.
@@ -2992,6 +3074,7 @@ impl Saved {
             hatch: None,
             hatch_moved: None,
             emptied: false,
+            rider: false,
         });
         Charge::Taken(kind)
     }
@@ -7168,7 +7251,7 @@ mod tests {
     fn assembly_recipes_name_known_items() {
         let known: BTreeSet<&str> = ITEMS.iter().map(|i| i.0).chain(BombKind::ALL.map(BombKind::id)).chain(WALL_BLOCKS).collect();
         let results: BTreeSet<&str> = ASSEMBLIES.iter().map(|a| a.result).collect();
-        let wanted: BTreeSet<&str> = [CHARGE, "big_nukes:bomb_casing", MISSILE, STRIKE_BEACON, DECONTAMINATOR, RATION]
+        let wanted: BTreeSet<&str> = [CHARGE, "big_nukes:bomb_casing", MISSILE, SPLITTING_MISSILE, STRIKE_BEACON, DECONTAMINATOR, RATION]
             .into_iter()
             .chain(BombKind::ALL.map(BombKind::id))
             .chain(SUNBREAKER_PARTS)
@@ -8554,6 +8637,7 @@ mod flight_tests {
             hatch: Some(71),
             hatch_moved: Some(false),
             emptied: false,
+            rider: false,
         }
     }
 
@@ -8902,6 +8986,7 @@ mod flight_tests {
             hatch: None,
             hatch_moved: None,
             emptied: false,
+            rider: false,
         };
         assert_eq!(f.bomb_ground(), 123);
         let over = Flight { dimension: "minecraft:overworld".into(), ..f.clone() };
@@ -9221,6 +9306,12 @@ mod flight_tests {
         }
         assert_eq!(i.fields[FIELD_CODE], "12345678");
         i.key("key.keyboard.tab");
+        assert_eq!(i.focus, FIELD_SPREAD);
+        assert!(!i.typed('-'), "the spread is digits");
+        i.typed('9');
+        i.typed('0');
+        assert_eq!(i.fields[FIELD_SPREAD], "90");
+        i.key("key.keyboard.tab");
         assert_eq!(i.focus, FIELD_X, "Tab goes round");
         assert_eq!(i.key("key.keyboard.backspace"), Keyed::Edited);
         assert_eq!(i.fields[FIELD_X], "-123555");
@@ -9235,12 +9326,15 @@ mod flight_tests {
         i.set_focus(7);
         assert_eq!(i.focus, FIELD_CODE);
         let m = i.request([1, 2, 3], false);
-        assert_eq!(m, LaunchMessage { console: [1, 2, 3], x: String::new(), z: "-7".into(), code: "12345678".into(), camera: false });
+        assert_eq!(
+            m,
+            LaunchMessage { console: [1, 2, 3], x: String::new(), z: "-7".into(), code: "12345678".into(), camera: false, spread: "90".into() }
+        );
     }
 
     #[test]
     fn the_launch_message_reads_back() {
-        let m = LaunchMessage { console: [10, -64, -3], x: "-1500".into(), z: "20".into(), code: "1234".into(), camera: true };
+        let m = LaunchMessage { console: [10, -64, -3], x: "-1500".into(), z: "20".into(), code: "1234".into(), camera: true, spread: String::new() };
         assert_eq!(read_launch(&m.bytes()), Some(m.clone()));
         let text = String::from_utf8(m.bytes()).unwrap();
         assert!(text.contains("\"console\":[10,-64,-3]") && text.contains("\"camera\":true"), "{text}");
@@ -11394,5 +11488,102 @@ mod warhead_tests {
             assert!(!tips(id).is_empty(), "{id}");
             assert!(CHAPTERS.iter().any(|c| c.icons.contains(&id)), "{id}");
         }
+    }
+
+    // ---- the splitting missile (plan 11, task 3) ---------------------------------
+
+    fn dist(a: [i32; 2], b: [i32; 2]) -> f64 {
+        f64::from(a[0] - b[0]).hypot(f64::from(a[1] - b[1]))
+    }
+
+    #[test]
+    fn three_targets_stand_spread_apart_round_the_aim() {
+        for (spread, seed) in [(80, 1), (40, 99), (120, 12345)] {
+            let t = split_targets([1000, -500], spread, seed);
+            for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+                assert!((dist(t[a], t[b]) - spread as f64).abs() <= 1.5, "{spread}: {t:?}");
+            }
+            let mid = [(t[0][0] + t[1][0] + t[2][0]) as f64 / 3.0, (t[0][1] + t[1][1] + t[2][1]) as f64 / 3.0];
+            assert!((mid[0] - 1000.0).abs() <= 1.0 && (mid[1] + 500.0).abs() <= 1.0, "{t:?}");
+        }
+        assert_ne!(split_targets([0, 0], 80, 1), split_targets([0, 0], 80, 2), "the seed turns it");
+    }
+
+    #[test]
+    fn a_spread_is_40_to_120_and_80_when_left_empty() {
+        assert_eq!(spread_of(""), Ok(SPREAD_DEFAULT));
+        assert_eq!(SPREAD_DEFAULT, 80);
+        assert_eq!(spread_of("40"), Ok(40));
+        assert_eq!(spread_of("120"), Ok(120));
+        for bad in ["39", "121", "0", "99999999"] {
+            assert_eq!(spread_of(bad), Err(LaunchRefusal::Spread), "{bad}");
+        }
+        assert_eq!(spread_of("-50"), Err(LaunchRefusal::NotANumber));
+        assert!(!LaunchRefusal::Spread.line().key.is_empty());
+    }
+
+    #[test]
+    fn a_splitting_missile_carries_its_own_warheads() {
+        assert!(pad_takes(PAD_MISSILE_SLOT, SPLITTING_MISSILE));
+        assert!(!pad_takes(PAD_WARHEAD_SLOT, SPLITTING_MISSILE));
+        assert!(pad_shows(Some(SPLITTING_MISSILE), false));
+        assert!(splits(Some(SPLITTING_MISSILE)) && !splits(Some(MISSILE)) && !splits(None));
+        assert_eq!(pad_load(Some(SPLITTING_MISSILE), None), Ok(BombKind::Tactical));
+        assert_eq!(pad_load(Some(SPLITTING_MISSILE), Some("big_nukes:atomic_bomb")), Ok(BombKind::Tactical), "the slot's warhead stays");
+        assert_eq!(pad_load(Some(MISSILE), None), Err(ShaftProblem::NoWarhead));
+        assert!(ITEMS.iter().any(|i| i.0 == SPLITTING_MISSILE));
+        assert!(ASSEMBLIES.iter().any(|a| a.result == SPLITTING_MISSILE && a.parts.contains(&("big_nukes:tactical_warhead", 3))));
+        assert!(!tips(SPLITTING_MISSILE).is_empty());
+    }
+
+    #[test]
+    fn a_splitting_missile_becomes_three_flights_one_of_them_seen() {
+        let mut saved = Saved::default();
+        saved.tick = 500;
+        let from = [0, 65, 0];
+        let leader = saved.launch_split(OW, from, [2000, 0], 80, 75).unwrap();
+        assert_eq!(saved.flights.len(), 3);
+        let ids: BTreeSet<u64> = saved.flights.iter().map(|f| f.id).collect();
+        assert_eq!(ids.len(), 3);
+        let targets = split_targets([2000, 0], 80, leader.seed);
+        for (f, to) in saved.flights.iter().zip(targets) {
+            assert_eq!((f.to, f.kind, f.start, f.from), (to, BombKind::Tactical, 500, from));
+        }
+        assert_eq!(saved.flights[0], leader);
+        assert!(!leader.rider && leader.hatch == Some(75));
+        assert!(saved.flights[1..].iter().all(|f| f.rider && f.hatch.is_none() && f.hatch_act(600, Some(SILO_HATCH)).is_none()));
+        assert!(saved.pad_busy(OW, from, 501));
+        // Each lands at its own place, at about the same time.
+        let lands: Vec<u64> = saved.flights.iter().map(Flight::descends_at).collect();
+        assert!(lands.iter().max().unwrap() - lands.iter().min().unwrap() <= 10, "{lands:?}");
+    }
+
+    #[test]
+    fn a_splitting_missile_obeys_maxpower() {
+        let mut saved = Saved { maxpower: 16, ..Saved::default() };
+        assert_eq!(saved.launch_split(OW, [0, 65, 0], [2000, 0], 80, 75), Err(LaunchRefusal::Maxpower));
+        assert!(saved.flights.is_empty());
+    }
+
+    #[test]
+    fn a_target_past_the_world_is_dropped() {
+        let edge = WORLD_EDGE as i32;
+        let mut saved = Saved::default();
+        let leader = saved.launch_split(OW, [edge - 3000, 65, 0], [edge, 0], 120, 75).unwrap();
+        assert!((1..3).contains(&saved.flights.len()), "{}", saved.flights.len());
+        assert!(saved.flights.iter().all(|f| i64::from(f.to[0]).abs() <= WORLD_EDGE));
+        assert!(!leader.rider && leader.hatch.is_some(), "the first kept is the one seen, with the hatch");
+        assert_eq!(saved.flights.iter().filter(|f| !f.rider).count(), 1);
+    }
+
+    #[test]
+    fn a_flight_saved_by_0_2_0_is_no_rider() {
+        let mut saved = Saved::default();
+        saved.launch(OW, [0, 65, 0], [2000, 0], BombKind::Atomic, 75).unwrap();
+        let mut json = serde_json::to_value(&saved.flights[0]).unwrap();
+        json.as_object_mut().unwrap().remove("rider");
+        assert!(!serde_json::from_value::<Flight>(json).unwrap().rider);
+        let old = r#"{"console":[1,2,3],"x":"5","z":"6","code":"123","camera":true}"#;
+        assert_eq!(read_launch(old.as_bytes()).map(|m| m.spread), Some(String::new()));
     }
 }

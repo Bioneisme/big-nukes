@@ -2351,9 +2351,14 @@ add("item", "ration", 32, ration)
 
 
 # ================================================================ items: the missile and the flying models' sheets
-def missile(t, rng):
+def missile(t, rng, splitting=False):
     WHITE = [(112, 116, 126, 255), (160, 164, 170, 255), (204, 206, 204, 255), (234, 234, 230, 255),
              (250, 250, 246, 255)]
+    NOSE = RED
+    if splitting:
+        # A graphite body with a yellow nose and band: three warheads under one fairing.
+        WHITE = ramp((92, 98, 104), dark=0.5, light=0.45)
+        NOSE = HAZ
     ax, ay = 1 / math.sqrt(2), -1 / math.sqrt(2)
     qx, qy = 1 / math.sqrt(2), 1 / math.sqrt(2)
     ox, oy = 15.0, 49.0
@@ -2380,7 +2385,9 @@ def missile(t, rng):
                 v = 0.4 + 3.6 * (l * 0.5 + 0.5)
                 if s < 4:
                     R = DARK_STEEL
-                elif s > L - 15 or L - 26 < s < L - 22 or 4 <= s < 7:
+                elif s > L - 15 or L - 26 < s < L - 22:
+                    R = NOSE
+                elif 4 <= s < 7:
                     R = RED
                 else:
                     R = WHITE
@@ -2448,6 +2455,7 @@ def flying_sheet(t, rng, quarters):
 
 
 add("item", "missile", 64, missile)
+add("item", "splitting_missile", 64, missile, True)
 add("item", "missile_model", 64, flying_sheet,
     [((234, 234, 228), "paint"), ((200, 36, 32), "paint"), ((60, 62, 66), "nozzle"), ((22, 22, 24), "flat")])
 add("item", "bomber_model", 64, flying_sheet,

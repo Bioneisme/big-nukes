@@ -4,7 +4,8 @@ a loaded pad shows its missile standing in the shaft, with or without its warhea
 the console refuses a target too near, a wrong code and a shaft with no hatch, each with its reason; through the
 countdown the one missile stands in the shaft, then a launch opens the hatch, the missile climbs out as a display
 (target/shots/silo-*.png), the hatch shuts, and the missile comes down 1500 blocks off and goes off there, its
-target's chunk let go after; a launch survives the world closing mid-flight.
+target's chunk let go after; a splitting missile parts into three warheads that go off round its target; a
+launch survives the world closing mid-flight.
 
     python tools/silo_test.py GAME_FOLDER VERSION
 """
@@ -24,9 +25,9 @@ sys.stdout.reconfigure(encoding="utf-8")
 WORLD = "bn-silo"
 SAVED = os.path.join(GAME, "saves", WORLD, "horizon-big-nukes", "waves.json")
 SHOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "shots")
-# silo.rs: the console's screen, 176 x 222, and where its fields and buttons are.
-SCREEN_W, SCREEN_H = 176, 222
-FIELDS = [(8, 28, 52, 14), (64, 28, 52, 14), (120, 28, 48, 14)]
+# silo.rs: the console's screen, 176 x 240, and where its fields and buttons are: x, z, code, spread.
+SCREEN_W, SCREEN_H = 176, 240
+FIELDS = [(8, 28, 52, 14), (64, 28, 52, 14), (120, 28, 48, 14), (120, 128, 48, 14)]
 KEYS_AT, KEY, KEY_GAP = (8, 66), (22, 13), 2
 KEY_ROWS = ["123", "456", "789", "-0<"]
 ERASE_AT, LAUNCH_AT = (86, 66, 82, 13), (86, 81, 82, 28)
@@ -119,17 +120,19 @@ def fill(field, text, typed):
             press(key_rect(c))
 
 
-def console(at, x, z, code, typed=False):
-    """Opens the console at `at`, enters a target and a code, and presses Launch."""
+def console(at, x, z, code, typed=False, spread=""):
+    """Opens the console at `at`, enters a target, a code and a spread, and presses Launch."""
     ctl("interact", *at)
     ctl("wait", 10)
     press(ERASE_AT)
-    for field in range(3):
+    for field in range(len(FIELDS)):
         press(FIELDS[field])
         press(ERASE_AT)
     fill(0, str(x), typed)
     fill(1, str(z), typed)
     fill(2, code, typed)
+    if spread:
+        fill(3, spread, typed)
     press(LAUNCH_AT)
     ctl("wait", 10)
 
@@ -233,6 +236,41 @@ for _ in range(30):
         break
 check("the target's chunk is let go after the wave", not saved().get("forced"), json.dumps(saved().get("forced")))
 check("no flight is left", not saved().get("flights"), json.dumps(saved().get("flights"))[:300])
+
+# The splitting missile: three tactical warheads round a target 1500 blocks south, on a triangle of side 100.
+chat(f"tp @s {sx + 2.5} {sy} {sz + 2.5}")
+ctl("wait", 40)
+ctl("look-at", "block", *at)
+chat(f"item replace block {sx} {sy} {sz} container.0 with big_nukes:splitting_missile")
+chat(f"item replace block {sx} {sy} {sz} container.1 with minecraft:air")
+ctl("wait", 2)
+check("a pad takes a splitting missile alone", at_pad(sx, sy, sz, "big_nukes_pad") == 1, chat("execute if entity @e[type=minecraft:item_display]"))
+zones_before = len(saved().get("zones", []))
+tx, tz = sx, sz + 1500
+console(at, tx, tz, CODE, spread="100")
+ctl("key", "esc", "tap")
+flights = saved().get("flights", [])
+check("a splitting missile is three flights", len(flights) == 3 and sum(1 for f in flights if f.get("rider")) == 2, json.dumps(flights)[:400])
+check("one missile stands in the shaft", at_pad(sx, sy, sz, "big_nukes_flight") == 1 and displays() == 1,
+      chat("execute if entity @e[type=minecraft:item_display]"))
+chat(f"tp @s {tx} 300 {tz - 300} 0 25")
+for _ in range(80):
+    ctl("wait", 20)
+    if len(saved().get("zones", [])) >= zones_before + 3:
+        break
+ctl("screenshot", os.path.join(SHOTS, "silo-split.png"))
+zones = saved().get("zones", [])[zones_before:]
+round_it = [z for z in zones if abs(z["center"][0] - tx) <= 70 and abs(z["center"][2] - tz) <= 70]
+check("three warheads go off round the target", len(round_it) == 3, json.dumps(zones)[:400])
+centers = sorted((z["center"][0], z["center"][2]) for z in round_it)
+apart = [math.dist(a, b) for i, a in enumerate(centers) for b in centers[i + 1:]]
+check("about 100 blocks apart", len(apart) == 3 and all(abs(d - 100) <= 3 for d in apart), str(apart))
+for _ in range(30):
+    ctl("wait", 20)
+    if not saved().get("flights") and not saved().get("forced"):
+        break
+check("no flight or chunk is left after the split", not saved().get("flights") and not saved().get("forced"),
+      json.dumps([saved().get("flights"), saved().get("forced")])[:300])
 
 # A wrong code, then a launch the world closes on.
 chat(f"tp @s {sx + 2.5} {sy} {sz + 2.5}")

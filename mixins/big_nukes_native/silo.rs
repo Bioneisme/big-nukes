@@ -326,12 +326,21 @@ fn launch(game: &mut Game<'_>, dimension: &str, who: &NativeServerPlayer, m: &ru
         Ok(kind) => kind,
         Err(why) => return why.line(),
     };
+    let split = rules::splits(missile.as_deref());
+    let spread = match split.then(|| rules::spread_of(&m.spread)).transpose() {
+        Ok(spread) => spread,
+        Err(why) => return why.line(),
+    };
     let flight = {
         let Some(mut guard) = glue::state(game) else {
             return rules::Reply::new("big_nukes.console.gone", &[]);
         };
         let st = guard.as_mut().expect("opened");
-        match st.saved.launch(dimension, from, to, kind, hatch) {
+        let launched = match spread {
+            Some(spread) => st.saved.launch_split(dimension, from, to, spread, hatch),
+            None => st.saved.launch(dimension, from, to, kind, hatch),
+        };
+        match launched {
             Ok(f) => {
                 st.saved.consoles.entry(rules::console_key(dimension, console)).or_default().keep(&code);
                 glue::save(st);
@@ -340,9 +349,10 @@ fn launch(game: &mut Game<'_>, dimension: &str, who: &NativeServerPlayer, m: &ru
             Err(why) => return why.line(),
         }
     };
-    // The missile and its warhead leave the pad.
+    // The missile and its warhead leave the pad; a splitting missile's own warheads are in it, and the slot's stays.
+    let slots: &[usize] = if split { &[rules::PAD_MISSILE_SLOT] } else { &[rules::PAD_MISSILE_SLOT, rules::PAD_WARHEAD_SLOT] };
     game.native_with_mod_block_entity(pad, |e| {
-        for slot in [rules::PAD_MISSILE_SLOT, rules::PAD_WARHEAD_SLOT] {
+        for &slot in slots {
             if let Some(Some(stack)) = e.items.get_mut(slot) {
                 stack.count -= 1;
                 if stack.count == 0 {
@@ -543,10 +553,13 @@ pub(in crate::game) fn frame(game: &mut Game<'_>) {
 // last answer, twelve keys, and Erase, Launch and Camera on the right; then the
 // inventory, as the game lays it.
 
-const CONSOLE_HEIGHT: f32 = 222.0;
-const CONSOLE_INVENTORY_Y: f32 = 140.0;
+const CONSOLE_HEIGHT: f32 = 240.0;
+const CONSOLE_INVENTORY_Y: f32 = 158.0;
 /// The fields: x, y, width, height.
-const FIELDS: [[f32; 4]; 3] = [[8.0, 28.0, 52.0, 14.0], [64.0, 28.0, 52.0, 14.0], [120.0, 28.0, 48.0, 14.0]];
+/// X, Z and the code in a row under their labels; the spread on a row of its own under the buttons, its label
+/// left of it.
+const FIELDS: [[f32; 4]; 4] =
+    [[8.0, 28.0, 52.0, 14.0], [64.0, 28.0, 52.0, 14.0], [120.0, 28.0, 48.0, 14.0], [120.0, 128.0, 48.0, 14.0]];
 const STATUS_Y: f32 = 45.0;
 const KEYS_AT: [f32; 2] = [8.0, 66.0];
 const KEY: [f32; 2] = [22.0, 13.0];
@@ -647,9 +660,15 @@ pub(in crate::game) fn console_draw(game: &Game<'_>, data: &[i32], batch: &mut H
         let label = match i {
             rules::FIELD_X => "X".to_owned(),
             rules::FIELD_Z => "Z".to_owned(),
+            rules::FIELD_SPREAD => lang::get("big_nukes.screen.console.spread"),
             _ => lang::get("big_nukes.screen.console.code"),
         };
-        game.native_text(batch, &label, [x + fx, y + fy - 10.0], LABEL, false);
+        if i == rules::FIELD_SPREAD {
+            let width = game.native_text_width(&label);
+            game.native_text(batch, &label, [x + fx - width - 4.0, y + fy + 3.0], LABEL, false);
+        } else {
+            game.native_text(batch, &label, [x + fx, y + fy - 10.0], LABEL, false);
+        }
         let edge = if input.focus == i { 0xFFFF_FFFF } else { 0xFF37_3737 };
         game.native_fill(batch, [x + fx, y + fy, fw, fh], edge);
         game.native_fill(batch, [x + fx + 1.0, y + fy + 1.0, fw - 2.0, fh - 2.0], 0xFF10_1810);
@@ -957,6 +976,11 @@ fn missile(game: &mut Game<'_>, dimension: &str, f: &rules::Flight, now: u64, ch
         // The target is forced from the liftoff, so its chunk is in by the time it is wanted.
         changes.push(Change::Force(f.id, f.chunk_to()));
     }
+    // A splitting missile's riders are in the one seen until they part over their targets.
+    let leg = match leg {
+        rules::Leg::Countdown { .. } | rules::Leg::Ascent { .. } if f.rider => rules::Leg::Cruise,
+        leg => leg,
+    };
     match leg {
         rules::Leg::Countdown { left } => {
             // It stands in the shaft where the pad showed it, turning to face its target.
