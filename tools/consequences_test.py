@@ -81,7 +81,8 @@ chat("gamemode creative")
 # Radiation glass is a bunker wall.
 gx, gz = cx + 5, cz
 chat(f"setblock {gx} {y} {gz} big_nukes:radiation_glass")
-ctl("wait", 10)
+# The registry reaches the world's file at the mod's next save, every 10 seconds.
+ctl("wait", 220)
 walls = json.dumps(saved().get("walls", {}))
 check("radiation glass is kept as a wall", '"Glass"' in walls, walls[:300])
 
