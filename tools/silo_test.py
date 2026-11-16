@@ -12,6 +12,7 @@ launch survives the world closing mid-flight.
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -247,8 +248,14 @@ ctl("wait", 2)
 check("a pad takes a splitting missile alone", at_pad(sx, sy, sz, "big_nukes_pad") == 1, chat("execute if entity @e[type=minecraft:item_display]"))
 zones_before = len(saved().get("zones", []))
 tx, tz = sx, sz + 1500
+siren = (sx - 3, sy, sz)
+chat(f"setblock {siren[0]} {siren[1]} {siren[2]} big_nukes:siren")
 console(at, tx, tz, CODE, spread="100")
 ctl("key", "esc", "tap")
+ctl("wait", 20)
+lit = json.dumps(ctl("block", *siren))
+check("a siren by the pad lights at the launch", re.search(r"lit\W+true", lit) is not None, lit[:200])
+check("the world keeps the launch's alarms", len(saved().get("alarms", [])) >= 2, json.dumps(saved().get("alarms"))[:300])
 flights = saved().get("flights", [])
 check("a splitting missile is three flights", len(flights) == 3 and sum(1 for f in flights if f.get("rider")) == 2, json.dumps(flights)[:400])
 check("one missile stands in the shaft", at_pad(sx, sy, sz, "big_nukes_flight") == 1 and displays() == 1,
