@@ -71,8 +71,9 @@ chat(f"fill {cx - 8} {y - 1} {cz - 8} {cx + 8} {y - 1} {cz + 8} minecraft:stone"
 chat(f"tp @s {cx + 0.5} {y} {cz + 0.5}")
 ctl("wait", 20)
 
-# A blast far below starts the events and leaves a zone round the player (radius 120: a zone of 144).
-chat(f"bignukes blast 120 {cx} {y - 100} {cz}")
+# A blast off to the side and below starts the events and leaves a zone round the player (radius 120: a zone of
+# 144), its crater's core (42 blocks across the ground) clear of the platform.
+chat(f"bignukes blast 120 {cx - 70} {y - 60} {cz}")
 ctl("wait", 40)
 ev = saved().get("events", {})
 check("the events start with the first blast", ev.get("started") is True, json.dumps(ev)[:300])
