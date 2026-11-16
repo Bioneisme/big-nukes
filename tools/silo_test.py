@@ -73,6 +73,13 @@ def displays(where=""):
     return int(digits) if "passed" in said.lower() and digits else 0
 
 
+def gametime():
+    """The game's clock in ticks, from `/time query gametime`."""
+    said = chat("time query gametime")
+    digits = "".join(c for c in said.split(":")[-1] if c.isdigit()) or "".join(c for c in said if c.isdigit())
+    return int(digits) if digits else 0
+
+
 def at_pad(sx, sy, sz, tag=""):
     """The displays standing in the shaft over the pad, with `tag` if given."""
     return displays(f",x={sx + 0.5},y={sy + 1},z={sz + 0.5},distance=..2" + (f",tag={tag}" if tag else ""))
@@ -196,6 +203,7 @@ ctl("wait", 5)
 
 # The launch.
 console(at, sx + 1500, sz, CODE)
+launched = gametime()
 ctl("key", "e", "tap")
 ctl("wait", 2)
 check("E doesn't close the console", ctl("screen").get("screen") == "container", str(ctl("screen"))[:100])
@@ -208,9 +216,13 @@ check("in the countdown one missile stands in the shaft, the flight's",
 ctl("key", "esc", "tap")
 ctl("wait", 2)
 check("Escape closes it", ctl("screen").get("screen") == "playing", str(ctl("screen"))[:100])
-ctl("wait", 50)
+# Late in the countdown by the game's clock: each command to the game takes about a second of the countdown's 5.
+# The launch was some 10 ticks before `launched` (the console's last wait); its liftoff 100 after it.
+late = launched + 65 - gametime()
+if late > 0:
+    ctl("wait", late)
 check("still one missile in the shaft late in the countdown", at_pad(sx, sy, sz, "big_nukes_flight") == 1 and displays() == 1,
-      chat("execute if entity @e[type=minecraft:item_display]"))
+      f"{late} ticks waited / " + chat("execute if entity @e[type=minecraft:item_display]"))
 ctl("wait", 18)
 check("the hatch opens in the countdown", "air" in json.dumps(ctl("block", sx, sy + 7, sz)), str(ctl("block", sx, sy + 7, sz)))
 ctl("wait", 40)
