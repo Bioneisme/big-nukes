@@ -6093,6 +6093,10 @@ impl Saved {
     pub fn tick_events(&mut self, players: &[[f64; 2]], spawn: [f64; 2], built: &[[i32; 2]]) -> Vec<Happening> {
         let now = self.tick;
         let mut out = Vec::new();
+        // A world whose blasts came before the events: they start as it opens.
+        if !self.events.started && !self.zones.is_empty() {
+            self.events.begin(mix(now ^ 0xe7), now);
+        }
         let ev = &mut self.events;
         if !ev.started {
             return out;
@@ -6102,14 +6106,14 @@ impl Saved {
             if now == st.from {
                 out.push(Happening::StormBegan);
             }
-            if now >= st.until {
+            if now >= st.until || !ev.on(EventKind::Storm) {
                 ev.storm = None;
                 ev.next_storm = now + span(STORM_EVERY, ev.seed ^ now, 3);
                 out.push(Happening::StormEnded);
             }
         } else if now + STORM_WARNING >= ev.next_storm {
             if ev.on(EventKind::Storm) && !self.zones.is_empty() {
-                let from = now.max(ev.next_storm - STORM_WARNING) + STORM_WARNING;
+                let from = now.max(ev.next_storm.saturating_sub(STORM_WARNING)) + STORM_WARNING;
                 let st = Storm { from, until: from + span(STORM_LASTS, ev.seed ^ from, 4) };
                 ev.storm = Some(st);
                 out.push(Happening::StormSet(st));
@@ -6134,7 +6138,7 @@ impl Saved {
                 let target = players.first().and_then(|p| satellite_target(seed, *p, &clear, built));
                 match target.filter(|_| ev.on(EventKind::Satellite)) {
                     Some(to) => {
-                        let at = now.max(ev.next_satellite - SATELLITE_WARNING) + SATELLITE_WARNING;
+                        let at = now.max(ev.next_satellite.saturating_sub(SATELLITE_WARNING)) + SATELLITE_WARNING;
                         let sat = Satellite { dimension: "minecraft:overworld".into(), to, at, surface: None, seed };
                         ev.satellite = Some(sat.clone());
                         out.push(Happening::SatelliteSet(sat));
@@ -6147,26 +6151,39 @@ impl Saved {
         out
     }
 
-    /// `/bignukes events trigger <storm|satellite>`: the storm's warning, or the satellite's, starts now.
-    pub fn trigger(&mut self, kind: EventKind) -> bool {
+    /// `/bignukes events trigger <storm|satellite>`: the storm's warning, or the satellite's, starts now. The answer's
+    /// lang key: triggered, or why not (one on its way, turned off, no zone for a storm). A satellite still needs a
+    /// player in the overworld and a place for it.
+    pub fn trigger(&mut self, kind: EventKind) -> &'static str {
         let now = self.tick;
+        if kind == EventKind::Mutants {
+            return "big_nukes.events.usage";
+        }
+        if kind == EventKind::Storm && self.zones.is_empty() {
+            return "big_nukes.events.no_zone";
+        }
         let ev = &mut self.events;
         if !ev.started {
             ev.begin(mix(now), now);
         }
+        if !ev.on(kind) {
+            return "big_nukes.events.off";
+        }
         match kind {
             EventKind::Storm if ev.storm.is_none() => ev.next_storm = now,
             EventKind::Satellite if ev.satellite.is_none() => ev.next_satellite = now,
-            _ => return false,
+            _ => return "big_nukes.events.busy",
         }
-        true
+        "big_nukes.events.triggered"
     }
 }
 
 // ---- mutants ----
 
-/// A mutant's mark: its maximum health is its kind's times this.
+/// A mutant's mark: its maximum health is its kind's times this, and a quarter over, so a leader zombie (whose
+/// health vanilla raises by chance) isn't taken for one.
 pub const MUTANT_HEALTH: f64 = 2.0;
+const MUTANT_MARK: f64 = 0.25;
 const MUTANT_DAMAGE: f64 = 1.5;
 const MUTANT_SPEED: f64 = 1.2;
 /// Each mob near a player in a zone is looked at this often.
@@ -6195,7 +6212,7 @@ fn kind_of(kind: &str) -> Option<&'static (&'static str, f64, f64, f64)> {
 
 /// Whether a mob of `kind` with `max_health` is a mutant already.
 pub fn is_mutant(kind: &str, max_health: f64) -> bool {
-    kind_of(kind).is_some_and(|k| max_health >= k.1 * MUTANT_HEALTH - 0.5)
+    kind_of(kind).is_some_and(|k| (max_health - (k.1 * MUTANT_HEALTH + MUTANT_MARK)).abs() < 0.01)
 }
 
 /// Whether a mob of `kind` can mutate, and isn't a mutant.
@@ -6212,10 +6229,10 @@ pub fn mutation_chance(background: f64) -> f64 {
 pub fn mutate_commands(kind: &str, target: &str) -> Vec<String> {
     let Some(&(_, health, damage, speed)) = kind_of(kind) else { return Vec::new() };
     vec![
-        format!("attribute {target} minecraft:max_health base set {}", health * MUTANT_HEALTH),
+        format!("attribute {target} minecraft:max_health base set {}", health * MUTANT_HEALTH + MUTANT_MARK),
         format!("attribute {target} minecraft:attack_damage base set {}", damage * MUTANT_DAMAGE),
         format!("attribute {target} minecraft:movement_speed base set {:.3}", speed * MUTANT_SPEED),
-        format!("data merge entity {target} {{Health:{:.1}f,DeathLootTable:\"{MUTANT_LOOT}\",PersistenceRequired:1b}}", health * MUTANT_HEALTH),
+        format!("data merge entity {target} {{Health:{:.2}f,DeathLootTable:\"{MUTANT_LOOT}\"}}", health * MUTANT_HEALTH + MUTANT_MARK),
     ]
 }
 
@@ -12913,11 +12930,12 @@ mod event_tests {
     #[test]
     fn a_trigger_starts_one_now() {
         let mut saved = Saved::default();
+        saved.zones.push(satellite_zone(OW, [0, 64, 0], 0));
         saved.tick = 77;
-        assert!(saved.trigger(EventKind::Storm));
+        assert_eq!(saved.trigger(EventKind::Storm), "big_nukes.events.triggered");
         assert!(saved.events.started && saved.events.next_storm == 77);
-        assert!(saved.trigger(EventKind::Satellite));
-        assert!(!saved.trigger(EventKind::Mutants), "mutants come by themselves");
+        assert_eq!(saved.trigger(EventKind::Satellite), "big_nukes.events.triggered");
+        assert_eq!(saved.trigger(EventKind::Mutants), "big_nukes.events.usage", "mutants come by themselves");
     }
 
     #[test]
@@ -12935,15 +12953,15 @@ mod event_tests {
     #[test]
     fn mutants_are_known_by_their_health_and_made_by_commands() {
         assert!(mutable("minecraft:zombie", 20.0));
-        assert!(!mutable("minecraft:zombie", 40.0) && is_mutant("minecraft:zombie", 40.0));
-        assert!(!mutable("minecraft:cow", 10.0) && !is_mutant("minecraft:cow", 40.0));
+        assert!(!mutable("minecraft:zombie", 40.25) && is_mutant("minecraft:zombie", 40.25));
+        assert!(!mutable("minecraft:cow", 10.0) && !is_mutant("minecraft:cow", 40.25));
         assert_eq!(mutation_chance(0.0), 0.0);
         assert!((mutation_chance(2.0) - 0.2).abs() < 1e-9);
         assert_eq!(mutation_chance(50.0), 0.5);
         let cmds = mutate_commands("minecraft:spider", "abc");
         assert_eq!(cmds.len(), 4);
-        assert!(cmds[0].ends_with("max_health base set 32"), "{}", cmds[0]);
-        assert!(cmds[3].contains("Health:32.0f") && cmds[3].contains(MUTANT_LOOT));
+        assert!(cmds[0].ends_with("max_health base set 32.25"), "{}", cmds[0]);
+        assert!(cmds[3].contains("Health:32.25f") && cmds[3].contains(MUTANT_LOOT));
         assert!(mutate_commands("minecraft:cow", "abc").is_empty());
         assert_eq!(mutants_radiation(0), 0.0);
         assert_eq!(mutants_radiation(5), 3.0 * MUTANT_RADIATION);
@@ -12978,6 +12996,69 @@ mod event_tests {
         assert_eq!(l[2].args, ["2"]);
         assert_eq!(radar_lines(&ev, 0, 3000)[0].key, "big_nukes.radar.storm_now");
         assert_eq!(radar_lines(&ev, 0, 6000)[0].key, "big_nukes.radar.storm_none");
+    }
+
+    #[test]
+    fn a_trigger_in_the_worlds_first_minutes_still_warns() {
+        let mut saved = Saved::default();
+        saved.tick = 100;
+        saved.blast(OW, [0, 64, 0], 120).unwrap();
+        assert_eq!(saved.trigger(EventKind::Storm), "big_nukes.events.triggered");
+        let set = saved.tick_events(&[[0.5, 0.5]], [0.0, 0.0], &[]);
+        assert_eq!(set, vec![Happening::StormSet(saved.events.storm.unwrap())]);
+        assert_eq!(saved.events.storm.unwrap().from, 100 + STORM_WARNING, "two minutes' warning, no wrap-round");
+        assert_eq!(saved.trigger(EventKind::Satellite), "big_nukes.events.triggered");
+        let set = saved.tick_events(&[[0.5, 0.5]], [0.0, 0.0], &[]);
+        let sat = saved.events.satellite.clone().expect("set");
+        assert!(set.contains(&Happening::SatelliteSet(sat.clone())));
+        assert_eq!(sat.at, 100 + SATELLITE_WARNING);
+    }
+
+    #[test]
+    fn a_trigger_says_why_not() {
+        let mut saved = Saved::default();
+        assert_eq!(saved.trigger(EventKind::Storm), "big_nukes.events.no_zone", "a storm needs a zone");
+        saved.blast(OW, [0, 64, 0], 120).unwrap();
+        saved.events.command(&["storm", "off"]);
+        assert_eq!(saved.trigger(EventKind::Storm), "big_nukes.events.off");
+        saved.events.command(&["storm", "on"]);
+        assert_eq!(saved.trigger(EventKind::Storm), "big_nukes.events.triggered");
+        saved.tick_events(&[], [0.0, 0.0], &[]);
+        assert_eq!(saved.trigger(EventKind::Storm), "big_nukes.events.busy", "one on its way");
+        assert_eq!(saved.trigger(EventKind::Mutants), "big_nukes.events.usage");
+    }
+
+    #[test]
+    fn turning_storms_off_ends_one_blowing() {
+        let mut saved = started();
+        saved.trigger(EventKind::Storm);
+        saved.tick_events(&[], [0.0, 0.0], &[]);
+        assert!(saved.events.storm.is_some());
+        saved.events.command(&["off"]);
+        saved.tick += 1;
+        assert!(saved.tick_events(&[], [0.0, 0.0], &[]).contains(&Happening::StormEnded));
+        assert!(saved.events.storm.is_none());
+    }
+
+    #[test]
+    fn a_world_with_zones_from_before_starts_its_events() {
+        let mut saved = Saved::default();
+        saved.zones.push(satellite_zone(OW, [0, 64, 0], 0));
+        saved.tick = 500;
+        saved.tick_events(&[], [0.0, 0.0], &[]);
+        assert!(saved.events.started);
+        assert!(saved.events.next_storm > 500);
+    }
+
+    #[test]
+    fn a_mutant_is_marked_apart_from_a_leader_zombie() {
+        let cmds = mutate_commands("minecraft:zombie", "abc");
+        let health: f64 = cmds[0].rsplit(' ').next().unwrap().parse().unwrap();
+        assert!(is_mutant("minecraft:zombie", health));
+        for leader in [40.0, 47.3, 60.0, 100.0] {
+            assert!(!is_mutant("minecraft:zombie", leader), "{leader}");
+        }
+        assert!(!cmds[3].contains("PersistenceRequired"), "mutants despawn as their kind does");
     }
 
     #[test]

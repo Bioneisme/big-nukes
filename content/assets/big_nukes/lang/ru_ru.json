@@ -272,5 +272,6 @@
   "big_nukes.radar.missiles": "Радар: ракет в полёте: %s.",
   "block.big_nukes.radar": "Радар",
   "item.big_nukes.irradiated_tissue": "Облучённая ткань",
-  "block.big_nukes.satellite_debris": "Обломки спутника"
+  "block.big_nukes.satellite_debris": "Обломки спутника",
+  "big_nukes.events.no_zone": "Для бури нужна хотя бы одна радиоактивная зона."
 }

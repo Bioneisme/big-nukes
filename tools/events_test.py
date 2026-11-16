@@ -99,7 +99,8 @@ check("zombies in a zone mutate", doubled >= 1, f"{doubled} of 6")
 chat("kill @e[type=minecraft:zombie]")
 
 # A storm: triggered, it comes in two minutes and gives a survival player in the open a dose.
-check("a storm can be triggered", "now" in chat("bignukes events trigger storm") or True)
+said = chat("bignukes events trigger storm")
+check("a storm can be triggered", "now" in said or "сейчас" in said, said)
 ctl("wait", 10)
 storm = saved().get("events", {}).get("storm")
 check("the storm is set", storm is not None, json.dumps(saved().get("events", {}))[:300])

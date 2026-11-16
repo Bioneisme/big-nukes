@@ -56,9 +56,9 @@ fn radar_near(dimension: &str, pos: [f64; 3], now: u64) -> bool {
     })
 }
 
-/// The powered radars heard lately, for the sirens.
+/// The overworld's powered radars heard lately, for the sirens of its events.
 fn powered_radars(now: u64) -> Vec<(String, [i32; 3])> {
-    lock(&RADARS).iter().filter(|r| r.2 && r.3 + RADAR_HEARD >= now).map(|r| (r.0.clone(), r.1)).collect()
+    lock(&RADARS).iter().filter(|r| r.0 == OVERWORLD && r.2 && r.3 + RADAR_HEARD >= now).map(|r| (r.0.clone(), r.1)).collect()
 }
 
 /// A right click on the radar: its report in chat. Whether the block was the radar.
@@ -94,10 +94,8 @@ pub(in crate::game) fn command(game: &mut Game<'_>, args: &[&str]) -> Text {
     let st = guard.as_mut().expect("opened");
     let line = match args {
         ["trigger", name] => match rules::EventKind::of_name(name) {
-            Some(kind @ (rules::EventKind::Storm | rules::EventKind::Satellite)) => {
-                if st.saved.trigger(kind) { "big_nukes.events.triggered" } else { "big_nukes.events.busy" }
-            }
-            _ => "big_nukes.events.usage",
+            Some(kind) => st.saved.trigger(kind),
+            None => "big_nukes.events.usage",
         },
         _ => st.saved.events.command(args).unwrap_or("big_nukes.events.usage"),
     };
@@ -278,6 +276,8 @@ fn pack(game: &mut Game<'_>, player: u128, at: [f64; 3]) {
         };
         let prefix = format!("execute in {OVERWORLD} positioned {x} {y} {z} run ");
         game.native_run_command(&format!("{prefix}summon minecraft:zombie ~0.5 ~ ~0.5 {{Tags:[\"{PACK_TAG}\"]}}"));
+        // A helmet, so the daylight doesn't burn the pack.
+        game.native_run_command(&format!("{prefix}item replace entity @e[tag={PACK_TAG},limit=1,sort=nearest] armor.head with minecraft:leather_helmet"));
         for command in rules::mutate_commands("minecraft:zombie", &format!("@e[tag={PACK_TAG},limit=1,sort=nearest]")) {
             game.native_run_command(&format!("{prefix}{command}"));
         }
@@ -303,7 +303,12 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
         let Some(guard) = glue::state(game) else { return };
         let Some(st) = guard.as_ref() else { return };
         let now = st.saved.tick;
-        if now % rules::SECOND != 0 || !st.saved.zones.iter().any(|z| z.dimension == dimension) {
+        if now % rules::SECOND != 0 {
+            return;
+        }
+        // Counts more than a second old go, whatever this level's tick finds.
+        lock(&NEAR).retain(|c| c.2 + rules::SECOND >= now);
+        if !st.saved.zones.iter().any(|z| z.dimension == dimension) {
             return;
         }
         let zones: Vec<rules::Zone> = st.saved.zones.iter().filter(|z| z.dimension == dimension).cloned().collect();
@@ -322,7 +327,6 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     let mutants: Vec<[f64; 3]> = mobs.iter().filter(|m| rules::is_mutant(&m.kind, f64::from(m.max_health))).map(|m| m.pos).collect();
     {
         let mut counted = lock(&NEAR);
-        counted.retain(|c| c.2 + rules::SECOND >= now);
         for p in &players {
             let n = mutants.iter().filter(|m| (0..3).map(|i| (p.position[i] - m[i]).powi(2)).sum::<f64>() <= rules::MUTANT_REACH.powi(2)).count();
             counted.retain(|c| c.0 != p.uuid);
@@ -355,7 +359,7 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     }
 }
 
-/// How many mutants were within reach of `player` at their last second.
-pub(in crate::game) fn mutants_near(player: u128) -> usize {
-    lock(&NEAR).iter().find(|c| c.0 == player).map_or(0, |c| c.1)
+/// How many mutants were within reach of `player` at their last second, as counted at most a second before `now`.
+pub(in crate::game) fn mutants_near(player: u128, now: u64) -> usize {
+    lock(&NEAR).iter().find(|c| c.0 == player && c.2 + rules::SECOND >= now).map_or(0, |c| c.1)
 }

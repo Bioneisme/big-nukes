@@ -331,6 +331,7 @@ pub(in crate::game) fn commands(commands: &mut Vec<NativeCommand>) {
     // One text argument, last: the radius and the optional place are read from it.
     commands.push(NativeCommand::op("bignukes blast <args:text>", 2));
     commands.push(NativeCommand::op("bignukes maxpower [limit:integer]", 2));
+    commands.push(NativeCommand::op("bignukes events [args:text]", 2));
     commands.push(NativeCommand::new("bignukes guide"));
 }
 
@@ -828,7 +829,9 @@ pub(in crate::game) fn fog(game: &Game<'_>, camera: [f64; 3], fog_type: FogType,
         return;
     }
     // A storm's green over the overworld, as a strong zone's.
-    let storm = game.native_player().is_some_and(|p| p.dimension == "minecraft:overworld") && lock(&TOLD).as_ref().is_some_and(|t| t.rad.storm);
+    // Not in a sealed room.
+    let storm = game.native_player().is_some_and(|p| p.dimension == "minecraft:overworld")
+        && lock(&TOLD).as_ref().is_some_and(|t| t.rad.storm && t.rad.shelter > rules::SEALED_SHELTER);
     let target = rules::fog_strength(background_here(game, camera)).max(if storm { rules::STORM_FOG } else { 0.0 });
     let now = Instant::now();
     let shown = {
@@ -1159,6 +1162,7 @@ fn has_entity(block: &str) -> bool {
         || is_part(block)
         || silo::has_entity(block)
         || bunker::has_entity(block)
+        || events::has_entity(block)
 }
 
 pub(in crate::game) fn block_entity(block: &str, entity: &mut Option<(String, Compound)>) {
@@ -2026,7 +2030,7 @@ pub(in crate::game) fn player_tick(game: &mut Game<'_>) {
     } else {
         0.0
     };
-    let carried = carried + storm + rules::mutants_radiation(events::mutants_near(who.uuid));
+    let carried = carried + storm + rules::mutants_radiation(events::mutants_near(who.uuid, st.saved.tick));
     let Some(background) = st.saved.expose_carrying(who.uuid, &who.dimension, who.position, protection, shelter, carried) else {
         return;
     };

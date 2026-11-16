@@ -272,5 +272,6 @@
   "big_nukes.radar.missiles": "Radar: missiles in flight: %s.",
   "block.big_nukes.radar": "Radar",
   "item.big_nukes.irradiated_tissue": "Irradiated Tissue",
-  "block.big_nukes.satellite_debris": "Satellite Debris"
+  "block.big_nukes.satellite_debris": "Satellite Debris",
+  "big_nukes.events.no_zone": "A storm needs a radioactive zone somewhere."
 }
