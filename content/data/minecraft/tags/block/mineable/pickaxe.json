@@ -45,6 +45,10 @@
       "required": false
     },
     {
+      "id": "big_nukes:radar",
+      "required": false
+    },
+    {
       "id": "big_nukes:assembly_table",
       "required": false
     },
@@ -122,6 +126,10 @@
       "id": "big_nukes:siren",
       "required": false
     },
-    "big_nukes:trinitite"
+    "big_nukes:trinitite",
+    {
+      "id": "big_nukes:satellite_debris",
+      "required": false
+    }
   ]
 }

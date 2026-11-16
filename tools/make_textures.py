@@ -1829,6 +1829,56 @@ def siren(t, rng, part):
     scratches(t, rng, 4, 2, 2, n - 2, n - 2)
 
 
+def radar(t, rng, part):
+    """The radar: a steel cabinet; its front a round green scope with a sweep and blips, its top a dish's mount."""
+    n = t.n
+    R = casing(t, rng, (92, 100, 96), EDGE)
+    if part == "front":
+        cx = cy = n / 2
+        ring(t, cx, cy, 11.0, 13.5, STEEL, mid=2.2)
+        t.paint(disc(cx, cy, 11.0), GLOW[0])
+        for r in (4.0, 8.0):
+            for x, y in disc(cx, cy, r + 0.6, r):
+                t.set(x, y, GLOW[1])
+        for k in range(11):
+            t.set(int(cx + k * 0.7), int(cy - k * 0.7), GLOW[3 if k > 2 else 2])
+        for bx, by in ((cx - 5, cy + 3), (cx + 4, cy + 5)):
+            t.set(int(bx), int(by), GLOW[4])
+        for x, y in ((2, 2), (n - 4, 2), (2, n - 4), (n - 4, n - 4)):
+            rivet(t, x, y, R, 2)
+    elif part == "top":
+        cx = cy = n / 2
+        ring(t, cx, cy, 5.0, 12.0, STEEL, mid=2.6)
+        t.paint(disc(cx, cy, 2.5), DARK_STEEL[3])
+    else:
+        for y in range(8, n - 8, 5):
+            groove(t, 6, y, n - 6, y + 1, R)
+        for x, y in ((3, 3), (n - 5, 3), (3, n - 5), (n - 5, n - 5)):
+            rivet(t, x, y, R, 2)
+    scratches(t, rng, 4, 2, 2, n - 2, n - 2)
+
+
+for part in ("front", "side", "top"):
+    add("block", f"radar_{part}", 32, radar, part)
+
+
+def satellite_debris(t, rng):
+    """Torn panels of a satellite: gold foil, a blue solar cell's corner, bent struts and scorch."""
+    n = t.n
+    GOLD = ramp((196, 152, 52), dark=0.5, light=0.5)
+    fill(t, box(0, 0, n, n), GOLD, rng, spread=0.9, cells=5, grain=0.4)
+    CELL = ramp((40, 66, 120), dark=0.5, light=0.5)
+    for x in range(2, n // 2):
+        for y in range(n // 2, n - 2):
+            t.set(x, y, CELL[1] if (x % 5 == 0 or y % 5 == 0) else CELL[3])
+    for k in range(n):
+        t.set(k, (k * 3) // 4, DARK_STEEL[2])
+        t.set(k, min(n - 1, (k * 3) // 4 + 1), DARK_STEEL[4])
+    soot(t, rng, n * 0.7, n * 0.3, 7.0, 0.6, 0.9)
+    scratches(t, rng, 8, 1, 1, n - 1, n - 1)
+
+
+add("block", "satellite_debris", 32, satellite_debris)
 add("block", "siren_top", 32, siren, "top")
 add("block", "siren_side", 32, siren, "side")
 add("block", "siren_on_side", 32, siren, "on_side")
@@ -2553,6 +2603,25 @@ def trinitite_shard(t, rng):
 
 
 add("item", "trinitite_shard", 32, trinitite_shard)
+
+
+def irradiated_tissue(t, rng):
+    """A torn lump of grey-green flesh, glowing green at its edges."""
+    n = t.n
+    F = [(70, 82, 52, 255), (98, 116, 68, 255), (126, 146, 84, 255), (156, 176, 104, 255), (196, 214, 140, 255)]
+    pts = [(n * 0.18, n * 0.38), (n * 0.42, n * 0.16), (n * 0.78, n * 0.26), (n * 0.86, n * 0.62), (n * 0.56, n * 0.86),
+           (n * 0.20, n * 0.74)]
+    lump = poly(pts)
+    f = vnoise(n, rng, 3)
+    for x, y in lump:
+        t.set(x, y, pick(F, 1.0 + f[y][x] * 3.0, x, y, 0.4))
+    for x, y in border(lump):
+        if t.ok(x, y):
+            t.set(x, y, GLOW[3])
+    item_outline(t)
+
+
+add("item", "irradiated_tissue", 32, irradiated_tissue)
 add("item", "missile_model", 64, flying_sheet,
     [((234, 234, 228), "paint"), ((200, 36, 32), "paint"), ((60, 62, 66), "nozzle"), ((22, 22, 24), "flat")])
 add("item", "bomber_model", 64, flying_sheet,

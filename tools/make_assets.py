@@ -27,6 +27,7 @@ FACING = {
     "strike_beacon": ("Strike Beacon", "Маяк авиаудара"),
     "sunbreaker_core": ("Sunbreaker Core", "Ядро «Солнцелома»"),
     "decontaminator": ("Decontaminator", "Дезактиватор"),
+    "radar": ("Radar", "Радар"),
 }
 TABLE = {"assembly_table": ("Assembly Table", "Сборочный стол"), "silo_hatch": ("Silo Hatch", "Люк шахты")}
 # Declared in code, one texture all round: the Sunbreaker's structure.
@@ -59,6 +60,7 @@ ITEMS = {
     "guide": ("Big Nukes Guide", "Руководство Big Nukes"),
     "iodine_tablets": ("Iodine Tablets", "Таблетки йода"),
     "trinitite_shard": ("Trinitite Shard", "Осколок тринитита"),
+    "irradiated_tissue": ("Irradiated Tissue", "Облучённая ткань"),
 }
 
 
@@ -279,6 +281,36 @@ write(D / "loot_table" / "blocks" / "trinitite.json", {
             {"function": "minecraft:set_count", "count": {"type": "minecraft:uniform", "min": 1, "max": 3}}]}]}]}],
     "random_sequence": "big_nukes:blocks/trinitite",
 })
+# The satellite's debris (plan 13): one texture all round; it drops what the satellite carried.
+write(A / "blockstates" / "satellite_debris.json", {"variants": {"": {"model": "big_nukes:block/satellite_debris"}}})
+write(A / "models" / "block" / "satellite_debris.json", {"parent": "minecraft:block/cube_all", "textures": {"all": "big_nukes:block/satellite_debris"}})
+block_item("satellite_debris")
+named("block", "satellite_debris", "Satellite Debris", "Обломки спутника")
+write(D / "loot_table" / "blocks" / "satellite_debris.json", {
+    "type": "minecraft:block",
+    "pools": [
+        {"rolls": 1, "entries": [{"type": "minecraft:item", "name": "big_nukes:enriched_uranium",
+                                  "functions": [{"function": "minecraft:set_count", "count": {"type": "minecraft:uniform", "min": 1, "max": 2}}]}]},
+        {"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:iron_ingot",
+                                  "functions": [{"function": "minecraft:set_count", "count": {"type": "minecraft:uniform", "min": 2, "max": 4}}]}]},
+        {"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:redstone",
+                                  "functions": [{"function": "minecraft:set_count", "count": {"type": "minecraft:uniform", "min": 2, "max": 5}}]}]},
+        {"rolls": 1, "conditions": [{"condition": "minecraft:random_chance", "chance": 0.15}],
+         "entries": [{"type": "minecraft:item", "name": "big_nukes:weapons_grade_uranium"}]},
+    ],
+    "random_sequence": "big_nukes:blocks/satellite_debris",
+})
+# A mutant's loot: irradiated tissue and a little of what a zombie drops.
+write(D / "loot_table" / "entities" / "mutant.json", {
+    "type": "minecraft:entity",
+    "pools": [
+        {"rolls": 1, "entries": [{"type": "minecraft:item", "name": "big_nukes:irradiated_tissue",
+                                  "functions": [{"function": "minecraft:set_count", "count": {"type": "minecraft:uniform", "min": 1, "max": 2}}]}]},
+        {"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:rotten_flesh",
+                                  "functions": [{"function": "minecraft:set_count", "count": {"type": "minecraft:uniform", "min": 0, "max": 2}}]}]},
+    ],
+    "random_sequence": "big_nukes:entities/mutant",
+})
 # The siren (plan 11): a copper bulb's states, lit while it wails.
 write(A / "blockstates" / "siren.json", {"variants": {
     "lit=false": {"model": "big_nukes:block/siren"}, "lit=true": {"model": "big_nukes:block/siren_on"}}})
@@ -297,11 +329,11 @@ named("item", "ration", "Ration", "Паёк")
 # The blocks declared in code are there only with the native half: their entries are optional,
 # so the assets half alone still loads its tags (and with them its data).
 def entry(n):
-    code = n in FACING or n in TABLE or n in CUBE or n in WALLS or n in BUNKER or n == "siren"
+    code = n in FACING or n in TABLE or n in CUBE or n in WALLS or n in BUNKER or n in ("siren", "satellite_debris")
     return {"id": f"big_nukes:{n}", "required": False} if code else f"big_nukes:{n}"
 
 
-pickaxe = [entry(n) for n in [*FACING, *TABLE, *CUBE, "uranium_ore", "deepslate_uranium_ore", *WALLS, *BUNKER, "siren", "trinitite"]]
+pickaxe = [entry(n) for n in [*FACING, *TABLE, *CUBE, "uranium_ore", "deepslate_uranium_ore", *WALLS, *BUNKER, "siren", "trinitite", "satellite_debris"]]
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "mineable" / "pickaxe.json", {"values": pickaxe})
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "mineable" / "shovel.json", {"values": ["big_nukes:ash"]})
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "needs_iron_tool.json",

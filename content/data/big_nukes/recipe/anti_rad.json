@@ -3,7 +3,10 @@
   "category": "misc",
   "ingredients": [
     "minecraft:glass_bottle",
-    "minecraft:golden_carrot",
+    [
+      "minecraft:golden_carrot",
+      "big_nukes:irradiated_tissue"
+    ],
     "minecraft:redstone"
   ],
   "result": {

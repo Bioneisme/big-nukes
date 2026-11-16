@@ -52,6 +52,13 @@ file = "crates/horizon-client/src/game.rs"
 name = "big_nukes_bunker"
 source = "bunker.rs"
 
+# The radar and the events (plan 13): their glue, beside the rest.
+[[module]]
+id = "events"
+file = "crates/horizon-client/src/game.rs"
+name = "big_nukes_events"
+source = "events.rs"
+
 # The machines and the bombs, declared in code; the ores and the ash are the assets half's files.
 # The content mod (textures, models, sounds, text, recipes) rides inside this bundle, so the mod is one file:
 # the game's list of content mods gets it as a dev mod (written once to .horizon-cache).

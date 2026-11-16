@@ -124,7 +124,7 @@ impl BombKind {
 
 /// The items: id, how many stack, and whether they are rare. Each copies its
 /// `template` with the `components` patch.
-pub const ITEMS: [(&str, u8, bool); 21] = [
+pub const ITEMS: [(&str, u8, bool); 22] = [
     ("big_nukes:raw_uranium", 64, false),
     ("big_nukes:enriched_uranium", 64, true),
     (WEAPONS_GRADE_URANIUM, 64, true),
@@ -144,6 +144,7 @@ pub const ITEMS: [(&str, u8, bool); 21] = [
     (MISSILE, 1, true),
     (SPLITTING_MISSILE, 1, true),
     (TRINITITE_SHARD, 64, false),
+    (IRRADIATED_TISSUE, 64, false),
     (GUIDE, 1, false),
     (RATION, 16, false),
 ];
@@ -159,7 +160,7 @@ pub fn guide_give(name: &str) -> String {
 }
 
 /// What each block and item says under its name about how to use it: lang keys, one line each.
-const TIPS: [(&str, &[&str]); 54] = [
+const TIPS: [(&str, &[&str]); 57] = [
     ("big_nukes:demolition_charge", &["big_nukes.tip.demolition_charge", "big_nukes.tip.demolition_charge.2"]),
     ("big_nukes:tactical_warhead", &["big_nukes.tip.tactical_warhead", "big_nukes.tip.tactical_warhead.2"]),
     ("big_nukes:atomic_bomb", &["big_nukes.tip.atomic_bomb", "big_nukes.tip.atomic_bomb.2"]),
@@ -208,6 +209,9 @@ const TIPS: [(&str, &[&str]); 54] = [
     (WALL_BLOCKS[8], &["big_nukes.tip.cracked_wall"]),
     (WALL_BLOCKS[9], &["big_nukes.tip.cracked_wall"]),
     (TRINITITE, &["big_nukes.tip.trinitite"]),
+    (RADAR, &["big_nukes.tip.radar", "big_nukes.tip.radar.2"]),
+    (SATELLITE_DEBRIS, &["big_nukes.tip.satellite_debris"]),
+    (IRRADIATED_TISSUE, &["big_nukes.tip.irradiated_tissue"]),
     (TRINITITE_SHARD, &["big_nukes.tip.trinitite_shard"]),
     (HERMETIC_DOOR, &["big_nukes.tip.hermetic_door"]),
     (FUEL_GENERATOR, &["big_nukes.tip.fuel_generator"]),
@@ -470,7 +474,7 @@ pub struct Assembly {
     pub parts: &'static [(&'static str, u32)],
 }
 
-pub const ASSEMBLIES: [Assembly; 25] = [
+pub const ASSEMBLIES: [Assembly; 26] = [
     Assembly { result: "big_nukes:nuclear_charge", count: 1, parts: &[(ENRICHED_URANIUM, 1), ("minecraft:tnt", 4)] },
     Assembly { result: "big_nukes:bomb_casing", count: 1, parts: &[("minecraft:iron_block", 4), ("minecraft:redstone", 4)] },
     Assembly {
@@ -510,6 +514,11 @@ pub const ASSEMBLIES: [Assembly; 25] = [
     },
     Assembly { result: SPLITTING_MISSILE, count: 1, parts: &[(MISSILE, 1), ("big_nukes:tactical_warhead", 3)] },
     Assembly { result: RADIATION_GLASS, count: 4, parts: &[("minecraft:glass", 4), (TRINITITE_SHARD, 4), (WALL_BLOCKS[2], 1)] },
+    Assembly {
+        result: RADAR,
+        count: 1,
+        parts: &[("minecraft:iron_block", 2), ("minecraft:redstone", 4), ("minecraft:compass", 1), (TRINITITE_SHARD, 2)],
+    },
     Assembly { result: SIREN, count: 1, parts: &[("minecraft:iron_ingot", 4), ("minecraft:note_block", 1), ("minecraft:redstone", 2)] },
     Assembly {
         result: STRIKE_BEACON,
@@ -652,7 +661,8 @@ pub fn name_key(id: &str) -> String {
         || SILO_BLOCKS.contains(&id)
         || id == DECONTAMINATOR
         || WALL_BLOCKS.contains(&id)
-        || BUNKER_BLOCKS.contains(&id);
+        || BUNKER_BLOCKS.contains(&id)
+        || EVENT_BLOCKS.contains(&id);
     let kind = if block { "block" } else { "item" };
     format!("{kind}.{namespace}.{name}")
 }
@@ -1611,6 +1621,9 @@ pub struct Saved {
     /// The tick the overworld's nuclear winter ends: 0 for none yet.
     #[serde(default)]
     pub winter_until: u64,
+    /// The storms, the mutants and the satellites, from the world's first blast.
+    #[serde(default)]
+    pub events: Events,
     /// The circles the decontaminators cleaned, theirs still where they were broken.
     #[serde(default)]
     pub cleans: Vec<Clean>,
@@ -1641,6 +1654,7 @@ impl Default for Saved {
             alarms: Vec::new(),
             tickets: false,
             winter_until: 0,
+            events: Events::default(),
             cleans: Vec::new(),
             walls: BTreeMap::new(),
         }
@@ -1673,6 +1687,9 @@ impl Saved {
         let id = self.next_id;
         let seed = mix(self.tick ^ mix(id));
         let blast = Blast { id, dimension: dimension.to_owned(), center, radius, seed, world, effect };
+        if !self.events.started {
+            self.events.begin(seed, self.tick);
+        }
         // A Sunbreaker's ash darkens the overworld's sky for three days.
         if dimension == "minecraft:overworld" && effect == Effect::Blast && radius >= SUNBREAKER_BASE {
             self.winter_until = self.winter_until.max(self.tick + WINTER_TICKS);
@@ -2998,6 +3015,10 @@ pub enum Notice {
     Launched { seconds: u32, to: [i32; 2] },
     /// To one near a target: the seconds to the impact.
     Inbound { seconds: u32 },
+    /// A radioactive storm in this many seconds.
+    Storm { seconds: u32 },
+    /// A satellite falls at `at` (x, z) in this many seconds.
+    Satellite { seconds: u32, at: [i32; 2] },
 }
 
 impl Notice {
@@ -3029,6 +3050,22 @@ pub struct Toast {
 
 pub fn toast_of(notice: &Notice) -> Toast {
     match *notice {
+        Notice::Storm { seconds } => Toast {
+            id: "big_nukes:notice/storm",
+            icon: GEIGER_COUNTER,
+            title: "big_nukes.toast.storm",
+            description: "big_nukes.toast.storm.text",
+            args: vec![seconds.to_string()],
+            challenge: true,
+        },
+        Notice::Satellite { seconds, at } => Toast {
+            id: "big_nukes:notice/satellite",
+            icon: RADAR,
+            title: "big_nukes.toast.satellite",
+            description: "big_nukes.toast.satellite.text",
+            args: vec![at[0].to_string(), at[1].to_string(), seconds.to_string()],
+            challenge: true,
+        },
         Notice::Launched { seconds, to } => Toast {
             id: "big_nukes:notice/launched",
             icon: MISSILE,
@@ -3715,6 +3752,7 @@ impl Saved {
             dose: self.doses.get(&dose_key(uuid)).map_or(0.0, |d| d.rad),
             shelter: 1.0,
             winter: dimension == "minecraft:overworld" && self.winter(),
+            storm: dimension == "minecraft:overworld" && self.events.storm_now(now),
         }
     }
 }
@@ -3747,18 +3785,21 @@ pub struct Rad {
     /// The overworld's nuclear winter is on where the player is.
     #[serde(default)]
     pub winter: bool,
+    /// A radioactive storm blows where the player is.
+    #[serde(default)]
+    pub storm: bool,
 }
 
 impl Default for Rad {
     fn default() -> Self {
-        Rad { zones: Vec::new(), cleans: Vec::new(), now: 0, dose: 0.0, shelter: 1.0, winter: false }
+        Rad { zones: Vec::new(), cleans: Vec::new(), now: 0, dose: 0.0, shelter: 1.0, winter: false, storm: false }
     }
 }
 
 impl Rad {
     /// Nothing to tell: no zone, no dose and no winter. Sent once, so the window lets go.
     pub fn is_empty(&self) -> bool {
-        self.zones.is_empty() && self.dose <= 0.0 && !self.winter
+        self.zones.is_empty() && self.dose <= 0.0 && !self.winter && !self.storm
     }
 }
 
@@ -5820,6 +5861,397 @@ fn tooltip(text: String, mouse: [f32; 2], window: [f32; 2], measure: &dyn Fn(&st
     ]
 }
 
+// ---- the events (plan 13) ---------------------------------------------------------------
+//
+// From the world's first blast: radioactive storms, mutants and falling satellites, on a schedule rolled from that
+// blast's seed and the world's clock; a radar warns of them early.
+
+pub const DAY: u64 = 24_000;
+pub const RADAR: &str = "big_nukes:radar";
+/// The events' blocks, declared in code.
+pub const EVENT_BLOCKS: [&str; 2] = [RADAR, SATELLITE_DEBRIS];
+/// How far a powered radar warns, across the ground.
+pub const RADAR_REACH: f64 = 256.0;
+
+pub const STORM_EVERY: [u64; 2] = [4 * DAY, 8 * DAY];
+pub const STORM_LASTS: [u64; 2] = [3 * 60 * SECOND, 5 * 60 * SECOND];
+/// The warning a radar gives, and the one without.
+pub const STORM_WARNING: u64 = 120 * SECOND;
+pub const STORM_LATE_WARNING: u64 = 10 * SECOND;
+/// A storm's background under the open sky, in rad a second.
+pub const STORM_BACKGROUND: f64 = 2.0;
+/// How green a storm makes the fog, as a zone's fog strength.
+pub const STORM_FOG: f64 = 0.7;
+
+pub const SATELLITE_EVERY: [u64; 2] = [10 * DAY, 20 * DAY];
+pub const SATELLITE_WARNING: u64 = 60 * SECOND;
+/// How long its fall shows, its trail down the sky.
+pub const SATELLITE_FALL: u64 = 10 * SECOND;
+pub const SATELLITE_RANGE: [f64; 2] = [150.0, 400.0];
+/// How near a player (or their spawn) and the mod's walls and bombs it may not fall.
+pub const SATELLITE_CLEAR_PLAYER: f64 = 96.0;
+pub const SATELLITE_CLEAR_BUILT: f64 = 48.0;
+pub const SATELLITE_RADIUS: u32 = 8;
+pub const SATELLITE_ZONE_RADIUS: f64 = 24.0;
+pub const SATELLITE_DEBRIS: &str = "big_nukes:satellite_debris";
+
+/// One of the events, by the name the command takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventKind {
+    Storm,
+    Mutants,
+    Satellite,
+}
+
+impl EventKind {
+    pub fn of_name(name: &str) -> Option<EventKind> {
+        match name {
+            "storm" => Some(EventKind::Storm),
+            "mutants" => Some(EventKind::Mutants),
+            "satellite" => Some(EventKind::Satellite),
+            _ => None,
+        }
+    }
+}
+
+/// A storm on its way or blowing, over the overworld.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Storm {
+    pub from: u64,
+    pub until: u64,
+}
+
+/// A satellite on its way down.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Satellite {
+    pub dimension: String,
+    pub to: [i32; 2],
+    /// The tick it hits.
+    pub at: u64,
+    /// Its target's ground, once read.
+    #[serde(default)]
+    pub surface: Option<i32>,
+    pub seed: u64,
+}
+
+/// The events' state, as the world keeps it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Events {
+    /// Whether the world has had a blast: the events start with it.
+    pub started: bool,
+    pub seed: u64,
+    /// All off, or one.
+    pub off: bool,
+    pub storm_off: bool,
+    pub mutants_off: bool,
+    pub satellite_off: bool,
+    pub next_storm: u64,
+    pub next_satellite: u64,
+    pub storm: Option<Storm>,
+    pub satellite: Option<Satellite>,
+}
+
+/// What `Saved::tick_events` did this tick, for the glue to show.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Happening {
+    /// A storm was set: it begins at `from`.
+    StormSet(Storm),
+    StormBegan,
+    StormEnded,
+    /// A satellite was set: it falls on `to` at `at`.
+    SatelliteSet(Satellite),
+    /// It hits now, on its ground.
+    SatelliteFell(Satellite),
+}
+
+/// A span `[low, high]` picked by `roll`.
+fn span(low_high: [u64; 2], tick: u64, salt: u64) -> u64 {
+    low_high[0] + ((low_high[1] - low_high[0]) as f64 * roll(tick, salt)) as u64
+}
+
+impl Events {
+    fn begin(&mut self, seed: u64, now: u64) {
+        self.started = true;
+        self.seed = seed;
+        self.next_storm = now + span(STORM_EVERY, seed, 1);
+        self.next_satellite = now + span(SATELLITE_EVERY, seed, 2);
+    }
+
+    pub fn on(&self, kind: EventKind) -> bool {
+        !self.off
+            && match kind {
+                EventKind::Storm => !self.storm_off,
+                EventKind::Mutants => !self.mutants_off,
+                EventKind::Satellite => !self.satellite_off,
+            }
+    }
+
+    /// `/bignukes events ...` after its name: the answer's lang key, or None for a wrong line.
+    pub fn command(&mut self, args: &[&str]) -> Option<&'static str> {
+        let state = |on: bool| if on { "big_nukes.events.on" } else { "big_nukes.events.off" };
+        match args {
+            [] => Some(state(!self.off)),
+            ["on"] => {
+                self.off = false;
+                Some(state(true))
+            }
+            ["off"] => {
+                self.off = true;
+                Some(state(false))
+            }
+            [name] => EventKind::of_name(name).map(|k| state(self.on(k))),
+            [name, flag @ ("on" | "off")] => {
+                let off = *flag == "off";
+                match EventKind::of_name(name)? {
+                    EventKind::Storm => self.storm_off = off,
+                    EventKind::Mutants => self.mutants_off = off,
+                    EventKind::Satellite => self.satellite_off = off,
+                }
+                Some(state(!off))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a storm blows at `now`.
+    pub fn storm_now(&self, now: u64) -> bool {
+        self.storm.is_some_and(|s| (s.from..s.until).contains(&now))
+    }
+}
+
+/// A storm's background where a player stands: `shelter` is the share of a zone's their place lets in (`shelter`):
+/// the open sky all, a roof a quarter, a sealed room none.
+pub fn storm_background(shelter: f64) -> f64 {
+    if shelter >= 1.0 {
+        STORM_BACKGROUND
+    } else if shelter <= SEALED_SHELTER {
+        0.0
+    } else {
+        STORM_BACKGROUND / 4.0
+    }
+}
+
+/// When a player is told of a storm: with a radar `STORM_WARNING` before it, without `STORM_LATE_WARNING`. The
+/// notice, on the second it is due.
+pub fn storm_notice(storm: &Storm, now: u64, radar: bool) -> Option<Notice> {
+    let ahead = if radar { STORM_WARNING } else { STORM_LATE_WARNING };
+    (now + ahead >= storm.from && now + ahead < storm.from + SECOND).then(|| Notice::Storm { seconds: (ahead / SECOND) as u32 })
+}
+
+/// The satellite's notice, to a player with a radar, `SATELLITE_WARNING` before it falls.
+pub fn satellite_notice(sat: &Satellite, now: u64, radar: bool) -> Option<Notice> {
+    (radar && now + SATELLITE_WARNING >= sat.at && now + SATELLITE_WARNING < sat.at + SECOND)
+        .then(|| Notice::Satellite { seconds: (SATELLITE_WARNING / SECOND) as u32, at: sat.to })
+}
+
+/// Where a satellite falls round `player` (x, z): `SATELLITE_RANGE` off, turned by `seed`, not within
+/// `SATELLITE_CLEAR_PLAYER` of `clear_of` nor `SATELLITE_CLEAR_BUILT` of `built`. None when sixteen tries find no place.
+pub fn satellite_target(seed: u64, player: [f64; 2], clear_of: &[[f64; 2]], built: &[[i32; 2]]) -> Option<[i32; 2]> {
+    (0..16u64).find_map(|k| {
+        let a = roll(seed, 10 + k) * std::f64::consts::TAU;
+        let d = SATELLITE_RANGE[0] + (SATELLITE_RANGE[1] - SATELLITE_RANGE[0]) * roll(seed, 40 + k);
+        let at = [player[0] + d * a.cos(), player[1] + d * a.sin()];
+        let far = |p: [f64; 2], r: f64| (at[0] - p[0]).hypot(at[1] - p[1]) >= r;
+        let ok = clear_of.iter().all(|p| far(*p, SATELLITE_CLEAR_PLAYER))
+            && built.iter().all(|b| far([f64::from(b[0]), f64::from(b[1])], SATELLITE_CLEAR_BUILT));
+        ok.then(|| [at[0].round() as i32, at[1].round() as i32])
+    })
+}
+
+/// Where a satellite is `t` ticks into its fall: from high over it, down a slant onto its target.
+pub fn satellite_fall(to: [i32; 2], ground: i32, t: u64, seed: u64) -> [f64; 3] {
+    let a = (seed % 360) as f64 * std::f64::consts::PI / 180.0;
+    let s = (t as f64 / SATELLITE_FALL as f64).clamp(0.0, 1.0);
+    let back = 260.0 * (1.0 - s);
+    [f64::from(to[0]) + 0.5 + a.cos() * back, f64::from(ground) + 300.0 * (1.0 - s), f64::from(to[1]) + 0.5 + a.sin() * back]
+}
+
+/// How many debris blocks a satellite leaves, 3 to 5.
+pub fn debris_count(seed: u64) -> u32 {
+    3 + (mix(seed ^ 0xdeb) % 3) as u32
+}
+
+/// A satellite's zone: radius 24, weak, gone in a day.
+pub fn satellite_zone(dimension: &str, center: [i32; 3], now: u64) -> Zone {
+    Zone {
+        dimension: dimension.to_owned(),
+        center,
+        radius: SATELLITE_ZONE_RADIUS,
+        peak: 1.5,
+        start: now,
+        half_life: DAY / ZONE_HALF_LIVES,
+        floor: 0.0,
+        wind: None,
+    }
+}
+
+impl Saved {
+    /// One tick of the events. `players` are the overworld's players' places (x, z) and `spawn` the world's; `built`
+    /// the places (x, z) a satellite keeps clear of. A storm needs a zone somewhere; a satellite a player in the
+    /// overworld; each waits a day when it can't be.
+    pub fn tick_events(&mut self, players: &[[f64; 2]], spawn: [f64; 2], built: &[[i32; 2]]) -> Vec<Happening> {
+        let now = self.tick;
+        let mut out = Vec::new();
+        let ev = &mut self.events;
+        if !ev.started {
+            return out;
+        }
+        // The storm.
+        if let Some(st) = ev.storm {
+            if now == st.from {
+                out.push(Happening::StormBegan);
+            }
+            if now >= st.until {
+                ev.storm = None;
+                ev.next_storm = now + span(STORM_EVERY, ev.seed ^ now, 3);
+                out.push(Happening::StormEnded);
+            }
+        } else if now + STORM_WARNING >= ev.next_storm {
+            if ev.on(EventKind::Storm) && !self.zones.is_empty() {
+                let from = now.max(ev.next_storm - STORM_WARNING) + STORM_WARNING;
+                let st = Storm { from, until: from + span(STORM_LASTS, ev.seed ^ from, 4) };
+                ev.storm = Some(st);
+                out.push(Happening::StormSet(st));
+            } else {
+                ev.next_storm = now + DAY;
+            }
+        }
+        // The satellite.
+        match ev.satellite.clone() {
+            Some(sat) if now >= sat.at => {
+                if sat.surface.is_some() || now >= sat.at + SURFACE_WAIT {
+                    ev.satellite = None;
+                    ev.next_satellite = now + span(SATELLITE_EVERY, ev.seed ^ now, 5);
+                    out.push(Happening::SatelliteFell(Satellite { surface: Some(sat.surface.unwrap_or(SURFACE_GUESS)), ..sat }));
+                }
+            }
+            Some(_) => {}
+            None if now + SATELLITE_WARNING >= ev.next_satellite => {
+                let seed = mix(ev.seed ^ now ^ 0x5a7);
+                let mut clear: Vec<[f64; 2]> = players.to_vec();
+                clear.push(spawn);
+                let target = players.first().and_then(|p| satellite_target(seed, *p, &clear, built));
+                match target.filter(|_| ev.on(EventKind::Satellite)) {
+                    Some(to) => {
+                        let at = now.max(ev.next_satellite - SATELLITE_WARNING) + SATELLITE_WARNING;
+                        let sat = Satellite { dimension: "minecraft:overworld".into(), to, at, surface: None, seed };
+                        ev.satellite = Some(sat.clone());
+                        out.push(Happening::SatelliteSet(sat));
+                    }
+                    None => ev.next_satellite = now + DAY,
+                }
+            }
+            None => {}
+        }
+        out
+    }
+
+    /// `/bignukes events trigger <storm|satellite>`: the storm's warning, or the satellite's, starts now.
+    pub fn trigger(&mut self, kind: EventKind) -> bool {
+        let now = self.tick;
+        let ev = &mut self.events;
+        if !ev.started {
+            ev.begin(mix(now), now);
+        }
+        match kind {
+            EventKind::Storm if ev.storm.is_none() => ev.next_storm = now,
+            EventKind::Satellite if ev.satellite.is_none() => ev.next_satellite = now,
+            _ => return false,
+        }
+        true
+    }
+}
+
+// ---- mutants ----
+
+/// A mutant's mark: its maximum health is its kind's times this.
+pub const MUTANT_HEALTH: f64 = 2.0;
+const MUTANT_DAMAGE: f64 = 1.5;
+const MUTANT_SPEED: f64 = 1.2;
+/// Each mob near a player in a zone is looked at this often.
+pub const MUTATE_EVERY: u64 = 5 * SECOND;
+/// How near a player a mob is looked at, and how near a mutant radiates.
+pub const MUTATE_NEAR: f64 = 48.0;
+pub const MUTANT_REACH: f64 = 3.0;
+/// What a mutant gives off to a player within `MUTANT_REACH`, in rad a second.
+pub const MUTANT_RADIATION: f64 = 1.0;
+pub const MUTANT_LOOT: &str = "big_nukes:entities/mutant";
+pub const IRRADIATED_TISSUE: &str = "big_nukes:irradiated_tissue";
+/// A storm's pack round a player near a zone.
+pub const PACK_NEAR: f64 = 200.0;
+
+/// The kinds that mutate, with their maximum health, attack damage and speed as vanilla has them.
+const MUTANT_KINDS: [(&str, f64, f64, f64); 4] = [
+    ("minecraft:zombie", 20.0, 3.0, 0.23),
+    ("minecraft:skeleton", 20.0, 2.0, 0.25),
+    ("minecraft:spider", 16.0, 2.0, 0.3),
+    ("minecraft:creeper", 20.0, 2.0, 0.25),
+];
+
+fn kind_of(kind: &str) -> Option<&'static (&'static str, f64, f64, f64)> {
+    MUTANT_KINDS.iter().find(|k| k.0 == kind)
+}
+
+/// Whether a mob of `kind` with `max_health` is a mutant already.
+pub fn is_mutant(kind: &str, max_health: f64) -> bool {
+    kind_of(kind).is_some_and(|k| max_health >= k.1 * MUTANT_HEALTH - 0.5)
+}
+
+/// Whether a mob of `kind` can mutate, and isn't a mutant.
+pub fn mutable(kind: &str, max_health: f64) -> bool {
+    kind_of(kind).is_some() && !is_mutant(kind, max_health)
+}
+
+/// The chance a mob mutates at a look in `background`: a tenth of it, at most a half.
+pub fn mutation_chance(background: f64) -> f64 {
+    (background / 10.0).clamp(0.0, 0.5)
+}
+
+/// The commands that make the mob `target` (its UUID) of `kind` a mutant: its attributes, full health, its loot.
+pub fn mutate_commands(kind: &str, target: &str) -> Vec<String> {
+    let Some(&(_, health, damage, speed)) = kind_of(kind) else { return Vec::new() };
+    vec![
+        format!("attribute {target} minecraft:max_health base set {}", health * MUTANT_HEALTH),
+        format!("attribute {target} minecraft:attack_damage base set {}", damage * MUTANT_DAMAGE),
+        format!("attribute {target} minecraft:movement_speed base set {:.3}", speed * MUTANT_SPEED),
+        format!("data merge entity {target} {{Health:{:.1}f,DeathLootTable:\"{MUTANT_LOOT}\",PersistenceRequired:1b}}", health * MUTANT_HEALTH),
+    ]
+}
+
+/// Whether the mob `id` mutates at the look at `now`, in `background`.
+pub fn mutates(id: u32, now: u64, background: f64) -> bool {
+    roll(now, u64::from(id) ^ 0x3a7) < mutation_chance(background)
+}
+
+/// What a powered radar tells on a right click, as lines (lang keys and their arguments): the storm, the satellite,
+/// the missiles in flight.
+pub fn radar_lines(events: &Events, missiles: usize, now: u64) -> Vec<Reply> {
+    let secs = |t: u64| (t / SECOND).to_string();
+    let mut lines = Vec::new();
+    match events.storm {
+        Some(st) if now < st.from => lines.push(Reply::new("big_nukes.radar.storm_in", &[&secs(st.from - now)])),
+        Some(st) if now < st.until => lines.push(Reply::new("big_nukes.radar.storm_now", &[&secs(st.until - now)])),
+        _ => lines.push(Reply::new("big_nukes.radar.storm_none", &[])),
+    }
+    match &events.satellite {
+        Some(sat) => lines.push(Reply::new("big_nukes.radar.satellite", &[&sat.to[0], &sat.to[1], &secs(sat.at.saturating_sub(now))])),
+        None => lines.push(Reply::new("big_nukes.radar.satellite_none", &[])),
+    }
+    lines.push(Reply::new("big_nukes.radar.missiles", &[&missiles]));
+    lines
+}
+
+/// What the mutants near a player give off: `MUTANT_RADIATION` for each within `MUTANT_REACH`, at most three's.
+pub fn mutants_radiation(near: usize) -> f64 {
+    MUTANT_RADIATION * near.min(3) as f64
+}
+
+/// A pack's size, 3 to 6.
+pub fn pack_size(seed: u64) -> u32 {
+    3 + (mix(seed ^ 0x9ac) % 4) as u32
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -5851,6 +6283,7 @@ mod tests {
             "mixins/big_nukes_native/silo.rs",
             "mixins/big_nukes_native/decon.rs",
             "mixins/big_nukes_native/bunker.rs",
+            "mixins/big_nukes_native/events.rs",
             "content/data/big_nukes/function/check.mcfunction",
         ]
         .iter()
@@ -7318,7 +7751,7 @@ mod tests {
 
     #[test]
     fn every_block_and_item_says_how_to_use_it() {
-        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE, DECONTAMINATOR].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).chain(FILE_BLOCKS).chain(WALL_BLOCKS).chain(BUNKER_BLOCKS).collect();
+        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE, DECONTAMINATOR].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).chain(FILE_BLOCKS).chain(WALL_BLOCKS).chain(BUNKER_BLOCKS).chain(EVENT_BLOCKS).collect();
         all.extend(ITEMS.iter().map(|i| i.0));
         let (en, ru) = (language("en_us"), language("ru_ru"));
         for id in all.into_iter().filter(|id| *id != "big_nukes:ash") {
@@ -7335,7 +7768,7 @@ mod tests {
     fn every_block_and_item_is_in_the_creative_tab() {
         let tab: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/horizon/creative_tab/big_nukes.json")).unwrap();
         let listed: Vec<&str> = tab["items"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE, DECONTAMINATOR].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).chain(FILE_BLOCKS).chain(WALL_BLOCKS).chain(BUNKER_BLOCKS).collect();
+        let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE, DECONTAMINATOR].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).chain(FILE_BLOCKS).chain(WALL_BLOCKS).chain(BUNKER_BLOCKS).chain(EVENT_BLOCKS).collect();
         all.extend(ITEMS.iter().map(|i| i.0));
         let (listed_set, all_set): (BTreeSet<&str>, BTreeSet<&str>) = (listed.iter().copied().collect(), all.iter().copied().collect());
         assert_eq!(listed.len(), listed_set.len(), "an id is listed twice");
@@ -7435,6 +7868,7 @@ mod tests {
             .chain(SILO_BLOCKS)
             .chain(WALL_BLOCKS)
             .chain(BUNKER_BLOCKS)
+            .chain(EVENT_BLOCKS)
             .collect();
         let known_id = |id: &str| id.starts_with("minecraft:") || known.contains(id);
         let dir = format!("{}/content/data/big_nukes/recipe", env!("CARGO_MANIFEST_DIR"));
@@ -7462,9 +7896,13 @@ mod tests {
                 }
                 other => panic!("{file_name}: {other} isn't a crafting table recipe"),
             };
-            for id in ingredients {
-                let id = id.as_str().unwrap_or_else(|| panic!("{file_name}: {id} isn't an item id"));
-                assert!(known_id(id), "{file_name}: {id} is unknown");
+            // An ingredient is an item, or a list of items any of which will do.
+            for ingredient in ingredients {
+                let ids: Vec<&serde_json::Value> = ingredient.as_array().map_or(vec![ingredient], |a| a.iter().collect());
+                for id in ids {
+                    let id = id.as_str().unwrap_or_else(|| panic!("{file_name}: {id} isn't an item id"));
+                    assert!(known_id(id), "{file_name}: {id} is unknown");
+                }
             }
             let result = recipe["result"]["id"].as_str().unwrap();
             assert!(known_id(result), "{file_name}: {result} is unknown");
@@ -7478,7 +7916,7 @@ mod tests {
             made.insert(a.result.to_owned());
         }
         // Mined, made in the centrifuge, or cracked by a blast.
-        let not_crafted: Vec<&str> = ["big_nukes:raw_uranium", "big_nukes:enriched_uranium", WEAPONS_GRADE_URANIUM, TRINITITE_SHARD]
+        let not_crafted: Vec<&str> = ["big_nukes:raw_uranium", "big_nukes:enriched_uranium", WEAPONS_GRADE_URANIUM, TRINITITE_SHARD, IRRADIATED_TISSUE, SATELLITE_DEBRIS]
             .into_iter()
             .chain(WallKind::ALL.map(WallKind::cracked_id))
             .collect();
@@ -7584,7 +8022,7 @@ mod tests {
     fn assembly_recipes_name_known_items() {
         let known: BTreeSet<&str> = ITEMS.iter().map(|i| i.0).chain(BombKind::ALL.map(BombKind::id)).chain(WALL_BLOCKS).collect();
         let results: BTreeSet<&str> = ASSEMBLIES.iter().map(|a| a.result).collect();
-        let wanted: BTreeSet<&str> = [CHARGE, "big_nukes:bomb_casing", MISSILE, SPLITTING_MISSILE, STRIKE_BEACON, DECONTAMINATOR, RATION, SIREN]
+        let wanted: BTreeSet<&str> = [CHARGE, "big_nukes:bomb_casing", MISSILE, SPLITTING_MISSILE, STRIKE_BEACON, DECONTAMINATOR, RATION, SIREN, RADAR]
             .into_iter()
             .chain(BombKind::ALL.map(BombKind::id))
             .chain(SUNBREAKER_PARTS)
@@ -12318,3 +12756,237 @@ mod consequence_tests {
     }
 }
 
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+
+    const OW: &str = "minecraft:overworld";
+
+    fn started() -> Saved {
+        let mut saved = Saved::default();
+        saved.tick = 1000;
+        saved.blast(OW, [0, 64, 0], 120).unwrap();
+        saved
+    }
+
+    /// Ticks the world's clock until `stop` says so, at most `most` ticks; what happened, by tick.
+    fn run(saved: &mut Saved, most: u64, stop: impl Fn(&Happening) -> bool) -> Option<(u64, Happening)> {
+        for _ in 0..most {
+            saved.tick += 1;
+            for h in saved.tick_events(&[[0.5, 0.5]], [0.5, 0.5], &[]) {
+                if stop(&h) {
+                    return Some((saved.tick, h));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_events_start_with_the_first_blast() {
+        let mut saved = Saved::default();
+        assert!(!saved.events.started);
+        assert!(saved.tick_events(&[[0.0, 0.0]], [0.0, 0.0], &[]).is_empty());
+        saved.tick = 1000;
+        saved.blast(OW, [0, 64, 0], 16).unwrap();
+        let ev = &saved.events;
+        assert!(ev.started);
+        assert!((1000 + STORM_EVERY[0]..=1000 + STORM_EVERY[1]).contains(&ev.next_storm), "{}", ev.next_storm);
+        assert!((1000 + SATELLITE_EVERY[0]..=1000 + SATELLITE_EVERY[1]).contains(&ev.next_satellite));
+        let seed = ev.seed;
+        saved.blast(OW, [0, 64, 0], 16).unwrap();
+        assert_eq!(saved.events.seed, seed, "the first blast's");
+    }
+
+    #[test]
+    fn a_storm_is_set_two_minutes_ahead_blows_and_ends() {
+        let mut saved = started();
+        let next = saved.events.next_storm;
+        saved.tick = next - STORM_WARNING - 1;
+        let (at, h) = run(&mut saved, 10, |h| matches!(h, Happening::StormSet(_))).expect("set");
+        assert_eq!(at, next - STORM_WARNING);
+        let Happening::StormSet(st) = h else { unreachable!() };
+        assert_eq!(st.from, next);
+        assert!((STORM_LASTS[0]..=STORM_LASTS[1]).contains(&(st.until - st.from)));
+        assert!(!saved.events.storm_now(next - 1) && saved.events.storm_now(next));
+        let (began, _) = run(&mut saved, STORM_WARNING + 5, |h| *h == Happening::StormBegan).unwrap();
+        assert_eq!(began, next);
+        let (ended, _) = run(&mut saved, STORM_LASTS[1] + 5, |h| *h == Happening::StormEnded).unwrap();
+        assert_eq!(ended, st.until);
+        assert!(saved.events.storm.is_none());
+        assert!(saved.events.next_storm >= ended + STORM_EVERY[0]);
+    }
+
+    #[test]
+    fn no_zone_or_off_no_storm() {
+        let mut saved = started();
+        saved.zones.clear();
+        let next = saved.events.next_storm;
+        saved.tick = next - STORM_WARNING;
+        assert!(saved.tick_events(&[], [0.0, 0.0], &[]).is_empty());
+        assert_eq!(saved.events.next_storm, saved.tick + DAY, "a day later");
+        let mut saved = started();
+        saved.events.command(&["storm", "off"]).unwrap();
+        saved.tick = saved.events.next_storm - STORM_WARNING;
+        assert!(saved.tick_events(&[], [0.0, 0.0], &[]).is_empty());
+    }
+
+    #[test]
+    fn the_command_turns_them_on_and_off() {
+        let mut ev = Events::default();
+        assert_eq!(ev.command(&[]), Some("big_nukes.events.on"));
+        assert_eq!(ev.command(&["off"]), Some("big_nukes.events.off"));
+        assert!(!ev.on(EventKind::Storm));
+        assert_eq!(ev.command(&["on"]), Some("big_nukes.events.on"));
+        assert_eq!(ev.command(&["mutants", "off"]), Some("big_nukes.events.off"));
+        assert!(!ev.on(EventKind::Mutants) && ev.on(EventKind::Satellite));
+        assert_eq!(ev.command(&["mutants"]), Some("big_nukes.events.off"));
+        assert_eq!(ev.command(&["meteors", "off"]), None);
+        assert_eq!(ev.command(&["storm", "maybe"]), None);
+    }
+
+    #[test]
+    fn a_storm_is_weaker_under_a_roof_and_none_in_a_sealed_room() {
+        assert_eq!(storm_background(1.0), STORM_BACKGROUND);
+        assert_eq!(storm_background(ROOF_SHELTER), STORM_BACKGROUND / 4.0);
+        assert_eq!(storm_background(SEALED_SHELTER), 0.0);
+        // Under the open sky a storm builds a dose; under a roof it heals away.
+        assert!(STORM_BACKGROUND > 0.5 && STORM_BACKGROUND / 4.0 <= 0.5);
+    }
+
+    #[test]
+    fn a_radar_warns_early_without_one_late() {
+        let st = Storm { from: 10_000, until: 14_000 };
+        assert_eq!(storm_notice(&st, 10_000 - STORM_WARNING, true), Some(Notice::Storm { seconds: 120 }));
+        assert_eq!(storm_notice(&st, 10_000 - STORM_WARNING, false), None);
+        assert_eq!(storm_notice(&st, 10_000 - STORM_LATE_WARNING, false), Some(Notice::Storm { seconds: 10 }));
+        assert_eq!(storm_notice(&st, 10_000 - STORM_WARNING + SECOND, true), None, "once");
+        let sat = Satellite { dimension: OW.into(), to: [300, 40], at: 50_000, surface: None, seed: 1 };
+        assert_eq!(satellite_notice(&sat, 50_000 - SATELLITE_WARNING, true), Some(Notice::Satellite { seconds: 60, at: [300, 40] }));
+        assert_eq!(satellite_notice(&sat, 50_000 - SATELLITE_WARNING, false), None, "without a radar only its trail");
+    }
+
+    #[test]
+    fn a_satellite_falls_in_range_and_clear_of_players_and_walls() {
+        for seed in 0..200u64 {
+            let player = [1000.0, -500.0];
+            let other = [1200.0, -500.0];
+            let built = [[1000 + 200, -500 + 100]];
+            let Some(at) = satellite_target(seed, player, &[player, other], &built) else { continue };
+            let d = |p: [f64; 2]| (f64::from(at[0]) - p[0]).hypot(f64::from(at[1]) - p[1]);
+            assert!((SATELLITE_RANGE[0] - 1.0..=SATELLITE_RANGE[1] + 1.0).contains(&d(player)), "{seed}: {at:?}");
+            assert!(d(other) >= SATELLITE_CLEAR_PLAYER - 1.0);
+            assert!(d([1200.0, -400.0]) >= SATELLITE_CLEAR_BUILT - 1.0);
+        }
+        // Boxed in, it finds no place.
+        let ring: Vec<[f64; 2]> = (0..72).map(|k| {
+            let a = k as f64 * 5f64.to_radians();
+            [275.0 * a.cos(), 275.0 * a.sin()]
+        }).chain((0..72).map(|k| { let a = k as f64 * 5f64.to_radians(); [175.0 * a.cos(), 175.0 * a.sin()] }))
+        .chain((0..72).map(|k| { let a = k as f64 * 5f64.to_radians(); [375.0 * a.cos(), 375.0 * a.sin()] }))
+        .collect();
+        assert_eq!(satellite_target(3, [0.0, 0.0], &ring, &[]), None);
+    }
+
+    #[test]
+    fn a_satellite_is_set_falls_and_waits_for_its_ground() {
+        let mut saved = started();
+        let next = saved.events.next_satellite;
+        saved.tick = next - SATELLITE_WARNING - 1;
+        let (_, h) = run(&mut saved, 5, |h| matches!(h, Happening::SatelliteSet(_))).expect("set");
+        let Happening::SatelliteSet(sat) = h else { unreachable!() };
+        assert_eq!(sat.at, next);
+        // Its ground never read: it falls on a guess after a wait.
+        let (fell, h) = run(&mut saved, SATELLITE_WARNING + SURFACE_WAIT + 5, |h| matches!(h, Happening::SatelliteFell(_))).unwrap();
+        assert_eq!(fell, next + SURFACE_WAIT);
+        let Happening::SatelliteFell(down) = h else { unreachable!() };
+        assert_eq!(down.surface, Some(SURFACE_GUESS));
+        assert!(saved.events.satellite.is_none() && saved.events.next_satellite > fell);
+        // With no player in the overworld it waits a day.
+        let mut saved = started();
+        saved.tick = saved.events.next_satellite - SATELLITE_WARNING;
+        let happened = saved.tick_events(&[], [0.0, 0.0], &[]);
+        assert!(!happened.iter().any(|h| matches!(h, Happening::SatelliteSet(_))), "{happened:?}");
+        assert_eq!(saved.events.next_satellite, saved.tick + DAY);
+    }
+
+    #[test]
+    fn a_trigger_starts_one_now() {
+        let mut saved = Saved::default();
+        saved.tick = 77;
+        assert!(saved.trigger(EventKind::Storm));
+        assert!(saved.events.started && saved.events.next_storm == 77);
+        assert!(saved.trigger(EventKind::Satellite));
+        assert!(!saved.trigger(EventKind::Mutants), "mutants come by themselves");
+    }
+
+    #[test]
+    fn the_fall_comes_down_onto_its_target() {
+        let start = satellite_fall([100, 200], 70, 0, 9);
+        let end = satellite_fall([100, 200], 70, SATELLITE_FALL, 9);
+        assert!(start[1] > 300.0);
+        assert_eq!(end, [100.5, 70.0, 200.5]);
+        assert!((3..=5).contains(&debris_count(1)) && (3..=5).contains(&debris_count(2)));
+        let z = satellite_zone(OW, [100, 70, 200], 0);
+        assert!(z.radius == SATELLITE_ZONE_RADIUS && z.wind.is_none());
+        assert!(z.gone(DAY + 1) && !z.gone(DAY / 2));
+    }
+
+    #[test]
+    fn mutants_are_known_by_their_health_and_made_by_commands() {
+        assert!(mutable("minecraft:zombie", 20.0));
+        assert!(!mutable("minecraft:zombie", 40.0) && is_mutant("minecraft:zombie", 40.0));
+        assert!(!mutable("minecraft:cow", 10.0) && !is_mutant("minecraft:cow", 40.0));
+        assert_eq!(mutation_chance(0.0), 0.0);
+        assert!((mutation_chance(2.0) - 0.2).abs() < 1e-9);
+        assert_eq!(mutation_chance(50.0), 0.5);
+        let cmds = mutate_commands("minecraft:spider", "abc");
+        assert_eq!(cmds.len(), 4);
+        assert!(cmds[0].ends_with("max_health base set 32"), "{}", cmds[0]);
+        assert!(cmds[3].contains("Health:32.0f") && cmds[3].contains(MUTANT_LOOT));
+        assert!(mutate_commands("minecraft:cow", "abc").is_empty());
+        assert_eq!(mutants_radiation(0), 0.0);
+        assert_eq!(mutants_radiation(5), 3.0 * MUTANT_RADIATION);
+        assert!((3..=6).contains(&pack_size(1)) && (3..=6).contains(&pack_size(7)));
+    }
+
+    #[test]
+    fn a_world_from_before_has_no_events_yet() {
+        let mut json = serde_json::to_value(Saved::default()).unwrap();
+        json.as_object_mut().unwrap().remove("events");
+        let back: Saved = serde_json::from_value(json).unwrap();
+        assert!(!back.events.started);
+    }
+
+    #[test]
+    fn mutation_follows_its_chance() {
+        let n = (0..10_000u32).filter(|&id| mutates(id, 500, 2.0)).count();
+        assert!((1700..2300).contains(&n), "{n} of 10000 at 0.2");
+        assert!(!(0..1000u32).any(|id| mutates(id, 500, 0.0)));
+    }
+
+    #[test]
+    fn the_radar_tells_the_storm_the_satellite_and_the_missiles() {
+        let mut ev = Events::default();
+        let keys = |l: &[Reply]| l.iter().map(|r| r.key.clone()).collect::<Vec<String>>();
+        assert_eq!(keys(&radar_lines(&ev, 0, 0)), ["big_nukes.radar.storm_none", "big_nukes.radar.satellite_none", "big_nukes.radar.missiles"]);
+        ev.storm = Some(Storm { from: 2000, until: 6000 });
+        ev.satellite = Some(Satellite { dimension: OW.into(), to: [5, -7], at: 3000, surface: None, seed: 1 });
+        let l = radar_lines(&ev, 2, 1000);
+        assert_eq!((l[0].key.as_str(), l[0].args.clone()), ("big_nukes.radar.storm_in", vec!["50".to_owned()]));
+        assert_eq!(l[1].args, ["5", "-7", "100"]);
+        assert_eq!(l[2].args, ["2"]);
+        assert_eq!(radar_lines(&ev, 0, 3000)[0].key, "big_nukes.radar.storm_now");
+        assert_eq!(radar_lines(&ev, 0, 6000)[0].key, "big_nukes.radar.storm_none");
+    }
+
+    #[test]
+    fn the_notices_make_toasts() {
+        for n in [Notice::Storm { seconds: 120 }, Notice::Satellite { seconds: 60, at: [1, -2] }] {
+            let back: Notice = serde_json::from_slice(&serde_json::to_vec(&n).unwrap()).unwrap();
+            assert_eq!(back, n);
+            assert!(toast_of(&n).challenge);
+        }
+        assert_eq!(toast_of(&Notice::Satellite { seconds: 60, at: [1, -2] }).args, ["1", "-2", "60"]);
+    }
+}

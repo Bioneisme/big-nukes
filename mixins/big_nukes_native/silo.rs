@@ -197,7 +197,7 @@ fn siren_tick(game: &mut Game<'_>, pos: [i32; 3]) {
 }
 
 /// A launch's notice to a player's window.
-fn notify(game: &mut Game<'_>, player: u128, notice: &rules::Notice) {
+pub(in crate::game) fn notify(game: &mut Game<'_>, player: u128, notice: &rules::Notice) {
     let Ok(bytes) = serde_json::to_vec(notice) else { return };
     if let Err(e) = game.native_net_send_to_player(player, rules::NOTICE_CHANNEL, &bytes) {
         log::warn!("[big_nukes] a notice to a player: {e}");

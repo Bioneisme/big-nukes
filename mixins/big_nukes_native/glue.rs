@@ -15,6 +15,8 @@ use crate::game::{
     big_nukes_decon as decon,
     // The bunker (plan 10): bunker.rs.
     big_nukes_bunker as bunker,
+    // The radar and the events (plan 13): events.rs.
+    big_nukes_events as events,
 };
 use horizon_client::{
     containers::{ModBlockEntity, ModContainer},
@@ -234,6 +236,7 @@ pub(in crate::game) fn blocks(blocks: &mut Vec<Block>) {
     blocks.push(block(rules::NEUTRON_REFLECTOR, "minecraft:furnace", 5.0));
     decon::blocks(blocks, block);
     silo::blocks(blocks, block);
+    events::blocks(blocks, block);
     bunker::blocks(blocks);
 }
 
@@ -346,6 +349,7 @@ pub(in crate::game) fn perform(game: &mut Game<'_>, player: &NativeServerPlayer,
             None => usage(),
         },
         Some(&"maxpower") => maxpower(game, &words[2..]),
+        Some(&"events") => events::command(game, &words[2..]),
         // A command doesn't run inside a player's own: the next server tick gives the book.
         Some(&"guide") => {
             lock(&GUIDES).push(player.name.clone());
@@ -823,7 +827,9 @@ pub(in crate::game) fn fog(game: &Game<'_>, camera: [f64; 3], fog_type: FogType,
     if !game.native_on(rules::ID) {
         return;
     }
-    let target = rules::fog_strength(background_here(game, camera));
+    // A storm's green over the overworld, as a strong zone's.
+    let storm = game.native_player().is_some_and(|p| p.dimension == "minecraft:overworld") && lock(&TOLD).as_ref().is_some_and(|t| t.rad.storm);
+    let target = rules::fog_strength(background_here(game, camera)).max(if storm { rules::STORM_FOG } else { 0.0 });
     let now = Instant::now();
     let shown = {
         let mut eased = lock(&FOG);
@@ -924,6 +930,7 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
         game.native_run_command(&format!("execute in {dimension} run forceload remove {} {}", x * 16, z * 16));
     }
     decon::server_tick(game);
+    events::server_tick(game);
     let asked = std::mem::take(&mut *lock(&GUIDES));
     for name in asked {
         game.native_run_command(&rules::guide_give(&name));
@@ -941,6 +948,7 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
         return;
     }
     irradiate_mobs(game, dimension);
+    events::level_tick(game, dimension);
     silo::level_tick(game, dimension);
     decon::level_tick(game, dimension);
     let Some(mut guard) = state(game) else { return };
@@ -1193,6 +1201,7 @@ pub(in crate::game) fn tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut Mod
         id if rules::BombKind::of_block(id).is_some() => bomb_tick(game, pos, entity),
         id if silo::has_entity(id) => silo::tick(game, pos, entity),
         id if bunker::has_entity(id) => bunker::tick(game, pos, entity),
+        id if events::has_entity(id) => events::tick(game, pos),
         _ => {}
     }
 }
@@ -1729,7 +1738,12 @@ fn keypad_menu_known() -> bool {
 /// One with no core near opens nothing, and takes a block placed against it only
 /// from a sneaking player, as the core does.
 pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled: &mut bool) {
-    if *canceled || !game.native_on(rules::ID) || silo::right_click(game, pos, canceled) || bunker::right_click(game, pos, canceled) {
+    if *canceled
+        || !game.native_on(rules::ID)
+        || silo::right_click(game, pos, canceled)
+        || bunker::right_click(game, pos, canceled)
+        || events::right_click(game, pos, canceled)
+    {
         return;
     }
     let block = game.native_block(pos);
@@ -2006,6 +2020,13 @@ pub(in crate::game) fn player_tick(game: &mut Game<'_>) {
     // What the player carries gives off its own radiation (uranium, a Sunbreaker's core, trinitite), summed as the
     // game ticked their stacks (`carry`): their inventory can't be read inside their own turn.
     let carried = lock(&CARRIED).iter().find(|c| c.0 == who.uuid).map_or(0.0, |c| c.1.rate(st.saved.tick));
+    // A storm blowing over the overworld, and the mutants beside the player, add their own.
+    let storm = if who.dimension == "minecraft:overworld" && st.saved.events.storm_now(st.saved.tick) {
+        rules::storm_background(shelter)
+    } else {
+        0.0
+    };
+    let carried = carried + storm + rules::mutants_radiation(events::mutants_near(who.uuid));
     let Some(background) = st.saved.expose_carrying(who.uuid, &who.dimension, who.position, protection, shelter, carried) else {
         return;
     };
@@ -2074,7 +2095,7 @@ fn sick(game: &Game<'_>, st: &mut State) -> Vec<(String, u8, Option<u32>)> {
 /// the players with something to tell, and once more to those who had and now
 /// have nothing, so their window lets go.
 fn rad_news(game: &Game<'_>, st: &mut State) -> Vec<(u128, Vec<u8>)> {
-    if st.saved.zones.is_empty() && st.saved.doses.is_empty() && st.told.is_empty() && !st.saved.winter() {
+    if st.saved.zones.is_empty() && st.saved.doses.is_empty() && st.told.is_empty() && !st.saved.winter() && st.saved.events.storm.is_none() {
         return Vec::new();
     }
     let mut news = Vec::new();

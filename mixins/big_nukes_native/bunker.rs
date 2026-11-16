@@ -248,6 +248,11 @@ pub(in crate::game) fn tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut Mod
     }
 }
 
+/// Whether a generator burns near `pos` in `dimension` now: the radar's power.
+pub(in crate::game) fn powered_now(dimension: &str, pos: [i32; 3]) -> bool {
+    powered_at(dimension, pos, now())
+}
+
 /// Whether a generator heard burning lately powers `pos` in `dimension`.
 fn powered_at(dimension: &str, pos: [i32; 3], now: u64) -> bool {
     let burning: Vec<[i32; 3]> = lock(&GENERATORS).iter().filter(|g| g.0 == dimension && g.2 + POWER_LASTS >= now).map(|g| g.1).collect();
