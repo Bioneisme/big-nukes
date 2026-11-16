@@ -49,6 +49,10 @@ load.
 
 ![The same crater a few minutes later: the bowl, the scorched ring and the sea running in](docs/images/crater.jpg)
 
+![A neutron bomb's pale cloud over the hills](docs/images/neutron-cloud.jpg)
+
+![A cottage after a neutron blast: standing, its windows gone, its pen empty, in the zone's green haze](docs/images/cottage-after.jpg)
+
 ## Detonators
 
 - **Fuse:** light the bomb with flint and steel and run. You have 4 seconds.
@@ -76,6 +80,8 @@ back.
 
 **Splitting missile.** Put it on the pad alone: it carries three tactical warheads. Type a Spread on the console, 40 to
 120 blocks (80 if left empty). Over the target the warheads part and fall on the corners of a triangle with that side.
+
+![A splitting missile's three clouds round its target over the sea](docs/images/split-clouds.jpg)
 
 **Siren.** Place one by your silo or your base. It lights and wails for 10 seconds when a missile is launched within 64
 blocks, and while a missile flies to a target within 256 blocks, until it lands. A launch also tells the one who
