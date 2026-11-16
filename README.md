@@ -32,6 +32,8 @@ raw uranium, or type `/bignukes guide`.
 | Tactical Warhead | 50 | A crater, scorched ground and weak radiation that fades away |
 | Atomic Bomb | 250 | A wasteland and a zone that stays radioactive |
 | Sunbreaker | 600 to 1000 | Built where it stands. At 1000 it breaks through the bedrock and leaves a hole into the void |
+| Neutron Bomb | 120 | No crater: only glass breaks, but every creature in reach dies. A player lives behind a bunker's walls or in a sealed room. A strong zone that fades within a day |
+| Dirty Bomb | 8 | A small blast and a radioactive zone 100 blocks across that lasts twice as long as a tactical warhead's |
 
 A blast is seen from far beyond your render distance: a flash, a fireball rising into a mushroom cloud, and a ring of
 dust rolling out at 50 blocks a second. The sound and the shaking come with the front, not with the flash, and close to a blast your ears ring:
@@ -58,7 +60,7 @@ load.
 ## Missile and bomber
 
 **Missile.** Build a shaft: a launch pad at the bottom, at least 6 blocks of air over it, and a silo hatch on top with
-open sky above. Put a missile and a tactical warhead or an atomic bomb in the pad's two slots. Place a launch console
+open sky above. Put a missile and a tactical warhead, an atomic, a neutron or a dirty bomb in the pad's two slots. Place a launch console
 within 8 blocks of the pad and right-click it. Type the target's X and Z and a code of 3 to 8 digits; Tab moves between
 the fields, Enter launches. The code of the console's first launch becomes its code, and three wrong codes lock it for
 30 seconds. The target is 100 to 4096 blocks away.
@@ -68,9 +70,16 @@ launched; the Camera button turns it off. The missile goes off on its target, ev
 
 ![A missile climbing out of its silo in smoke, the open hatch and the launch console beside it](docs/images/silo.jpg)
 
-**Bomber.** Place a strike beacon and right-click it with a tactical warhead or an atomic bomb. 30 seconds later a
+**Bomber.** Place a strike beacon and right-click it with a tactical warhead, an atomic, a neutron or a dirty bomb. 30 seconds later a
 bomber flies over, 120 blocks up, and drops the bomb on the beacon. Break the beacon before the drop to get the bomb
 back.
+
+**Splitting missile.** Put it on the pad alone: it carries three tactical warheads. Type a Spread on the console, 40 to
+120 blocks (80 if left empty). Over the target the warheads part and fall on the corners of a triangle with that side.
+
+**Siren.** Place one by your silo or your base. It lights and wails for 10 seconds when a missile is launched within 64
+blocks, and while a missile flies to a target within 256 blocks, until it lands. A launch also tells the one who
+launched when it lands, and the players near the target that it is coming.
 
 ## The Sunbreaker
 
@@ -176,7 +185,11 @@ alone is weak. TNT and creepers can't break any of these walls.
 | Demolition Charge | 4 TNT, 4 iron ingots, 1 redstone |
 | Tactical Warhead | 1 nuclear charge, 1 bomb casing, 6 iron ingots, 1 redstone |
 | Atomic Bomb | 4 nuclear charges, 4 bomb casings, 1 block of redstone |
+| Neutron Bomb | 1 bomb casing, 1 nuclear charge, 1 weapons-grade uranium, 4 glowstone |
+| Dirty Bomb | 1 bomb casing, 4 raw uranium, 2 TNT |
 | Missile | 2 bomb casings, 3 blocks of iron, 4 blaze powder |
+| Splitting Missile | 1 missile, 3 tactical warheads |
+| Siren | 4 iron ingots, 1 note block, 2 redstone |
 | Strike Beacon | 4 iron ingots, 4 redstone, 1 compass |
 | Sunbreaker Core | 4 weapons-grade uranium, 4 nuclear charges, 1 block of diamond |
 | Implosion Shell | 4 TNT, 2 blocks of iron, 2 redstone |
