@@ -4,3 +4,4 @@
 /publish
 /.superpowers
 /mixins/big_nukes_native/data/big_nukes-content.hmod
+__pycache__/
