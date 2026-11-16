@@ -42,6 +42,9 @@ front, the core is a crater; further out the plants, the glass and the water are
 fires; at the edge the glass breaks and the leaves fall. Creatures die in the core and are hurt less the further out
 they are.
 
+At the rim of a tactical warhead's or larger crater, sand and sandstone melt into **trinitite**, green glass that some
+of the ground turns to as well. Mine it for trinitite shards.
+
 A blast's wave sets off every bomb it reaches. Chunks that aren't loaded when the wave passes are finished when they
 load.
 
@@ -128,6 +131,15 @@ goes.
   it. Another tablet makes it 5 minutes again.
 - **Shelter:** where the open sky can't be seen, under ground or under a roof, the background is halved.
 
+**Fallout.** The wind carries a zone's radiation away from the blast: a plume reaches down the wind for about twice the
+blast's radius, and for five minutes ash falls in it. Upwind there is none.
+
+**Carried radiation.** Uranium gives off radiation in your inventory: raw uranium a little, enriched more,
+weapons-grade much more, and a Sunbreaker core a lot; trinitite shards a little. A few heal away; a stack of
+weapons-grade uranium makes you sick. A roof doesn't help, the hazmat suit does. Keep it in a chest.
+
+**Nuclear winter.** After a Sunbreaker the overworld's sky is grey and it rains or snows for three days.
+
 ### The decontaminator
 
 Put any furnace fuel in it. It burns it 4 times as fast as a furnace, and while it burns its circle grows a block every
@@ -147,6 +159,7 @@ touches nothing, and a roof that holds keeps the blast off whoever is under it.
 | Reinforced Concrete | A demolition charge anywhere, a tactical warhead at the edge of its crater |
 | Armored Concrete | An atomic bomb away from the center of its crater |
 | Multilayer wall | A Sunbreaker away from its center |
+| Radiation Glass | As armored concrete; as a roof it shelters, since the sky's light doesn't pass |
 
 A **multilayer wall** is four blocks in a row out from the blast: concrete (reinforced or armored), a **Lead Shield**,
 a **Blast Damper** and concrete again. A roof laid in that order from the top down counts too. A lead shield or a damper
@@ -196,6 +209,7 @@ alone is weak. TNT and creepers can't break any of these walls.
 | Missile | 2 bomb casings, 3 blocks of iron, 4 blaze powder |
 | Splitting Missile | 1 missile, 3 tactical warheads |
 | Siren | 4 iron ingots, 1 note block, 2 redstone |
+| Radiation Glass (4) | 4 glass, 4 trinitite shards, 1 lead shield |
 | Strike Beacon | 4 iron ingots, 4 redstone, 1 compass |
 | Sunbreaker Core | 4 weapons-grade uranium, 4 nuclear charges, 1 block of diamond |
 | Implosion Shell | 4 TNT, 2 blocks of iron, 2 redstone |

@@ -9,7 +9,7 @@ use std::{
 };
 
 pub const ID: &str = "big_nukes_native";
-pub const VERSION: &str = "0.3.0";
+pub const VERSION: &str = "0.4.0";
 /// The mod's folder in a world's folder.
 pub const DIR: &str = "horizon-big-nukes";
 /// A loot table only the assets half brings: the sign that it's installed.
