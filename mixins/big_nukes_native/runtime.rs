@@ -33,10 +33,27 @@ pub enum BombKind {
     Atomic,
     /// The superbomb built in the world round its core (see "the sunbreaker" below).
     Sunbreaker,
+    /// Kills what lives and leaves what is built: only glass breaks.
+    Neutron,
+    /// A small blast that leaves a wide, long-lived zone.
+    Dirty,
+}
+
+/// What a blast does besides reaching its radius.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Effect {
+    /// The wave: a crater, scorched ground, and a zone by its radius.
+    #[default]
+    Blast,
+    /// No wave: glass breaks, the unshielded die, and a strong zone fades in a day.
+    Neutron,
+    /// The wave of a small charge, and a zone far wider than it.
+    Dirty,
 }
 
 impl BombKind {
-    pub const ALL: [BombKind; 4] = [BombKind::Demolition, BombKind::Tactical, BombKind::Atomic, BombKind::Sunbreaker];
+    pub const ALL: [BombKind; 6] =
+        [BombKind::Demolition, BombKind::Tactical, BombKind::Atomic, BombKind::Sunbreaker, BombKind::Neutron, BombKind::Dirty];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -44,6 +61,26 @@ impl BombKind {
             BombKind::Tactical => "big_nukes:tactical_warhead",
             BombKind::Atomic => "big_nukes:atomic_bomb",
             BombKind::Sunbreaker => SUNBREAKER_CORE,
+            BombKind::Neutron => "big_nukes:neutron_bomb",
+            BombKind::Dirty => "big_nukes:dirty_bomb",
+        }
+    }
+
+    pub fn effect(self) -> Effect {
+        match self {
+            BombKind::Neutron => Effect::Neutron,
+            BombKind::Dirty => Effect::Dirty,
+            _ => Effect::Blast,
+        }
+    }
+
+    /// What the operator's limit (`maxpower`) reads of its blast of `radius`: the radius, but the neutron bomb
+    /// counts as a tactical warhead and the dirty bomb as a demolition charge, whatever they reach.
+    pub fn level(self, radius: u32) -> u32 {
+        match self {
+            BombKind::Neutron => 50,
+            BombKind::Dirty => 16,
+            _ => radius,
         }
     }
 
@@ -55,6 +92,8 @@ impl BombKind {
             BombKind::Tactical => 50,
             BombKind::Atomic => 250,
             BombKind::Sunbreaker => SUNBREAKER_BASE + SUNBREAKER_REFLECTOR,
+            BombKind::Neutron => 120,
+            BombKind::Dirty => 8,
         }
     }
 
@@ -995,6 +1034,9 @@ pub struct Blast {
     pub radius: u32,
     pub seed: u64,
     pub world: World,
+    /// A blast saved before there were effects is the wave.
+    #[serde(default)]
+    pub effect: Effect,
 }
 
 pub fn chunk_of(x: i32, z: i32) -> [i32; 2] {
@@ -1190,6 +1232,13 @@ pub fn plan_chunk(blast: &Blast, chunk: [i32; 2], walls: &[Wall]) -> ([ChunkEdit
                 (y < top).then(|| Run { x, z, y, height: (top - y) as u32, surface: None, block, only })
             };
             let below = blast.center[1] - PLANTS_BELOW;
+            if blast.effect == Effect::Neutron {
+                // No wave: the glass goes as far as it reaches, and nothing else.
+                if ring(d) != Ring::Untouched {
+                    plants.runs.extend(absolute(below, AIR, Some(GLASS)));
+                }
+                continue;
+            }
             match ring(d) {
                 Ring::Core => {
                     let floor = crater_floor(blast, x, z, d);
@@ -1555,11 +1604,16 @@ pub enum Refused {
 impl Saved {
     /// A new blast at `center`, its wave started now.
     pub fn blast(&mut self, dimension: &str, center: [i32; 3], radius: u32) -> Option<u64> {
+        self.blast_with(dimension, center, radius, Effect::Blast)
+    }
+
+    /// A new blast of `effect` at `center`, started now.
+    pub fn blast_with(&mut self, dimension: &str, center: [i32; 3], radius: u32, effect: Effect) -> Option<u64> {
         let world = world_of(dimension)?;
         self.next_id += 1;
         let id = self.next_id;
         let seed = mix(self.tick ^ mix(id));
-        let blast = Blast { id, dimension: dimension.to_owned(), center, radius, seed, world };
+        let blast = Blast { id, dimension: dimension.to_owned(), center, radius, seed, world, effect };
         self.zones.extend(zone_of(&blast, self.tick));
         self.waves.start(blast, self.tick);
         Some(id)
@@ -1576,6 +1630,15 @@ impl Saved {
             return Err(Refused::Maxpower { radius, maxpower: self.maxpower });
         }
         self.blast(dimension, center, radius).ok_or(Refused::Dimension)
+    }
+
+    /// The blast of a bomb of `kind` reaching `radius`, with its effect, within the operator's limit by its level.
+    pub fn fire_kind(&mut self, dimension: &str, center: [i32; 3], kind: BombKind, radius: u32) -> Result<u64, Refused> {
+        let level = kind.level(radius);
+        if !self.allows(level) {
+            return Err(Refused::Maxpower { radius: level, maxpower: self.maxpower });
+        }
+        self.blast_with(dimension, center, radius, kind.effect()).ok_or(Refused::Dimension)
     }
 }
 
@@ -1713,7 +1776,7 @@ impl Saved {
         let kind = self.placed.iter().find(|b| b.dimension == dimension && b.pos == pos).map(|b| b.kind).ok_or(Refused::Gone)?;
         // One without a whole shell doesn't go off and stays: a crater that reaches its core takes it.
         let radius = kind.power(pos, block).map_err(Refused::Structure)?;
-        let id = self.fire(dimension, pos, radius)?;
+        let id = self.fire_kind(dimension, pos, kind, radius)?;
         self.unplace(dimension, pos);
         self.forget(dimension, pos);
         Ok(id)
@@ -1747,7 +1810,7 @@ impl Saved {
             }
             None => kind.radius(),
         };
-        let id = self.fire(dimension, pos, radius)?;
+        let id = self.fire_kind(dimension, pos, kind, radius)?;
         self.forget(dimension, pos);
         self.unplace(dimension, pos);
         Ok(id)
@@ -2107,7 +2170,7 @@ impl BombKind {
     /// Whether it goes on a missile or a bomber: the demolition charge is too small for
     /// either, and the Sunbreaker is built where it stands.
     pub fn flies(self) -> bool {
-        matches!(self, BombKind::Tactical | BombKind::Atomic)
+        matches!(self, BombKind::Tactical | BombKind::Atomic | BombKind::Neutron | BombKind::Dirty)
     }
 }
 
@@ -2585,7 +2648,7 @@ impl ShaftProblem {
 impl Saved {
     /// A missile launched now from the pad under `from`, the hatch at height `hatch`, within the operator's limit.
     pub fn launch(&mut self, dimension: &str, from: [i32; 3], to: [i32; 2], kind: BombKind, hatch: i32) -> Result<Flight, LaunchRefusal> {
-        if !self.allows(kind.radius()) {
+        if !self.allows(kind.level(kind.radius())) {
             return Err(LaunchRefusal::Maxpower);
         }
         self.next_id += 1;
@@ -2899,8 +2962,8 @@ impl Saved {
         let Some(kind) = held.and_then(BombKind::of_block).filter(|k| k.flies()) else {
             return Charge::Not;
         };
-        if !self.allows(kind.radius()) {
-            return Charge::Maxpower { radius: kind.radius(), maxpower: self.maxpower };
+        if !self.allows(kind.level(kind.radius())) {
+            return Charge::Maxpower { radius: kind.level(kind.radius()), maxpower: self.maxpower };
         }
         self.next_id += 1;
         let id = self.next_id;
@@ -3011,8 +3074,41 @@ impl Zone {
     }
 }
 
-/// The zone a blast leaves at `now`, if it is large enough to leave one.
+/// A neutron blast's zone fades in half a day's light, and is this many times a wave's of its radius at first.
+pub const NEUTRON_HALF_LIFE: u64 = 6_000;
+const NEUTRON_PEAK: f64 = 3.0;
+/// How far a dirty bomb's zone reaches, whatever its blast: it lasts twice a small zone's time.
+pub const DIRTY_ZONE_RADIUS: f64 = 100.0;
+
+/// The dose a neutron blast of `radius` gives at once to one `dist` blocks from it: the last stage's and more
+/// within its reach, nothing past it, and nothing to one `shielded` (under a bunker's roof, or in a sealed room).
+pub fn neutron_dose(dist: f64, radius: u32, shielded: bool) -> f64 {
+    let r = radius as f64;
+    if shielded || dist >= r {
+        return 0.0;
+    }
+    STAGES[3] * (2.0 - dist / r)
+}
+
+/// The zone a blast leaves at `now`: a wave's if it is large enough to leave one, a neutron or a dirty bomb's always.
 pub fn zone_of(blast: &Blast, now: u64) -> Option<Zone> {
+    let zone = |radius: f64, peak: f64, half_life: u64| Zone {
+        dimension: blast.dimension.clone(),
+        center: blast.center,
+        radius,
+        peak,
+        start: now,
+        half_life,
+        floor: 0.0,
+    };
+    match blast.effect {
+        Effect::Neutron => {
+            let r = blast.radius as f64;
+            return Some(zone(ZONE_REACH * r, NEUTRON_PEAK * r * PEAK_PER_BLOCK, NEUTRON_HALF_LIFE));
+        }
+        Effect::Dirty => return Some(zone(DIRTY_ZONE_RADIUS, DIRTY_ZONE_RADIUS * PEAK_PER_BLOCK, 2 * HALF_LIFE)),
+        Effect::Blast => {}
+    }
     if blast.radius < ZONE_MIN_RADIUS {
         return None;
     }
@@ -5343,7 +5439,7 @@ mod tests {
     use super::*;
 
     fn blast(center: [i32; 3], radius: u32, seed: u64, world: World) -> Blast {
-        Blast { id: 1, dimension: "minecraft:overworld".into(), center, radius, seed, world }
+        Blast { id: 1, dimension: "minecraft:overworld".into(), center, radius, seed, world, effect: Effect::Blast }
     }
 
     fn columns_in(b: &Blast, wanted: Ring) -> BTreeSet<[i32; 2]> {
@@ -7240,7 +7336,7 @@ mod tests {
 
     #[test]
     fn bombs_know_their_radius() {
-        assert_eq!(BombKind::ALL.map(BombKind::radius), [16, 50, 250, 1000]);
+        assert_eq!(BombKind::ALL.map(BombKind::radius), [16, 50, 250, 1000, 120, 8]);
         for k in BombKind::ALL {
             assert_eq!(BombKind::of_block(k.id()), Some(k));
             assert!((MIN_RADIUS..=MAX_RADIUS).contains(&k.radius()), "{k:?}");
@@ -7580,7 +7676,7 @@ mod tests {
         assert_eq!(parse_maxpower(&["16", "50"]), None);
         // Each bomb's radius is a step, so a limit lets whole kinds through.
         for k in BombKind::ALL {
-            assert!(MAXPOWER_STEPS.contains(&k.radius()), "{k:?}");
+            assert!(MAXPOWER_STEPS.contains(&k.level(k.radius())), "{k:?}");
         }
     }
 
@@ -9959,7 +10055,7 @@ mod bunker_tests {
     const OW: &str = "minecraft:overworld";
 
     fn blast(radius: u32) -> Blast {
-        Blast { id: 1, dimension: OW.into(), center: [0, 64, 0], radius, seed: 7, world: World::OVERWORLD }
+        Blast { id: 1, dimension: OW.into(), center: [0, 64, 0], radius, seed: 7, world: World::OVERWORLD, effect: Effect::Blast }
     }
 
     fn wall(pos: [i32; 3], kind: WallKind) -> Wall {
@@ -11106,5 +11202,102 @@ mod ringing_tests {
         assert!(rings_now(arrives, dist));
         assert!(rings_now(arrives + 19.0, dist));
         assert!(!rings_now(arrives + 20.0, dist), "a blast heard late doesn't ring");
+    }
+}
+
+// ---- the neutron and the dirty bomb (plan 11) -------------------------------
+#[cfg(test)]
+mod warhead_tests {
+    use super::*;
+
+    const OW: &str = "minecraft:overworld";
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    fn blast(radius: u32) -> Blast {
+        Blast { id: 1, dimension: OW.into(), center: [0, 64, 0], radius, seed: 7, world: World::OVERWORLD, effect: Effect::Blast }
+    }
+
+    fn blast_of(kind: BombKind) -> Blast {
+        Blast { id: 1, dimension: OW.into(), center: [0, 64, 0], radius: kind.radius(), seed: 7, world: World::OVERWORLD, effect: kind.effect() }
+    }
+
+    #[test]
+    fn the_new_bombs_know_their_radius_and_effect() {
+        assert_eq!(BombKind::ALL.len(), 6);
+        assert_eq!((BombKind::Neutron.radius(), BombKind::Neutron.effect()), (120, Effect::Neutron));
+        assert_eq!((BombKind::Dirty.radius(), BombKind::Dirty.effect()), (8, Effect::Dirty));
+        assert_eq!(BombKind::Atomic.effect(), Effect::Blast);
+        assert_eq!(BombKind::of_block("big_nukes:neutron_bomb"), Some(BombKind::Neutron));
+        assert_eq!(BombKind::of_block("big_nukes:dirty_bomb"), Some(BombKind::Dirty));
+        assert!(BombKind::Neutron.flies() && BombKind::Dirty.flies());
+    }
+
+    #[test]
+    fn a_neutron_blast_breaks_only_glass() {
+        let b = blast_of(BombKind::Neutron);
+        for chunk in [[0, 0], [3, 0], [6, -2]] {
+            let ([plants, surface], changes) = plan_chunk(&b, chunk, &[]);
+            assert!(!plants.runs.is_empty(), "{chunk:?}: the glass goes");
+            assert!(plants.runs.iter().all(|r| r.block == AIR && r.only == Some(GLASS)), "{chunk:?}");
+            assert!(surface.runs.is_empty(), "{chunk:?}: no ash, no fire, no boiled water");
+            assert!(changes.is_empty());
+        }
+        assert!(plan_chunk(&b, [12, 0], &[]).0[0].runs.is_empty(), "past its reach");
+    }
+
+    #[test]
+    fn a_neutron_blast_leaves_a_strong_short_zone() {
+        let z = zone_of(&blast_of(BombKind::Neutron), 500).unwrap();
+        let plain = zone_of(&blast(120), 500).unwrap();
+        assert!(close(z.radius, 144.0));
+        assert!(close(z.peak, 3.0 * plain.peak));
+        assert_eq!((z.half_life, z.floor, z.start), (NEUTRON_HALF_LIFE, 0.0, 500));
+        assert!(NEUTRON_HALF_LIFE < HALF_LIFE);
+    }
+
+    #[test]
+    fn a_dirty_bomb_leaves_a_zone_though_it_is_small() {
+        assert!(zone_of(&blast(8), 0).is_none(), "a plain blast this small leaves none");
+        let z = zone_of(&blast_of(BombKind::Dirty), 0).unwrap();
+        assert!(close(z.radius, DIRTY_ZONE_RADIUS));
+        assert!(close(z.peak, zone_of(&blast(100), 0).unwrap().peak));
+        assert_eq!((z.half_life, z.floor), (2 * HALF_LIFE, 0.0));
+    }
+
+    #[test]
+    fn a_neutron_blast_kills_in_the_open_and_spares_behind_walls() {
+        for dist in [0.0, 60.0, 119.0] {
+            assert!(neutron_dose(dist, 120, false) >= STAGES[3], "{dist}");
+            assert_eq!(neutron_dose(dist, 120, true), 0.0, "{dist}: shielded");
+        }
+        assert_eq!(neutron_dose(120.0, 120, false), 0.0);
+        assert_eq!(neutron_dose(500.0, 120, false), 0.0);
+    }
+
+    #[test]
+    fn maxpower_reads_a_bombs_level() {
+        assert_eq!(BombKind::Neutron.level(120), 50);
+        assert_eq!(BombKind::Dirty.level(8), 16);
+        assert_eq!(BombKind::Sunbreaker.level(700), 700);
+        for k in BombKind::ALL {
+            assert!(MAXPOWER_STEPS.contains(&k.level(k.radius())), "{k:?}");
+        }
+        let mut saved = Saved { maxpower: 16, ..Saved::default() };
+        assert_eq!(saved.fire_kind(OW, [0, 64, 0], BombKind::Neutron, 120), Err(Refused::Maxpower { radius: 50, maxpower: 16 }));
+        assert!(saved.waves.finished());
+        assert_eq!(saved.fire_kind(OW, [0, 64, 0], BombKind::Dirty, 8), Ok(1));
+        assert!(close(saved.zones[0].radius, DIRTY_ZONE_RADIUS), "its zone is the dirty bomb's");
+    }
+
+    #[test]
+    fn a_blast_saved_without_an_effect_is_a_blast() {
+        let mut json = serde_json::to_value(blast_of(BombKind::Neutron)).unwrap();
+        assert_eq!(json["effect"], "Neutron");
+        json.as_object_mut().unwrap().remove("effect");
+        let back: Blast = serde_json::from_value(json).unwrap();
+        assert_eq!(back.effect, Effect::Blast);
     }
 }
