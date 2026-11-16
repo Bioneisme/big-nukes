@@ -800,6 +800,8 @@ BOMBS = {
     "demolition_charge": ((168, 40, 34), HAZ, "DEMO", "HIGH EXPL"),
     "tactical_warhead": ((88, 98, 60), HAZ, "TAC-2", "FIELD MK-3"),
     "atomic_bomb": ((214, 176, 40), INK, "U-235", "MK-1 BOMB"),
+    "neutron_bomb": ((150, 172, 196), INK, "N-RAD", "ENH. RAD"),
+    "dirty_bomb": ((112, 78, 44), HAZ, "RDD", "DISPERSAL"),
 }
 
 

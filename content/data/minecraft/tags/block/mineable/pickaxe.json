@@ -17,6 +17,14 @@
       "required": false
     },
     {
+      "id": "big_nukes:neutron_bomb",
+      "required": false
+    },
+    {
+      "id": "big_nukes:dirty_bomb",
+      "required": false
+    },
+    {
       "id": "big_nukes:launch_pad",
       "required": false
     },

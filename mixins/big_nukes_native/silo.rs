@@ -854,7 +854,7 @@ fn settle(game: &mut Game<'_>, dimension: &str, changes: Vec<Change>) {
     for c in &changes {
         if let Change::Impact(id, at, kind) = *c {
             // The blast's own record and news, with the state let go.
-            let center = match glue::start_blast(game, dimension, at, kind.radius()) {
+            let center = match glue::start_bomb(game, dimension, at, kind, kind.radius()) {
                 Ok(blast) => {
                     log::info!("[big_nukes] flight {id} went off at {at:?} in {dimension}: blast {blast}");
                     Some(at)

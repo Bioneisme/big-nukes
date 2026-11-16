@@ -20,6 +20,8 @@ FACING = {
     "demolition_charge": ("Demolition Charge", "Подрывной заряд"),
     "tactical_warhead": ("Tactical Warhead", "Тактическая боеголовка"),
     "atomic_bomb": ("Atomic Bomb", "Атомная бомба"),
+    "neutron_bomb": ("Neutron Bomb", "Нейтронная бомба"),
+    "dirty_bomb": ("Dirty Bomb", "Грязная бомба"),
     "launch_pad": ("Launch Pad", "Пусковой стол"),
     "launch_console": ("Launch Console", "Пульт запуска"),
     "strike_beacon": ("Strike Beacon", "Маяк авиаудара"),

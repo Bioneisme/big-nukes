@@ -157,10 +157,12 @@ pub fn guide_give(name: &str) -> String {
 }
 
 /// What each block and item says under its name about how to use it: lang keys, one line each.
-const TIPS: [(&str, &[&str]); 46] = [
+const TIPS: [(&str, &[&str]); 48] = [
     ("big_nukes:demolition_charge", &["big_nukes.tip.demolition_charge", "big_nukes.tip.demolition_charge.2"]),
     ("big_nukes:tactical_warhead", &["big_nukes.tip.tactical_warhead", "big_nukes.tip.tactical_warhead.2"]),
     ("big_nukes:atomic_bomb", &["big_nukes.tip.atomic_bomb", "big_nukes.tip.atomic_bomb.2"]),
+    ("big_nukes:neutron_bomb", &["big_nukes.tip.neutron_bomb", "big_nukes.tip.neutron_bomb.2"]),
+    ("big_nukes:dirty_bomb", &["big_nukes.tip.dirty_bomb", "big_nukes.tip.dirty_bomb.2"]),
     ("big_nukes:fuse_detonator", &["big_nukes.tip.fuse_detonator"]),
     ("big_nukes:keypad_detonator", &["big_nukes.tip.keypad_detonator", "big_nukes.tip.keypad_detonator.2"]),
     ("big_nukes:receiver_detonator", &["big_nukes.tip.receiver_detonator"]),
@@ -460,7 +462,7 @@ pub struct Assembly {
     pub parts: &'static [(&'static str, u32)],
 }
 
-pub const ASSEMBLIES: [Assembly; 20] = [
+pub const ASSEMBLIES: [Assembly; 22] = [
     Assembly { result: "big_nukes:nuclear_charge", count: 1, parts: &[(ENRICHED_URANIUM, 1), ("minecraft:tnt", 4)] },
     Assembly { result: "big_nukes:bomb_casing", count: 1, parts: &[("minecraft:iron_block", 4), ("minecraft:redstone", 4)] },
     Assembly {
@@ -482,6 +484,16 @@ pub const ASSEMBLIES: [Assembly; 20] = [
         result: "big_nukes:atomic_bomb",
         count: 1,
         parts: &[("big_nukes:nuclear_charge", 4), ("big_nukes:bomb_casing", 4), ("minecraft:redstone_block", 1)],
+    },
+    Assembly {
+        result: "big_nukes:neutron_bomb",
+        count: 1,
+        parts: &[("big_nukes:bomb_casing", 1), ("big_nukes:nuclear_charge", 1), (WEAPONS_GRADE_URANIUM, 1), ("minecraft:glowstone", 4)],
+    },
+    Assembly {
+        result: "big_nukes:dirty_bomb",
+        count: 1,
+        parts: &[("big_nukes:bomb_casing", 1), (RAW_URANIUM, 4), ("minecraft:tnt", 2)],
     },
     Assembly {
         result: MISSILE,
@@ -3258,6 +3270,17 @@ impl Saved {
         Some(bg)
     }
 
+    /// `rad` given to the player at once, as a neutron blast gives it, on top of their dose.
+    pub fn irradiate(&mut self, uuid: u128, rad: f64) {
+        if rad <= 0.0 {
+            return;
+        }
+        let now = self.tick;
+        let dose = self.doses.entry(dose_key(uuid)).or_default();
+        dose.rad += rad;
+        dose.stepped = dose.stepped.max(now);
+    }
+
     /// The player's stage and the damage due now, once a second; the damage's
     /// clock starts again when it is done.
     pub fn sicken(&mut self, uuid: u128) -> Option<(u8, Option<u32>)> {
@@ -4402,6 +4425,9 @@ pub struct News {
     pub radius: u32,
     pub seed: u64,
     pub age: u64,
+    /// News from a mod before there were effects is of the wave.
+    #[serde(default)]
+    pub effect: Effect,
 }
 
 /// The mod message that carries `News`.
@@ -4410,7 +4436,7 @@ pub const NEWS_CHANNEL: &str = "big_nukes:blast";
 const NEWS_FOR: u64 = 2400;
 
 pub fn news_of(blast: &Blast, now_tick: u64, start: u64) -> News {
-    News { id: blast.id, center: blast.center, radius: blast.radius, seed: blast.seed, age: now_tick.saturating_sub(start) }
+    News { id: blast.id, center: blast.center, radius: blast.radius, seed: blast.seed, age: now_tick.saturating_sub(start), effect: blast.effect }
 }
 
 impl Waves {
@@ -4676,6 +4702,19 @@ pub fn cloud(age_ticks: f64, radius: u32) -> Cloud {
     }
 }
 
+/// The cloud the window draws for `news`: a neutron blast's is a third the size, its fire faint and without a dust
+/// ring, since it has no wave; any other's is `cloud`'s.
+pub fn cloud_of(age_ticks: f64, news: &News) -> Cloud {
+    if news.effect != Effect::Neutron {
+        return cloud(age_ticks, news.radius);
+    }
+    let c = cloud(age_ticks, (news.radius / 3).max(MIN_RADIUS));
+    Cloud { fire: c.fire * 0.3, ring: 0.0, ring_fade: 0.0, ..c }
+}
+
+/// The damage a neutron blast does to a creature in its reach: none lives through it.
+pub const NEUTRON_MOB_DAMAGE: f32 = 200.0;
+
 // ---- the guide ---------------------------------------------------------------------
 //
 // A book of the mod's own. A right click with it asks the player's window to open the
@@ -4734,6 +4773,8 @@ pub const CHAPTERS: [Chapter; 9] = [
             "big_nukes:demolition_charge",
             "big_nukes:tactical_warhead",
             "big_nukes:atomic_bomb",
+            "big_nukes:neutron_bomb",
+            "big_nukes:dirty_bomb",
             SUNBREAKER_CORE,
             IMPLOSION_SHELL,
             NEUTRON_REFLECTOR,
@@ -5998,7 +6039,7 @@ mod tests {
     // ---- plan 2 review fixes ---------------------------------------------------------
 
     fn heard_news(radius: u32) -> News {
-        News { id: 1, center: [0, 64, 0], radius, seed: 3, age: 0 }
+        News { id: 1, center: [0, 64, 0], radius, seed: 3, age: 0, effect: Effect::Blast }
     }
 
     #[test]
@@ -6111,7 +6152,7 @@ mod tests {
 
     #[test]
     fn the_newest_blasts_are_drawn_first() {
-        let n = |id| News { id, center: [0, 64, 0], radius: 100, seed: 1, age: 0 };
+        let n = |id| News { id, center: [0, 64, 0], radius: 100, seed: 1, age: 0, effect: Effect::Blast };
         let mut felt = vec![(5000.0, 10.0, n(1)), (30.0, 10.0, n(5)), (4000.0, 10.0, n(2)), (900.0, 10.0, n(4)), (3000.0, 10.0, n(3))];
         newest_first(&mut felt);
         let ids: Vec<u64> = felt.iter().take(4).map(|f| f.2.id).collect();
@@ -6234,7 +6275,16 @@ mod tests {
         let bombs = CHAPTERS.iter().find(|c| c.title == "big_nukes.guide.bombs").expect("the bombs' chapter");
         assert_eq!(
             bombs.icons,
-            ["big_nukes:demolition_charge", "big_nukes:tactical_warhead", "big_nukes:atomic_bomb", SUNBREAKER_CORE, IMPLOSION_SHELL, NEUTRON_REFLECTOR]
+            [
+                "big_nukes:demolition_charge",
+                "big_nukes:tactical_warhead",
+                "big_nukes:atomic_bomb",
+                "big_nukes:neutron_bomb",
+                "big_nukes:dirty_bomb",
+                SUNBREAKER_CORE,
+                IMPLOSION_SHELL,
+                NEUTRON_REFLECTOR
+            ]
         );
         let numbers = [
             SHELL_BLOCKS.to_string(),
@@ -11299,5 +11349,50 @@ mod warhead_tests {
         json.as_object_mut().unwrap().remove("effect");
         let back: Blast = serde_json::from_value(json).unwrap();
         assert_eq!(back.effect, Effect::Blast);
+    }
+
+    #[test]
+    fn a_neutron_cloud_is_small_pale_and_has_no_dust_ring() {
+        let news = |effect| News { id: 1, center: [0, 64, 0], radius: 120, seed: 7, age: 0, effect };
+        for t in [10.0, 200.0, 2000.0] {
+            let plain = cloud_of(t, &news(Effect::Blast));
+            let neutron = cloud_of(t, &news(Effect::Neutron));
+            assert_eq!(plain, cloud(t, 120), "a wave's cloud is as before");
+            assert_eq!(neutron.ring_fade, 0.0, "{t}: no dust ring");
+            assert!(neutron.ball_r < plain.ball_r && neutron.ball_h < plain.ball_h, "{t}");
+            assert!(neutron.fire < plain.fire || plain.fire == 0.0, "{t}");
+        }
+        assert_eq!(cloud_of(10.0, &news(Effect::Dirty)), cloud(10.0, 120));
+    }
+
+    #[test]
+    fn news_tells_the_effect_and_old_news_is_a_blast() {
+        let mut saved = Saved::default();
+        saved.fire_kind(OW, [0, 64, 0], BombKind::Neutron, 120).unwrap();
+        assert_eq!(saved.waves.news(OW, saved.tick)[0].effect, Effect::Neutron);
+        let mut json = serde_json::to_value(&saved.waves.news(OW, saved.tick)[0]).unwrap();
+        json.as_object_mut().unwrap().remove("effect");
+        assert_eq!(serde_json::from_value::<News>(json).unwrap().effect, Effect::Blast);
+    }
+
+    #[test]
+    fn a_neutron_blast_irradiates_at_once() {
+        let me: u128 = 42;
+        let mut saved = Saved::default();
+        saved.irradiate(me, neutron_dose(10.0, 120, false));
+        assert!(stage(saved.doses[&dose_key(me)].rad) == 4, "the last stage");
+        saved.irradiate(me, 50.0);
+        assert!(saved.doses[&dose_key(me)].rad >= STAGES[3] + 50.0, "it adds up");
+        saved.irradiate(7, 0.0);
+        assert!(!saved.doses.contains_key(&dose_key(7)), "nothing given, nothing kept");
+    }
+
+    #[test]
+    fn the_two_bombs_are_assembled_tipped_and_in_the_guide() {
+        for id in ["big_nukes:neutron_bomb", "big_nukes:dirty_bomb"] {
+            assert!(ASSEMBLIES.iter().any(|a| a.result == id), "{id}");
+            assert!(!tips(id).is_empty(), "{id}");
+            assert!(CHAPTERS.iter().any(|c| c.icons.contains(&id)), "{id}");
+        }
     }
 }

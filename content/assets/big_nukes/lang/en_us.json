@@ -74,7 +74,7 @@
   "big_nukes.guide.assembly": "Assembly",
   "big_nukes.guide.assembly.text": "Craft the assembly table from a crafting table ringed with eight iron ingots.\n\nBombs and their parts are made only here. Put a recipe's parts anywhere in the grid and press Assemble.",
   "big_nukes.guide.bombs": "Bombs",
-  "big_nukes.guide.bombs.text": "Demolition charge: radius 16, no radiation.\n\nTactical warhead: radius 50 and weak radiation that fades away.\n\nAtomic bomb: radius 250 and a zone that stays radioactive.\n\nA bomb goes off only through its detonator. A blast's wave sets off every bomb it reaches.\n\nSunbreaker: the largest bomb, built where it stands. Place its core, close it in 26 implosion shells (the 3x3x3 cube round it), then wrap those in 98 neutron reflectors (the surface of the 5x5x5 cube). A whole shell gives radius 600, and each reflector adds its share, up to 1000. At 1000 the blast breaks through the bedrock at its center and leaves a hole into the void. Without a whole shell it doesn't go off. It is read when it goes off: break a part and it is weaker.\n\nRight-click any block of it to reach the core: it takes any detonator, and with an empty hand it tells you its shell, its reflector and its radius. Its fuse burns 15 seconds, an alarm sounding over the last 5. You won't outrun radius 1000 on foot. Missiles and bombers can't carry it.",
+  "big_nukes.guide.bombs.text": "Demolition charge: radius 16, no radiation.\n\nTactical warhead: radius 50 and weak radiation that fades away.\n\nAtomic bomb: radius 250 and a zone that stays radioactive.\n\nNeutron bomb: radius 120, no crater. Only glass breaks, but everything alive in the open dies. Hide behind a bunker's walls or in a sealed room.\n\nDirty bomb: a small blast that leaves a radioactive zone of 100 blocks for a long time.\n\nA bomb goes off only through its detonator. A blast's wave sets off every bomb it reaches.\n\nSunbreaker: the largest bomb, built where it stands. Place its core, close it in 26 implosion shells (the 3x3x3 cube round it), then wrap those in 98 neutron reflectors (the surface of the 5x5x5 cube). A whole shell gives radius 600, and each reflector adds its share, up to 1000. At 1000 the blast breaks through the bedrock at its center and leaves a hole into the void. Without a whole shell it doesn't go off. It is read when it goes off: break a part and it is weaker.\n\nRight-click any block of it to reach the core: it takes any detonator, and with an empty hand it tells you its shell, its reflector and its radius. Its fuse burns 15 seconds, an alarm sounding over the last 5. You won't outrun radius 1000 on foot. Missiles and bombers can't carry it.",
   "big_nukes.guide.detonators": "Detonators",
   "big_nukes.guide.detonators.text": "Place a bomb, then right-click it with a detonator to put it in.\n\nFuse: light the bomb with flint and steel and run, you have 4 seconds. The demolition charge takes only a fuse.\n\nKeypad: right-click the bomb with an empty hand. The first code you type, 3 to 8 digits, becomes its code. The right code sets it off in 5 seconds; three wrong ones lock the keypad for 30 seconds.",
   "big_nukes.guide.remote": "Remote",
@@ -224,5 +224,11 @@
   "big_nukes.screen.air_filter.powered": "Powered",
   "big_nukes.screen.air_filter.unpowered": "No burning generator within %s blocks",
   "big_nukes.screen.air_filter.sealed": "Sealed room: %s blocks of air",
-  "big_nukes.screen.air_filter.open": "Room not sealed, or over %s blocks"
+  "big_nukes.screen.air_filter.open": "Room not sealed, or over %s blocks",
+  "big_nukes.tip.neutron_bomb": "Radius 120: kills what lives in the open, leaves what is built. Only glass breaks.",
+  "big_nukes.tip.neutron_bomb.2": "Assembly table: 1 casing, 1 nuclear charge, 1 weapons-grade uranium, 4 glowstone.",
+  "big_nukes.tip.dirty_bomb": "A small blast (radius 8) that poisons the land for 100 blocks round, twice as long as a tactical warhead.",
+  "big_nukes.tip.dirty_bomb.2": "Assembly table: 1 casing, 4 raw uranium, 2 TNT.",
+  "block.big_nukes.neutron_bomb": "Neutron Bomb",
+  "block.big_nukes.dirty_bomb": "Dirty Bomb"
 }

@@ -16,7 +16,7 @@ import time
 
 CHECKS = [
     "content", "ore", "machine", "assembly", "bomb", "chain", "remote", "wave", "effects", "sky",
-    "rad", "decon", "guide", "icons", "silo", "bomber", "sunbreaker", "sunbreaker_remote", "bunker",
+    "rad", "decon", "guide", "icons", "silo", "bomber", "sunbreaker", "sunbreaker_remote", "bunker", "warheads",
 ]
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 LOGS = os.path.join(TOOLS, "..", "target", "all-tests")

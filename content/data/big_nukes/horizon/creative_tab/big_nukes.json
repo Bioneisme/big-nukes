@@ -9,6 +9,8 @@
     "big_nukes:atomic_bomb",
     "big_nukes:tactical_warhead",
     "big_nukes:demolition_charge",
+    "big_nukes:neutron_bomb",
+    "big_nukes:dirty_bomb",
     "big_nukes:fuse_detonator",
     "big_nukes:keypad_detonator",
     "big_nukes:receiver_detonator",

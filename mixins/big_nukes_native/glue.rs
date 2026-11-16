@@ -388,6 +388,18 @@ pub(in crate::game) fn start_blast(
     start(game, dimension, |saved| saved.fire(dimension, center, radius))
 }
 
+/// Starts the blast of a bomb of `kind` reaching `radius` at `center`: as `start_blast`, with the bomb's effect,
+/// within the operator's limit by its level.
+pub(in crate::game) fn start_bomb(
+    game: &mut Game<'_>,
+    dimension: &str,
+    center: [i32; 3],
+    kind: rules::BombKind,
+    radius: u32,
+) -> Result<u64, rules::Refused> {
+    start(game, dimension, |saved| saved.fire_kind(dimension, center, kind, radius))
+}
+
 /// A blast in `dimension` that `fire` starts in the world's record: saved at
 /// once, and its news to the players there.
 fn start(
@@ -477,6 +489,10 @@ fn particle(id: &str, at: [f64; 3], spread: [f64; 3], speed: f64, count: u32) ->
 fn effects(game: &mut Game<'_>, st: &mut State, dimension: &str) {
     for (blast, from, to, age) in st.saved.waves.fronts(dimension, st.saved.tick) {
         let [cx, cy, cz] = blast.center.map(|v| v as f64 + 0.5);
+        if blast.effect == rules::Effect::Neutron {
+            neutron(game, st, &blast, from, to, age);
+            continue;
+        }
         if age < 20 && st.opened.insert(blast.id) {
             run_in(game, &blast, &particle("minecraft:explosion_emitter", [cx, cy + 2.0, cz], [2.0, 2.0, 2.0], 0.0, 6));
             let registry = &game.pack.assets.registry;
@@ -534,6 +550,43 @@ fn effects(game: &mut Game<'_>, st: &mut State, dimension: &str) {
             untag_sheltered(game);
         }
     }
+}
+
+/// A neutron blast's front: a flash of light at its opening, no debris, no dust; the creatures it crossed this tick
+/// die and the players it crossed take its dose at once, but those under a roof of the bunker's walls or in a
+/// sealed room.
+fn neutron(game: &mut Game<'_>, st: &mut State, blast: &rules::Blast, from: f64, to: f64, age: u64) {
+    let [cx, cy, cz] = blast.center.map(|v| v as f64 + 0.5);
+    let reach = blast.radius as f64;
+    if age < 20 && st.opened.insert(blast.id) {
+        run_in(game, blast, &particle("minecraft:flash", [cx, cy + 2.0, cz], [0.0, 0.0, 0.0], 0.0, 1));
+        run_in(game, blast, &particle("minecraft:end_rod", [cx, cy + 2.0, cz], [4.0, 4.0, 4.0], 0.2, 80));
+    }
+    if from >= reach {
+        return;
+    }
+    let to = to.min(reach);
+    for p in game.native_server_players().into_iter().filter(|p| p.dimension == blast.dimension) {
+        let d = (0..3).map(|i| (p.position[i] - [cx, cy, cz][i]).powi(2)).sum::<f64>().sqrt();
+        if d < from || d >= to {
+            continue;
+        }
+        let feet = p.position.map(|v| v.floor() as i32);
+        let head = [feet[0], feet[1] + 1, feet[2]];
+        let walls = rules::walls_near(&st.saved.walls, &blast.dimension, rules::chunk_of(feet[0], feet[2]));
+        let shielded = rules::roofed(blast, &walls, head, false) || bunker::shelter_of(p.uuid) <= rules::SEALED_SHELTER;
+        st.saved.irradiate(p.uuid, rules::neutron_dose(d, blast.radius, shielded));
+        st.dirty = true;
+    }
+    run_in(
+        game,
+        blast,
+        &format!(
+            "execute as @e[type=!minecraft:player,x={cx:.1},y={cy:.1},z={cz:.1},distance={from:.1}..{to:.1}] run damage @s {:.1} {}",
+            rules::NEUTRON_MOB_DAMAGE,
+            rules::RADIATION
+        ),
+    );
 }
 
 /// Every player's shelter tag taken off: after the damage, and as a player joins, so none is left on for good
@@ -634,7 +687,7 @@ pub(in crate::game) fn frame(game: &mut Game<'_>) {
     *horizon_client::gfx::native_render::big_nukes_sky::SKY.lock().unwrap_or_else(|e| e.into_inner()) = felt
         .iter()
         .map(|(t, _, n)| {
-            let c = rules::cloud(*t, n.radius);
+            let c = rules::cloud_of(*t, n);
             horizon_client::gfx::native_render::big_nukes_sky::SkyBlast {
                 center: [n.center[0] as f64 + 0.5, n.center[1] as f64, n.center[2] as f64 + 0.5],
                 seed: n.seed as u32,
@@ -1846,8 +1899,9 @@ fn part_button(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity, 
 /// structure as it stands, the operator's limit).
 fn may_go_off(game: &Game<'_>, pos: [i32; 3], kind: rules::BombKind, maxpower: u32) -> Result<u32, rules::Refused> {
     let radius = kind.power(pos, &|p| game.native_block(p)).map_err(rules::Refused::Structure)?;
-    if radius > maxpower {
-        return Err(rules::Refused::Maxpower { radius, maxpower });
+    let level = kind.level(radius);
+    if level > maxpower {
+        return Err(rules::Refused::Maxpower { radius: level, maxpower });
     }
     Ok(radius)
 }
@@ -2194,7 +2248,7 @@ fn bomb_tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut ModBlockEntity) {
     if bomb.tick(now) {
         // A Sunbreaker's radius is its structure's now.
         let start = match may_go_off(game, pos, bomb.kind, maxpower) {
-            Ok(radius) => start_blast(game, dimension, pos, radius),
+            Ok(radius) => start_bomb(game, dimension, pos, bomb.kind, radius),
             Err(why) => Err(why),
         };
         match start {
