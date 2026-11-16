@@ -3497,6 +3497,23 @@ pub fn mob_harm(background: f64) -> Option<u32> {
     }
 }
 
+/// What a carried item gives off, in rad a second for each one: the uranium, the Sunbreaker's core and the
+/// trinitite. A bomb's casing keeps its charge in.
+const CARRIED: [(&str, f64); 5] =
+    [(RAW_URANIUM, 0.002), (ENRICHED_URANIUM, 0.01), (WEAPONS_GRADE_URANIUM, 0.04), (SUNBREAKER_CORE, 0.5), (TRINITITE_SHARD, 0.005)];
+/// The most a player's inventory gives off.
+pub const CARRIED_MOST: f64 = 3.0;
+
+/// What the stacks a player carries give off, in rad a second: below the healing (half a rad a second) it builds
+/// no dose.
+pub fn carried_rad(stacks: &[(&str, u32)]) -> f64 {
+    let rate: f64 = stacks
+        .iter()
+        .filter_map(|(id, n)| CARRIED.iter().find(|c| c.0 == *id).map(|c| c.1 * f64::from(*n)))
+        .sum();
+    rate.min(CARRIED_MOST)
+}
+
 /// What each piece keeps out, head to feet.
 const SUIT: [f64; 4] = [0.25, 0.30, 0.25, 0.15];
 /// A worn piece loses a point of durability each second the background is at least this.
@@ -3548,7 +3565,15 @@ impl Saved {
     /// A second of the player's exposure at `pos`, with `protection` kept out and the share `shelter`
     /// (`shelter`) of the background let in where they are: the background they take, or None when a
     /// second hasn't passed since the last.
+    /// The glue exposes with what the player carries (`expose_carrying`); the tests of the background alone use this.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn expose(&mut self, uuid: u128, dimension: &str, pos: [f64; 3], protection: f64, shelter: f64) -> Option<f64> {
+        self.expose_carrying(uuid, dimension, pos, protection, shelter, 0.0)
+    }
+
+    /// `expose`, the player carrying `carried` rad a second of their own (`carried_rad`): under any roof, as it is
+    /// in their pocket, but kept out by the suit as the background is.
+    pub fn expose_carrying(&mut self, uuid: u128, dimension: &str, pos: [f64; 3], protection: f64, shelter: f64, carried: f64) -> Option<f64> {
         let (now, key) = (self.tick, dose_key(uuid));
         // A player with no dose is looked at on the second's ticks; one with a
         // dose a second after the last time, which holds while the clock stands.
@@ -3557,7 +3582,7 @@ impl Saved {
             None if now % SECOND != 0 => return None,
             _ => {}
         }
-        let bg = background(&self.zones, &self.cleans, dimension, pos, now) * shelter.clamp(0.0, 1.0);
+        let bg = background(&self.zones, &self.cleans, dimension, pos, now) * shelter.clamp(0.0, 1.0) + carried.max(0.0);
         let dose = self.doses.entry(key.clone()).or_default();
         dose.rad = dose_step(dose.rad, bg, protection);
         dose.stepped = now;
@@ -12138,6 +12163,56 @@ mod consequence_tests {
         assert!(end < 512.0 && end > start);
         // The zone's own tint is as before.
         assert_eq!(tint_fog(0.5, blue, 0.0, 512.0, 1.0), tint_fog_to(FOG_TINT, FOG_END, 0.5, blue, 0.0, 512.0, 1.0));
+    }
+
+    // ---- carried radiation (task 4) ------------------------------------------------
+
+    /// A minute of carrying `rate` rad a second with `protection`, from no dose.
+    fn a_minute(rate: f64, protection: f64) -> f64 {
+        let mut saved = Saved::default();
+        for _ in 0..60 {
+            saved.expose_carrying(42, OW, [0.5, 64.0, 0.5], protection, 1.0, rate);
+            saved.tick += SECOND;
+        }
+        saved.doses.get(&dose_key(42)).map_or(0.0, |d| d.rad)
+    }
+
+    #[test]
+    fn what_is_carried_says_how_much_it_gives() {
+        assert_eq!(carried_rad(&[]), 0.0);
+        assert!((carried_rad(&[(ENRICHED_URANIUM, 10)]) - 0.1).abs() < 1e-9);
+        assert!((carried_rad(&[(WEAPONS_GRADE_URANIUM, 64)]) - 2.56).abs() < 1e-9);
+        assert!((carried_rad(&[(TRINITITE_SHARD, 2), (RAW_URANIUM, 5)]) - 0.02).abs() < 1e-9);
+        assert_eq!(carried_rad(&[("big_nukes:atomic_bomb", 4), ("minecraft:stone", 64)]), 0.0, "a bomb's casing keeps it in");
+        assert_eq!(carried_rad(&[(SUNBREAKER_CORE, 64), (WEAPONS_GRADE_URANIUM, 640)]), CARRIED_MOST);
+    }
+
+    #[test]
+    fn a_few_uranium_heal_away() {
+        assert_eq!(a_minute(carried_rad(&[(ENRICHED_URANIUM, 16)]), 0.0), 0.0);
+    }
+
+    #[test]
+    fn a_stack_of_weapons_grade_builds_a_dose() {
+        let dose = a_minute(carried_rad(&[(WEAPONS_GRADE_URANIUM, 64)]), 0.0);
+        assert!((dose - (2.56 - 0.5) * 60.0).abs() < 1e-6, "{dose}");
+    }
+
+    #[test]
+    fn the_suit_keeps_carried_radiation_out() {
+        let full = protection(true, true, true, true);
+        assert_eq!(a_minute(carried_rad(&[(WEAPONS_GRADE_URANIUM, 64)]), full), 0.0);
+        // A roof doesn't: what is in the pocket is under it too.
+        let mut saved = Saved::default();
+        for _ in 0..60 {
+            saved.expose_carrying(42, OW, [0.5, 64.0, 0.5], 0.0, rules_sealed(), 2.56);
+            saved.tick += SECOND;
+        }
+        assert!(saved.doses.contains_key(&dose_key(42)));
+    }
+
+    fn rules_sealed() -> f64 {
+        SEALED_SHELTER
     }
 }
 

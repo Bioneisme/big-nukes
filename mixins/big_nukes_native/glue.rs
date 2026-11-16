@@ -1990,7 +1990,15 @@ pub(in crate::game) fn player_tick(game: &mut Game<'_>) {
     let st = guard.as_mut().expect("opened");
     let had = st.saved.doses.contains_key(&rules::dose_key(who.uuid));
     let protection = rules::shielded(rules::protection(suit[0], suit[1], suit[2], suit[3]), iodine);
-    let Some(background) = st.saved.expose(who.uuid, &who.dimension, who.position, protection, shelter) else {
+    // What the player carries gives off its own radiation: the uranium, a Sunbreaker's core, trinitite.
+    let carried = match game.native_inventory(who.uuid, crate::game::NativeInventoryKind::Player) {
+        Ok(inv) => {
+            let stacks: Vec<(&str, u32)> = inv.slots.iter().flatten().map(|s| (&*s.item, s.count)).collect();
+            rules::carried_rad(&stacks)
+        }
+        Err(_) => 0.0,
+    };
+    let Some(background) = st.saved.expose_carrying(who.uuid, &who.dimension, who.position, protection, shelter, carried) else {
         return;
     };
     st.dirty |= had || background > 0.0;
