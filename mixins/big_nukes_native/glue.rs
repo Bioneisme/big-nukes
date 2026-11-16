@@ -596,6 +596,9 @@ fn untag_sheltered(game: &mut Game<'_>) {
     game.native_run_command(&format!("tag @a[tag={SHELTERED}] remove {SHELTERED}"));
 }
 
+/// How often the winter keeps the overworld raining, in ticks.
+const WINTER_RAIN_EVERY: u64 = 200;
+
 /// The tag a sheltered player wears while a wave's damage passes over them.
 const SHELTERED: &str = "big_nukes_sheltered";
 
@@ -839,6 +842,14 @@ pub(in crate::game) fn fog(game: &Game<'_>, camera: [f64; 3], fog_type: FogType,
         (Some(p), Some(clock)) if p.dimension == "minecraft:overworld" => rules::sky_light(clock.day_time),
         _ => 1.0,
     };
+    // A nuclear winter greys the overworld's fog first; a zone's green goes over it.
+    let winter = game.native_player().is_some_and(|p| p.dimension == "minecraft:overworld")
+        && lock(&TOLD).as_ref().is_some_and(|t| t.rad.winter);
+    if winter && let Some((color, start, end)) = rules::winter_fog(fog.color, fog.environmental_start, fog.environmental_end, light) {
+        fog.color = color;
+        fog.environmental_start = start;
+        fog.environmental_end = end;
+    }
     if let Some((color, start, end)) = rules::tint_fog(shown, fog.color, fog.environmental_start, fog.environmental_end, light) {
         fog.color = color;
         fog.environmental_start = start;
@@ -868,12 +879,17 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
         save(st);
     }
     let trouble = save_trouble(st);
+    // The winter keeps the overworld raining (snowing where it is cold).
+    let rain = st.saved.winter() && st.saved.tick % WINTER_RAIN_EVERY == 0;
     let wake = std::mem::take(&mut st.wake);
     let regrab = std::mem::take(&mut st.regrab);
     let unforceload = std::mem::take(&mut st.unforceload);
     drop(guard);
     if let Some(line) = trouble {
         tell_everyone(game, &line);
+    }
+    if rain {
+        game.native_run_command(&format!("execute in minecraft:overworld run weather rain {}", 2 * WINTER_RAIN_EVERY / rules::SECOND));
     }
     // The commands run with the state let go: a death they cause is heard at once.
     for (name, stage, damage) in sick {
@@ -2037,7 +2053,7 @@ fn sick(game: &Game<'_>, st: &mut State) -> Vec<(String, u8, Option<u32>)> {
 /// the players with something to tell, and once more to those who had and now
 /// have nothing, so their window lets go.
 fn rad_news(game: &Game<'_>, st: &mut State) -> Vec<(u128, Vec<u8>)> {
-    if st.saved.zones.is_empty() && st.saved.doses.is_empty() && st.told.is_empty() {
+    if st.saved.zones.is_empty() && st.saved.doses.is_empty() && st.told.is_empty() && !st.saved.winter() {
         return Vec::new();
     }
     let mut news = Vec::new();

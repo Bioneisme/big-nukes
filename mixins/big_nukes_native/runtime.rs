@@ -1608,6 +1608,9 @@ pub struct Saved {
     /// held with `/forceload` (`Saved::to_tickets`).
     #[serde(default)]
     pub tickets: bool,
+    /// The tick the overworld's nuclear winter ends: 0 for none yet.
+    #[serde(default)]
+    pub winter_until: u64,
     /// The circles the decontaminators cleaned, theirs still where they were broken.
     #[serde(default)]
     pub cleans: Vec<Clean>,
@@ -1637,6 +1640,7 @@ impl Default for Saved {
             forced: Vec::new(),
             alarms: Vec::new(),
             tickets: false,
+            winter_until: 0,
             cleans: Vec::new(),
             walls: BTreeMap::new(),
         }
@@ -1669,6 +1673,10 @@ impl Saved {
         let id = self.next_id;
         let seed = mix(self.tick ^ mix(id));
         let blast = Blast { id, dimension: dimension.to_owned(), center, radius, seed, world, effect };
+        // A Sunbreaker's ash darkens the overworld's sky for three days.
+        if dimension == "minecraft:overworld" && effect == Effect::Blast && radius >= SUNBREAKER_BASE {
+            self.winter_until = self.winter_until.max(self.tick + WINTER_TICKS);
+        }
         self.zones.extend(zone_of(&blast, self.tick));
         self.waves.start(blast, self.tick);
         Some(id)
@@ -3559,6 +3567,11 @@ impl Saved {
         Some(bg)
     }
 
+    /// Whether the overworld's nuclear winter is on.
+    pub fn winter(&self) -> bool {
+        self.tick < self.winter_until
+    }
+
     /// Whether ash falls at `pos` in `dimension`: in a plume, for `FALLOUT_TICKS` after its blast.
     pub fn fallout_at(&self, dimension: &str, pos: [f64; 3]) -> bool {
         self.zones.iter().any(|z| z.dimension == dimension && z.ash_falls(pos, self.tick))
@@ -3628,6 +3641,7 @@ impl Saved {
             now,
             dose: self.doses.get(&dose_key(uuid)).map_or(0.0, |d| d.rad),
             shelter: 1.0,
+            winter: dimension == "minecraft:overworld" && self.winter(),
         }
     }
 }
@@ -3657,18 +3671,21 @@ pub struct Rad {
     pub dose: f64,
     /// The share of the background the player's shelter lets in where they last were (`shelter`).
     pub shelter: f64,
+    /// The overworld's nuclear winter is on where the player is.
+    #[serde(default)]
+    pub winter: bool,
 }
 
 impl Default for Rad {
     fn default() -> Self {
-        Rad { zones: Vec::new(), cleans: Vec::new(), now: 0, dose: 0.0, shelter: 1.0 }
+        Rad { zones: Vec::new(), cleans: Vec::new(), now: 0, dose: 0.0, shelter: 1.0, winter: false }
     }
 }
 
 impl Rad {
-    /// Nothing to tell: no zone and no dose. Sent once, so the window lets go.
+    /// Nothing to tell: no zone, no dose and no winter. Sent once, so the window lets go.
     pub fn is_empty(&self) -> bool {
-        self.zones.is_empty() && self.dose <= 0.0
+        self.zones.is_empty() && self.dose <= 0.0 && !self.winter
     }
 }
 
@@ -3766,12 +3783,29 @@ pub fn sky_light(day_time: i64) -> f32 {
 /// end in toward 64 blocks and the start toward the eyes. None for no fog, and
 /// when the result isn't one the game takes.
 pub fn tint_fog(strength: f64, color: [f32; 4], start: f32, end: f32, light: f32) -> Option<([f32; 4], f32, f32)> {
+    tint_fog_to(FOG_TINT, FOG_END, strength, color, start, end, light)
+}
+
+/// How long a Sunbreaker's nuclear winter lasts: three days.
+pub const WINTER_TICKS: u64 = 3 * 24_000;
+/// The winter's fog: ash grey, half over the world's, in to 96 blocks.
+const WINTER_TINT: [f32; 3] = [0.42, 0.43, 0.46];
+const WINTER_FOG: f64 = 0.55;
+const WINTER_FOG_END: f32 = 96.0;
+
+/// The world's fog under a nuclear winter, as `tint_fog` with the winter's grey.
+pub fn winter_fog(color: [f32; 4], start: f32, end: f32, light: f32) -> Option<([f32; 4], f32, f32)> {
+    tint_fog_to(WINTER_TINT, WINTER_FOG_END, WINTER_FOG, color, start, end, light)
+}
+
+/// `tint_fog` toward `tint`, its end in toward `fog_end`.
+pub fn tint_fog_to(tint: [f32; 3], fog_end: f32, strength: f64, color: [f32; 4], start: f32, end: f32, light: f32) -> Option<([f32; 4], f32, f32)> {
     let s = strength.min(1.0) as f32;
     if !(s > 0.0) || !start.is_finite() || !end.is_finite() {
         return None;
     }
     let light = if light.is_finite() { light.clamp(0.0, 1.0) } else { 1.0 };
-    let tint = [FOG_TINT[0] * (light * 0.94 + 0.06), FOG_TINT[1] * (light * 0.94 + 0.06), FOG_TINT[2] * (light * 0.91 + 0.09)];
+    let tint = [tint[0] * (light * 0.94 + 0.06), tint[1] * (light * 0.94 + 0.06), tint[2] * (light * 0.91 + 0.09)];
     let mut tinted = color;
     for i in 0..3 {
         tinted[i] = (color[i] + (tint[i] - color[i]) * s).clamp(0.0, 1.0);
@@ -3780,7 +3814,7 @@ pub fn tint_fog(strength: f64, color: [f32; 4], start: f32, end: f32, light: f32
         return Some((tinted, start, end));
     }
     let start = start + (start.min(0.0) - start) * s;
-    let end = end + (end.min(FOG_END) - end) * s;
+    let end = end + (end.min(fog_end) - end) * s;
     (end > start).then_some((tinted, start, end))
 }
 
@@ -12061,6 +12095,49 @@ mod consequence_tests {
         assert!(!saved.fallout_at("minecraft:the_nether", down));
         saved.tick = FALLOUT_TICKS;
         assert!(!saved.fallout_at(OW, down), "the ash is down after five minutes");
+    }
+
+    // ---- the nuclear winter (task 3) -----------------------------------------------
+
+    #[test]
+    fn a_sunbreaker_brings_three_days_of_winter() {
+        let mut saved = Saved::default();
+        saved.tick = 500;
+        assert!(!saved.winter());
+        saved.blast(OW, [0, 64, 0], SUNBREAKER_BASE).unwrap();
+        assert!(saved.winter());
+        assert_eq!(saved.winter_until, 500 + WINTER_TICKS);
+        assert_eq!(WINTER_TICKS, 3 * 24_000);
+        let rad = saved.rad_for(42, OW, [5000.5, 64.0, 0.5]);
+        assert!(rad.winter && !rad.is_empty(), "told even far from any zone");
+        assert!(!saved.rad_for(42, "minecraft:the_nether", [0.5, 64.0, 0.5]).winter, "the overworld's winter only");
+        saved.tick = 500 + WINTER_TICKS;
+        assert!(!saved.winter(), "it ends");
+        assert!(!saved.rad_for(42, OW, [5000.5, 64.0, 0.5]).winter);
+    }
+
+    #[test]
+    fn a_smaller_blast_or_one_elsewhere_brings_none() {
+        let mut saved = Saved::default();
+        saved.blast(OW, [0, 64, 0], SUNBREAKER_BASE - 1).unwrap();
+        saved.blast("minecraft:the_nether", [0, 64, 0], 1000).unwrap();
+        assert!(!saved.winter());
+        let mut json = serde_json::to_value(&saved).unwrap();
+        json.as_object_mut().unwrap().remove("winter_until");
+        assert_eq!(serde_json::from_value::<Saved>(json).unwrap().winter_until, 0, "a world from before has none");
+        let old = r#"{"zones":[],"cleans":[],"now":0,"dose":0.0,"shelter":1.0}"#;
+        assert!(!serde_json::from_str::<Rad>(old).unwrap().winter);
+    }
+
+    #[test]
+    fn the_winter_greys_the_fog_and_brings_it_in() {
+        let blue = [0.6, 0.75, 1.0, 1.0];
+        let (c, start, end) = winter_fog(blue, 0.0, 512.0, 1.0).unwrap();
+        let spread = |c: [f32; 4]| c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2]);
+        assert!(spread(c) < spread(blue), "greyer: {c:?}");
+        assert!(end < 512.0 && end > start);
+        // The zone's own tint is as before.
+        assert_eq!(tint_fog(0.5, blue, 0.0, 512.0, 1.0), tint_fog_to(FOG_TINT, FOG_END, 0.5, blue, 0.0, 512.0, 1.0));
     }
 }
 
