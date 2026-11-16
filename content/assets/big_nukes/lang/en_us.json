@@ -11,7 +11,7 @@
   "big_nukes.screen.assemble": "Assemble",
   "big_nukes.screen.assembly_makes": "Makes: %s",
   "big_nukes.screen.assembly_hint": "Put a recipe's parts in the grid",
-  "big_nukes.maxpower.over": "Radius %s is over the operator's limit of %s: nothing goes off.",
+  "big_nukes.maxpower.over": "Power %s is over the operator's limit of %s: nothing goes off.",
   "big_nukes.maxpower.current": "The operator's limit: blasts up to radius %s.",
   "big_nukes.maxpower.set": "The operator's limit is now radius %s.",
   "big_nukes.maxpower.usage": "Usage: /bignukes maxpower [%s]",

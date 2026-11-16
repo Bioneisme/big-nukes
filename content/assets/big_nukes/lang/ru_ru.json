@@ -11,7 +11,7 @@
   "big_nukes.screen.assemble": "Собрать",
   "big_nukes.screen.assembly_makes": "Получится: %s",
   "big_nukes.screen.assembly_hint": "Положите детали рецепта в сетку",
-  "big_nukes.maxpower.over": "Радиус %s больше предела оператора (%s): взрыва не будет.",
+  "big_nukes.maxpower.over": "Мощность %s больше предела оператора (%s): взрыва не будет.",
   "big_nukes.maxpower.current": "Предел оператора: взрывы радиусом до %s.",
   "big_nukes.maxpower.set": "Теперь предел оператора — радиус %s.",
   "big_nukes.maxpower.usage": "Использование: /bignukes maxpower [%s]",

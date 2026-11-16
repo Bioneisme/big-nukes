@@ -1690,6 +1690,10 @@ pub const LINK: &str = "big_nukes:link";
 /// The bombs of `placed` in `chunk` that `blast` sets off: within its radius of
 /// its center, in its dimension, its own bomb apart.
 pub fn reached(placed: &[Receiver], blast: &Blast, chunk: [i32; 2]) -> Vec<([i32; 3], BombKind)> {
+    // A neutron blast has no wave to set a bomb off.
+    if blast.effect == Effect::Neutron {
+        return Vec::new();
+    }
     let reach = f64::from(blast.radius).powi(2);
     placed
         .iter()
@@ -2959,8 +2963,9 @@ impl Notice {
         (flight.lands_at().saturating_sub(now) / SECOND) as u32
     }
 
-    pub fn launched(flight: &Flight, now: u64) -> Notice {
-        Notice::Launched { seconds: Self::seconds(flight, now), to: flight.to }
+    /// To the one who launched `flight` at `aim`, as they typed it (a splitting missile's flights fall round it).
+    pub fn launched(flight: &Flight, aim: [i32; 2], now: u64) -> Notice {
+        Notice::Launched { seconds: Self::seconds(flight, now), to: aim }
     }
 
     pub fn inbound(flight: &Flight, now: u64) -> Notice {
@@ -3016,7 +3021,9 @@ impl Saved {
         let now = self.tick;
         self.alarms.push(Alarm { dimension: flight.dimension.clone(), at: flight.from, reach: SIREN_REACH, until: now + SIREN_TICKS });
         let target = [flight.to[0], flight.from[1], flight.to[1]];
-        self.alarms.push(Alarm { dimension: flight.dimension.clone(), at: target, reach: TARGET_ALARM_REACH, until: flight.lands_at() });
+        // Until it lands, or lands on a guess when its target's ground never loads (`SURFACE_WAIT`).
+        let until = flight.lands_at() + SURFACE_WAIT;
+        self.alarms.push(Alarm { dimension: flight.dimension.clone(), at: target, reach: TARGET_ALARM_REACH, until });
     }
 
     /// Whether a siren at `pos` wails now.
@@ -4911,8 +4918,8 @@ pub fn cloud_of(age_ticks: f64, news: &News) -> Cloud {
     Cloud { fire: c.fire * 0.3, ring: 0.0, ring_fade: 0.0, ..c }
 }
 
-/// The damage a neutron blast does to a creature in its reach: none lives through it.
-pub const NEUTRON_MOB_DAMAGE: f32 = 200.0;
+/// The damage a neutron blast does to a mob in its reach: none lives through it.
+pub const NEUTRON_MOB_DAMAGE: u32 = 200;
 
 // ---- the guide ---------------------------------------------------------------------
 //
@@ -11710,7 +11717,7 @@ mod warhead_tests {
         let mut saved = Saved::default();
         saved.tick = 1000;
         let f = saved.launch(OW, [0, 65, 0], [1600, 0], BombKind::Atomic, 75).unwrap();
-        let n = Notice::launched(&f, 1000);
+        let n = Notice::launched(&f, f.to, 1000);
         assert_eq!(n, Notice::Launched { seconds: ((f.lands_at() - 1000) / SECOND) as u32, to: [1600, 0] });
         assert_eq!(Notice::inbound(&f, f.lands_at() - 200), Notice::Inbound { seconds: 10 });
         assert_eq!(Notice::inbound(&f, f.lands_at() + 5), Notice::Inbound { seconds: 0 });
@@ -11744,7 +11751,7 @@ mod warhead_tests {
         saved.tick = 100 + SIREN_TICKS;
         assert!(!saved.alarm_at(OW, [0, 70, 0]), "the pad's wails a while");
         assert!(saved.alarm_at(OW, [1600, 70, 0]), "the target's until the missile lands");
-        saved.tick = f.lands_at();
+        saved.tick = f.lands_at() + SURFACE_WAIT;
         assert!(!saved.alarm_at(OW, [1600, 70, 0]));
         saved.prune_alarms();
         assert!(saved.alarms.is_empty());
@@ -11756,6 +11763,42 @@ mod warhead_tests {
         json.as_object_mut().unwrap().remove("alarms");
         assert!(serde_json::from_value::<Saved>(json).unwrap().alarms.is_empty());
         assert!(tips(SIREN).len() == 1 && ASSEMBLIES.iter().any(|a| a.result == SIREN));
+    }
+
+    // ---- review fixes (plan 11) ----------------------------------------------------
+
+    #[test]
+    fn a_neutron_blast_sets_off_no_bombs() {
+        let r = |pos| Receiver { dimension: OW.into(), pos, kind: BombKind::Atomic, power: None };
+        let placed = [r([30, 64, 0])];
+        let neutron = blast_of(BombKind::Neutron);
+        assert!(reached(&placed, &neutron, chunk_of(30, 0)).is_empty());
+        let plain = Blast { effect: Effect::Blast, ..neutron };
+        assert_eq!(reached(&placed, &plain, chunk_of(30, 0)).len(), 1);
+    }
+
+    #[test]
+    fn the_launcher_is_told_the_aim_they_typed() {
+        let mut saved = Saved::default();
+        let leader = saved.launch_split(OW, [0, 65, 0], [2000, 0], 80, 75).unwrap();
+        let last = saved.flights.iter().max_by_key(|f| f.lands_at()).unwrap().clone();
+        assert_ne!(last.to, [2000, 0], "a corner, not the aim");
+        match Notice::launched(&last, [2000, 0], 0) {
+            Notice::Launched { to, seconds } => assert_eq!((to, seconds), ([2000, 0], (last.lands_at() / SECOND) as u32)),
+            other => panic!("{other:?}"),
+        }
+        assert!(!leader.rider);
+    }
+
+    #[test]
+    fn the_targets_sirens_wail_while_its_ground_is_awaited() {
+        let mut saved = Saved::default();
+        let f = saved.launch(OW, [0, 65, 0], [1600, 0], BombKind::Atomic, 75).unwrap();
+        saved.alarm_for(&f);
+        saved.tick = f.lands_at() + SURFACE_WAIT - 1;
+        assert!(saved.alarm_at(OW, [1600, 70, 0]));
+        saved.tick = f.lands_at() + SURFACE_WAIT;
+        assert!(!saved.alarm_at(OW, [1600, 70, 0]));
     }
 }
 

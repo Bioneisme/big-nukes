@@ -566,8 +566,10 @@ fn neutron(game: &mut Game<'_>, st: &mut State, blast: &rules::Blast, from: f64,
         return;
     }
     let to = to.min(reach);
-    for p in game.native_server_players().into_iter().filter(|p| p.dimension == blast.dimension) {
-        let d = (0..3).map(|i| (p.position[i] - [cx, cy, cz][i]).powi(2)).sum::<f64>().sqrt();
+    let dist = |pos: [f64; 3]| (0..3).map(|i| (pos[i] - [cx, cy, cz][i]).powi(2)).sum::<f64>().sqrt();
+    // Creative and spectating players take no dose, as they take none in a zone.
+    for p in game.native_server_players().into_iter().filter(|p| p.dimension == blast.dimension && !matches!(p.game_mode, 1 | 3)) {
+        let d = dist(p.position);
         if d < from || d >= to {
             continue;
         }
@@ -578,15 +580,14 @@ fn neutron(game: &mut Game<'_>, st: &mut State, blast: &rules::Blast, from: f64,
         st.saved.irradiate(p.uuid, rules::neutron_dose(d, blast.radius, shielded));
         st.dirty = true;
     }
-    run_in(
-        game,
-        blast,
-        &format!(
-            "execute as @e[type=!minecraft:player,x={cx:.1},y={cy:.1},z={cz:.1},distance={from:.1}..{to:.1}] run damage @s {:.1} {}",
-            rules::NEUTRON_MOB_DAMAGE,
-            rules::RADIATION
-        ),
-    );
+    // The mobs it crossed die; items, frames, carts and the like are not alive and stay.
+    let crossed: Vec<u32> = game.native_mobs(&blast.dimension).iter().filter(|m| (from..to).contains(&dist(m.pos))).map(|m| m.id).collect();
+    let prefix = format!("execute in {} run ", blast.dimension);
+    for id in crossed {
+        if let Some(uuid) = game.native_entity(id).and_then(|e| game.native_entity_uuid(e)) {
+            hurt(game, &prefix, &rules::uuid_text(uuid), rules::NEUTRON_MOB_DAMAGE);
+        }
+    }
 }
 
 /// Every player's shelter tag taken off: after the damage, and as a player joins, so none is left on for good

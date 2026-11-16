@@ -206,7 +206,7 @@ fn notify(game: &mut Game<'_>, player: u128, notice: &rules::Notice) {
 
 /// The flights launched now from the pad under `from`: the sirens are sounded for each, the one who launched is
 /// told when it lands, and the players round each target that it is coming.
-fn tell_launch(game: &mut Game<'_>, dimension: &str, from: [i32; 3], who: u128) {
+fn tell_launch(game: &mut Game<'_>, dimension: &str, from: [i32; 3], aim: [i32; 2], who: u128) {
     let (now, launched) = {
         let Some(mut guard) = glue::state(game) else { return };
         let st = guard.as_mut().expect("opened");
@@ -221,7 +221,7 @@ fn tell_launch(game: &mut Game<'_>, dimension: &str, from: [i32; 3], who: u128) 
         (now, launched)
     };
     let Some(last) = launched.iter().max_by_key(|f| f.lands_at()) else { return };
-    notify(game, who, &rules::Notice::launched(last, now));
+    notify(game, who, &rules::Notice::launched(last, aim, now));
     let reach = f64::from(rules::TARGET_ALARM_REACH);
     for p in game.native_server_players().into_iter().filter(|p| p.dimension == dimension && p.uuid != who) {
         let near = launched.iter().find(|f| (p.position[0] - f64::from(f.to[0])).hypot(p.position[2] - f64::from(f.to[1])) <= reach);
@@ -422,7 +422,7 @@ fn launch(game: &mut Game<'_>, dimension: &str, who: &NativeServerPlayer, m: &ru
     });
     // The flight's display takes its place at the end of this tick (`flights`).
     hide_pad(game, dimension, pad);
-    tell_launch(game, dimension, from, who.uuid);
+    tell_launch(game, dimension, from, to, who.uuid);
     log::info!("[big_nukes] missile {}: {:?} from {pad:?} to {to:?} in {dimension}, by {}", flight.id, kind, who.name);
     if m.camera {
         news(game, who.uuid, &rules::ConsoleNews { now: flight.start, missile: Some(flight.clone()), ..Default::default() });
