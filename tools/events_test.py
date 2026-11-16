@@ -64,7 +64,9 @@ for _ in range(60):
     ctl("wait", 10)
 cx, cy, cz = [int(v // 1) for v in pos]
 y = 230
-chat("gamerule doMobSpawning false")
+chat("gamerule spawn_mobs false")
+# Hostile mobs vanish on peaceful.
+chat("difficulty normal")
 chat(f"fill {cx - 8} {y - 1} {cz - 8} {cx + 8} {y - 1} {cz + 8} minecraft:stone")
 chat(f"tp @s {cx + 0.5} {y} {cz + 0.5}")
 ctl("wait", 20)
@@ -76,12 +78,13 @@ ev = saved().get("events", {})
 check("the events start with the first blast", ev.get("started") is True, json.dumps(ev)[:300])
 
 # A radar powered by a burning generator reports.
-chat(f"setblock {cx + 3} {y} {cz} big_nukes:fuel_generator")
-chat(f"item replace block {cx + 3} {y} {cz} container.0 with minecraft:coal 16")
-chat(f"setblock {cx + 5} {y} {cz} big_nukes:radar[facing=west]")
+# The radar east of the player, the generator north of it: nothing between the player and the radar.
+chat(f"setblock {cx + 3} {y} {cz - 3} big_nukes:fuel_generator")
+chat(f"item replace block {cx + 3} {y} {cz - 3} container.0 with minecraft:coal 16")
+chat(f"setblock {cx + 3} {y} {cz} big_nukes:radar[facing=west]")
 ctl("wait", 60)
-ctl("look-at", "block", cx + 5, y, cz)
-ctl("interact", cx + 5, y, cz)
+ctl("look-at", "block", cx + 3, y, cz)
+ctl("interact", cx + 3, y, cz)
 ctl("wait", 5)
 said = messages()
 check("a powered radar reports", "Radar:" in said or "Радар:" in said, said[-400:])
@@ -101,7 +104,8 @@ chat("kill @e[type=minecraft:zombie]")
 # A storm: triggered, it comes in two minutes and gives a survival player in the open a dose.
 said = chat("bignukes events trigger storm")
 check("a storm can be triggered", "now" in said or "сейчас" in said, said)
-ctl("wait", 10)
+# The world's file has it at the mod's next save, every 10 seconds.
+ctl("wait", 220)
 storm = saved().get("events", {}).get("storm")
 check("the storm is set", storm is not None, json.dumps(saved().get("events", {}))[:300])
 chat("gamemode survival")
@@ -122,7 +126,7 @@ chat("gamemode creative")
 # A satellite: triggered, it falls within a minute and a half and leaves its zone of 24.
 zones_before = len(saved().get("zones", []))
 chat("bignukes events trigger satellite")
-ctl("wait", 20)
+ctl("wait", 220)
 sat = saved().get("events", {}).get("satellite")
 check("the satellite is set", sat is not None, json.dumps(saved().get("events", {}))[:300])
 if sat:

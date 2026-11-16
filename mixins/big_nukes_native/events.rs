@@ -67,7 +67,10 @@ pub(in crate::game) fn right_click(game: &mut Game<'_>, pos: [i32; 3], canceled:
         return false;
     }
     *canceled = true;
-    let Some(who) = game.native_acting_player() else { return true };
+    let Some(who) = game.native_acting_player() else {
+        log::warn!("[big_nukes] a radar's right click with no player");
+        return true;
+    };
     if !bunker::powered_now(&who.dimension, pos) {
         game.native_tell(who.uuid, Text::translate("big_nukes.radar.unpowered", &[]));
         return true;
@@ -344,13 +347,16 @@ pub(in crate::game) fn level_tick(game: &mut Game<'_>, dimension: &str) {
     if now % rules::MUTATE_EVERY != 0 {
         return;
     }
-    let turning: Vec<(u32, String)> = mobs
+    let candidates: Vec<_> = mobs.iter().filter(|m| rules::mutable(&m.kind, f64::from(m.max_health)) && near(m.pos, rules::MUTATE_NEAR) > 0).collect();
+    let turning: Vec<(u32, String)> = candidates
         .iter()
-        .filter(|m| rules::mutable(&m.kind, f64::from(m.max_health)) && near(m.pos, rules::MUTATE_NEAR) > 0)
         .filter(|m| rules::mutates(m.id, now, rules::background(&zones, &cleans, dimension, m.pos, now)))
         .take(MUTATE_AT_ONCE)
         .map(|m| (m.id, m.kind.to_string()))
         .collect();
+    if !turning.is_empty() {
+        log::info!("[big_nukes] {} of {} mobs near players in a zone of {dimension} mutate", turning.len(), candidates.len());
+    }
     for (id, kind) in turning {
         let Some(uuid) = game.native_entity(id).and_then(|e| game.native_entity_uuid(e)) else { continue };
         for command in rules::mutate_commands(&kind, &rules::uuid_text(uuid)) {
