@@ -662,25 +662,25 @@ add("block", "ash", 32, ash)
 
 
 def trinitite(t, rng):
-    """Sand melted into green glass: glassy clots of greens, dark bubbles and light streaks, a little seen through."""
+    """Sand melted into green glass: smooth glassy greens in broad swirls, a few dark bubbles, and bright glints
+    along the swirls, a little seen through."""
     n = t.n
-    G = [(28, 70, 40, 235), (46, 108, 58, 235), (72, 146, 76, 235), (112, 184, 100, 235), (170, 222, 150, 235)]
-    f = vnoise(n, rng, 4)
+    G = [(34, 86, 48, 225), (54, 124, 66, 225), (80, 162, 86, 225), (122, 200, 116, 225), (196, 240, 186, 225)]
+    f = vnoise(n, rng, 2)
     for y in range(n):
         for x in range(n):
-            t.set(x, y, pick(G, 0.6 + f[y][x] * 3.2, x, y, 0.4))
-    for _ in range(14):
-        cx, cy, r = rng.randrange(n), rng.randrange(n), rng.choice((1.0, 1.5, 2.0))
-        for x, y in disc(cx, cy, r):
-            if t.ok(x, y):
-                t.set(x, y, G[0])
-        if t.ok(int(cx - r), int(cy - r)):
-            t.set(int(cx - r), int(cy - r), G[4])
+            v = 1.0 + f[y][x] * 2.6 + 0.35 * math.sin((x + y * 0.6) / 3.2 + f[y][x] * 4)
+            t.set(x, y, pick(G, v, x, y, 0.3))
     for _ in range(5):
+        cx, cy = rng.randrange(2, n - 2), rng.randrange(2, n - 2)
+        t.set(cx, cy, G[0])
+        t.set(cx + 1, cy, G[1])
+        t.set(cx, cy - 1, G[4])
+    for _ in range(9):
         x, y = rng.randrange(n), rng.randrange(n)
-        for k in range(rng.randrange(3, 7)):
-            if t.ok(x + k, y - k // 2):
-                t.set(x + k, y - k // 2, G[4])
+        for k in range(rng.randrange(2, 5)):
+            if t.ok(x + k, y - k):
+                t.set(x + k, y - k, G[4])
 
 
 add("block", "trinitite", 32, trinitite)

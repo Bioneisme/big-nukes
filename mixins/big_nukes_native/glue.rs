@@ -881,6 +881,8 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     let trouble = save_trouble(st);
     // The winter keeps the overworld raining (snowing where it is cold).
     let rain = st.saved.winter() && st.saved.tick % WINTER_RAIN_EVERY == 0;
+    // and clears once, as it ends: with the weather cycle off, the rain would stay for good.
+    let thaw = st.saved.winter_until > 0 && st.saved.tick == st.saved.winter_until;
     let wake = std::mem::take(&mut st.wake);
     let regrab = std::mem::take(&mut st.regrab);
     let unforceload = std::mem::take(&mut st.unforceload);
@@ -888,8 +890,12 @@ pub(in crate::game) fn server_tick(game: &mut Game<'_>, phase: ServerTickPhase) 
     if let Some(line) = trouble {
         tell_everyone(game, &line);
     }
+    // The duration in seconds ("s"): a bare number is ticks.
     if rain {
-        game.native_run_command(&format!("execute in minecraft:overworld run weather rain {}", 2 * WINTER_RAIN_EVERY / rules::SECOND));
+        game.native_run_command(&format!("execute in minecraft:overworld run weather rain {}s", 2 * WINTER_RAIN_EVERY / rules::SECOND));
+    }
+    if thaw {
+        game.native_run_command("execute in minecraft:overworld run weather clear");
     }
     // The commands run with the state let go: a death they cause is heard at once.
     for (name, stage, damage) in sick {
@@ -1990,14 +1996,9 @@ pub(in crate::game) fn player_tick(game: &mut Game<'_>) {
     let st = guard.as_mut().expect("opened");
     let had = st.saved.doses.contains_key(&rules::dose_key(who.uuid));
     let protection = rules::shielded(rules::protection(suit[0], suit[1], suit[2], suit[3]), iodine);
-    // What the player carries gives off its own radiation: the uranium, a Sunbreaker's core, trinitite.
-    let carried = match game.native_inventory(who.uuid, crate::game::NativeInventoryKind::Player) {
-        Ok(inv) => {
-            let stacks: Vec<(&str, u32)> = inv.slots.iter().flatten().map(|s| (&*s.item, s.count)).collect();
-            rules::carried_rad(&stacks)
-        }
-        Err(_) => 0.0,
-    };
+    // What the player carries gives off its own radiation (uranium, a Sunbreaker's core, trinitite), summed as the
+    // game ticked their stacks (`carry`): their inventory can't be read inside their own turn.
+    let carried = lock(&CARRIED).iter().find(|c| c.0 == who.uuid).map_or(0.0, |c| c.1.rate(st.saved.tick));
     let Some(background) = st.saved.expose_carrying(who.uuid, &who.dimension, who.position, protection, shelter, carried) else {
         return;
     };
@@ -2202,7 +2203,34 @@ fn wear_flint(game: &mut Game<'_>, who: &NativeServerPlayer) {
 
 /// A server tick of a stack a player carries: the held one takes the player's
 /// queued changes.
+/// Each player's carried radiation, summed from their stacks' ticks (`rules::Carry`).
+static CARRIED: Mutex<Vec<(u128, rules::Carry)>> = Mutex::new(Vec::new());
+
+/// A carried stack that gives off radiation adds to its player's sum for this tick.
+fn carry(game: &mut Game<'_>, slot: i32) {
+    let rate = match game.native_carried_stack(slot) {
+        Some(stack) => rules::carried_rad(&[(&*stack.item, stack.count)]),
+        None => return,
+    };
+    if rate <= 0.0 {
+        return;
+    }
+    let (Some(who), Some((now, _))) = (game.native_acting_player(), clock(game)) else {
+        return;
+    };
+    let mut carried = lock(&CARRIED);
+    match carried.iter_mut().find(|c| c.0 == who.uuid) {
+        Some(c) => c.1.add(now, rate),
+        None => {
+            let mut c = rules::Carry::default();
+            c.add(now, rate);
+            carried.push((who.uuid, c));
+        }
+    }
+}
+
 pub(in crate::game) fn inventory_tick(game: &mut Game<'_>, slot: i32, selected: bool) {
+    carry(game, slot);
     if !(selected || rules::hazmat_in(slot).is_some()) || lock(&HELD).is_empty() {
         return;
     }

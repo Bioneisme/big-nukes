@@ -3370,6 +3370,16 @@ impl Zone {
         self.peak * PLUME_PEAK * (1.0 - t) * (1.0 - (across / width).powi(2))
     }
 
+    /// Whether the plume comes within `reach` blocks of the column `at` (x, z).
+    fn plume_within(&self, at: [i32; 2], reach: f64) -> bool {
+        let Some(w) = self.wind.map(wind_way) else { return false };
+        let (dx, dz) = (f64::from(at[0] - self.center[0]), f64::from(at[1] - self.center[2]));
+        let length = PLUME_LENGTH * self.radius;
+        let along = (dx * w[0] + dz * w[1]).clamp(0.0, length);
+        let off = (dx - w[0] * along).hypot(dz - w[1] * along);
+        off < 0.6 * self.radius + reach
+    }
+
     /// Whether `pos` is in the plume while its ash still falls.
     fn ash_falls(&self, pos: [f64; 3], now: u64) -> bool {
         self.age(now) < FALLOUT_TICKS && self.plume(pos) > 0.0
@@ -3503,6 +3513,40 @@ const CARRIED: [(&str, f64); 5] =
     [(RAW_URANIUM, 0.002), (ENRICHED_URANIUM, 0.01), (WEAPONS_GRADE_URANIUM, 0.04), (SUNBREAKER_CORE, 0.5), (TRINITITE_SHARD, 0.005)];
 /// The most a player's inventory gives off.
 pub const CARRIED_MOST: f64 = 3.0;
+
+/// What a player carries, summed from their inventory's stacks as the game ticks each (`native_inventory_tick`):
+/// the tick being summed, its sum so far, and the whole tick's before it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Carry {
+    pub tick: u64,
+    pub sum: f64,
+    pub last: f64,
+}
+
+impl Carry {
+    /// A stack giving off `rate` was ticked at `now`.
+    pub fn add(&mut self, now: u64, rate: f64) {
+        if now != self.tick {
+            self.last = if now == self.tick + 1 { self.sum } else { 0.0 };
+            self.tick = now;
+            self.sum = 0.0;
+        }
+        self.sum += rate;
+    }
+
+    /// What the player carries at `now`, read in the player's own tick: this tick's sum or the last whole one,
+    /// whichever the game ticked first; nothing when no radioactive stack was ticked lately.
+    pub fn rate(&self, now: u64) -> f64 {
+        let rate = if now == self.tick {
+            self.sum.max(self.last)
+        } else if now == self.tick + 1 {
+            self.sum
+        } else {
+            0.0
+        };
+        rate.min(CARRIED_MOST)
+    }
+}
 
 /// What the stacks a player carries give off, in rad a second: below the healing (half a rad a second) it builds
 /// no dose.
@@ -3653,7 +3697,11 @@ impl Saved {
     /// and their dose.
     pub fn rad_for(&self, uuid: u128, dimension: &str, pos: [f64; 3]) -> Rad {
         let now = self.tick;
+        // A zone the player is in, round part or plume, first.
         let outside = |z: &Zone| {
+            if z.at(pos, now) > 0.0 {
+                return 0.0;
+            }
             let d2: f64 = (0..3).map(|i| (pos[i] - (z.center[i] as f64 + 0.5)).powi(2)).sum();
             (d2.sqrt() - z.radius).max(0.0)
         };
@@ -3918,8 +3966,9 @@ impl Clean {
 
     /// Whether `zone` reaches into the circle or its edge.
     fn meets(&self, zone: &Zone) -> bool {
+        let reach = self.radius as f64 + CLEAN_EDGE;
         let centers = f64::from(zone.center[0] - self.center[0]).hypot(f64::from(zone.center[2] - self.center[2]));
-        zone.dimension == self.dimension && centers < zone.radius + self.radius as f64 + CLEAN_EDGE
+        zone.dimension == self.dimension && (centers < zone.radius + reach || zone.plume_within([self.center[0], self.center[2]], reach))
     }
 }
 
@@ -12208,11 +12257,64 @@ mod consequence_tests {
             saved.expose_carrying(42, OW, [0.5, 64.0, 0.5], 0.0, rules_sealed(), 2.56);
             saved.tick += SECOND;
         }
-        assert!(saved.doses.contains_key(&dose_key(42)));
+        let dose = saved.doses[&dose_key(42)].rad;
+        assert!((dose - (2.56 - 0.5) * 60.0).abs() < 1e-6, "the whole of it: {dose}");
     }
 
     fn rules_sealed() -> f64 {
         SEALED_SHELTER
+    }
+
+    // ---- review fixes (task 5) -----------------------------------------------------
+
+    #[test]
+    fn what_is_carried_is_summed_from_the_inventorys_ticks() {
+        let mut c = Carry::default();
+        c.add(100, 1.0);
+        c.add(100, 0.5);
+        assert_eq!(c.rate(100), 1.5, "read after the stacks ticked");
+        assert_eq!(c.rate(101), 1.5, "read before they tick again");
+        c.add(101, 0.25);
+        assert_eq!(c.rate(101), 1.5, "this tick's part so far or the last whole one, the more");
+        c.add(101, 2.0);
+        assert_eq!(c.rate(101), 2.25);
+        assert_eq!(c.rate(103), 0.0, "nothing radioactive ticked lately");
+        c.add(110, 9.0);
+        assert_eq!(c.last, 0.0, "a gap is no carry-over");
+        assert_eq!(c.rate(110), CARRIED_MOST);
+    }
+
+    #[test]
+    fn a_plume_over_a_clean_circle_restarts_it_downwind_not_upwind() {
+        let mut saved = Saved::default();
+        saved.blast(OW, [0, 64, 0], 250).unwrap();
+        let z = saved.zones[0].clone();
+        let w = wind_way(z.wind.unwrap());
+        let r = z.radius;
+        let place = |along: f64| [(w[0] * along).round() as i32, 64, (w[1] * along).round() as i32];
+        let circle = |at: [i32; 3]| Clean { dimension: OW.into(), center: at, radius: CLEAN_RADIUS, start: 0 };
+        let down = circle(place(1.4 * r));
+        let up = circle(place(-1.4 * r));
+        assert!(down.meets(&z), "the plume reaches it");
+        assert!(!up.meets(&z), "upwind it doesn't");
+        let round = Zone { wind: None, ..z.clone() };
+        assert!(!down.meets(&round));
+    }
+
+    #[test]
+    fn a_player_in_a_far_plume_is_told_of_its_zone() {
+        let mut saved = Saved::default();
+        saved.blast(OW, [0, 64, 0], 250).unwrap();
+        let z = saved.zones[0].clone();
+        let w = wind_way(z.wind.unwrap());
+        // Many nearer zones round the player, and the one whose plume they stand in far off.
+        let at = [w[0] * 1.3 * z.radius, 64.5, w[1] * 1.3 * z.radius];
+        for k in 0..(RAD_ZONES as i32 + 4) {
+            let c = [at[0] as i32 + 400 + 3 * k, 64, at[2] as i32];
+            saved.zones.push(Zone { center: c, radius: 10.0, wind: None, ..z.clone() });
+        }
+        let rad = saved.rad_for(42, OW, at);
+        assert!(rad.zones.iter().any(|t| t.center == [0, 64, 0]), "the plume's zone is sent");
     }
 }
 
