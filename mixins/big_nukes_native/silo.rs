@@ -44,6 +44,8 @@ pub(in crate::game) fn blocks(blocks: &mut Vec<Block>, block: impl Fn(&str, &str
     blocks.push(block(rules::SILO_HATCH, "minecraft:iron_block", 5.0));
     blocks.push(block(rules::LAUNCH_CONSOLE, "minecraft:furnace", 3.5));
     blocks.push(block(rules::STRIKE_BEACON, "minecraft:furnace", 3.5));
+    // A copper bulb's states: lit while it wails.
+    blocks.push(block(rules::SIREN, "minecraft:waxed_copper_bulb", 3.5));
 }
 
 /// What the flying displays show: items no one is meant to hold.
@@ -61,7 +63,7 @@ pub(in crate::game) fn model_items(items: &mut Vec<Item>) {
 
 /// The silo's blocks with a block entity.
 pub(in crate::game) fn has_entity(block: &str) -> bool {
-    matches!(block, rules::LAUNCH_PAD | rules::LAUNCH_CONSOLE | rules::STRIKE_BEACON)
+    matches!(block, rules::LAUNCH_PAD | rules::LAUNCH_CONSOLE | rules::STRIKE_BEACON | rules::SIREN)
 }
 
 pub(in crate::game) fn container(block: &str) -> ModContainer {
@@ -168,7 +170,64 @@ pub(in crate::game) fn tick(game: &mut Game<'_>, pos: [i32; 3], entity: &mut Mod
     match entity.id.as_str() {
         rules::LAUNCH_CONSOLE => console_tick(game, pos, entity),
         rules::LAUNCH_PAD => pad_tick(game, pos, entity),
+        rules::SIREN => siren_tick(game, pos),
         _ => {}
+    }
+}
+
+/// A siren: lit, and wailing every `WAIL_EVERY`, while an alarm covers it (`Saved::alarm_at`). It looks twice a
+/// second.
+fn siren_tick(game: &mut Game<'_>, pos: [i32; 3]) {
+    let dimension = game.native_dimension().to_owned();
+    let (now, wails) = {
+        let Some(guard) = glue::state(game) else { return };
+        let st = guard.as_ref().expect("opened");
+        (st.saved.tick, st.saved.alarm_at(&dimension, pos))
+    };
+    if now % 10 != 0 {
+        return;
+    }
+    let lit = if wails { "true" } else { "false" };
+    if game.native_block_property(pos, "lit").as_deref() != Some(lit) {
+        game.native_set_block_property(pos, "lit", lit);
+    }
+    if wails && now % rules::WAIL_EVERY == 0 {
+        play(game, &dimension, rules::SIREN_WAIL, glue::middle(pos), 6.0, 1.0);
+    }
+}
+
+/// A launch's notice to a player's window.
+fn notify(game: &mut Game<'_>, player: u128, notice: &rules::Notice) {
+    let Ok(bytes) = serde_json::to_vec(notice) else { return };
+    if let Err(e) = game.native_net_send_to_player(player, rules::NOTICE_CHANNEL, &bytes) {
+        log::warn!("[big_nukes] a notice to a player: {e}");
+    }
+}
+
+/// The flights launched now from the pad under `from`: the sirens are sounded for each, the one who launched is
+/// told when it lands, and the players round each target that it is coming.
+fn tell_launch(game: &mut Game<'_>, dimension: &str, from: [i32; 3], who: u128) {
+    let (now, launched) = {
+        let Some(mut guard) = glue::state(game) else { return };
+        let st = guard.as_mut().expect("opened");
+        let now = st.saved.tick;
+        let launched: Vec<rules::Flight> =
+            st.saved.flights.iter().filter(|f| f.dimension == dimension && f.from == from && f.start == now).cloned().collect();
+        st.saved.prune_alarms();
+        for f in &launched {
+            st.saved.alarm_for(f);
+        }
+        glue::save(st);
+        (now, launched)
+    };
+    let Some(last) = launched.iter().max_by_key(|f| f.lands_at()) else { return };
+    notify(game, who, &rules::Notice::launched(last, now));
+    let reach = f64::from(rules::TARGET_ALARM_REACH);
+    for p in game.native_server_players().into_iter().filter(|p| p.dimension == dimension && p.uuid != who) {
+        let near = launched.iter().find(|f| (p.position[0] - f64::from(f.to[0])).hypot(p.position[2] - f64::from(f.to[1])) <= reach);
+        if let Some(f) = near {
+            notify(game, p.uuid, &rules::Notice::inbound(f, now));
+        }
     }
 }
 
@@ -363,6 +422,7 @@ fn launch(game: &mut Game<'_>, dimension: &str, who: &NativeServerPlayer, m: &ru
     });
     // The flight's display takes its place at the end of this tick (`flights`).
     hide_pad(game, dimension, pad);
+    tell_launch(game, dimension, from, who.uuid);
     log::info!("[big_nukes] missile {}: {:?} from {pad:?} to {to:?} in {dimension}, by {}", flight.id, kind, who.name);
     if m.camera {
         news(game, who.uuid, &rules::ConsoleNews { now: flight.start, missile: Some(flight.clone()), ..Default::default() });
@@ -478,6 +538,10 @@ fn with_ui<R>(f: impl FnOnce(&mut ConsoleUi) -> R) -> R {
 
 /// The console's news in the window: where it is, the answer to a launch.
 pub(in crate::game) fn net_from_server(game: &mut Game<'_>, channel: &str, data: &[u8]) {
+    if channel == rules::NOTICE_CHANNEL && game.native_on(rules::ID) {
+        toast(game, data);
+        return;
+    }
     if channel != rules::CONSOLE_CHANNEL || !game.native_on(rules::ID) {
         return;
     }
@@ -504,6 +568,20 @@ pub(in crate::game) fn net_from_server(game: &mut Game<'_>, channel: &str, data:
             ui.reply = Some((Instant::now(), reply));
         }
     });
+}
+
+/// A launch's notice as a toast in the advancements' slots.
+fn toast(game: &mut Game<'_>, data: &[u8]) {
+    let notice = match serde_json::from_slice::<rules::Notice>(data) {
+        Ok(n) => n,
+        Err(e) => {
+            log::warn!("[big_nukes] a notice: {e}");
+            return;
+        }
+    };
+    let t = rules::toast_of(&notice);
+    let args: Vec<Text> = t.args.iter().map(|a| Text::literal(a.clone())).collect();
+    game.native_add_toast(t.id, t.icon, Text::translate(t.title, &[]), Text::translate(t.description, &args), t.challenge);
 }
 
 fn ours(screen: &NativeScreenView<'_>) -> bool {

@@ -67,5 +67,15 @@
         "stream": false
       }
     ]
+  },
+  "siren.wail": {
+    "subtitle": "subtitles.big_nukes.siren",
+    "sounds": [
+      {
+        "name": "big_nukes:siren_wail",
+        "attenuation_distance": 96,
+        "stream": false
+      }
+    ]
   }
 }

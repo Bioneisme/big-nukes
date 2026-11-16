@@ -265,6 +265,15 @@ for name in ("fuel_generator", "air_filter", "bunker_lamp"):
     block_item(name)
     loot(name, f"big_nukes:{name}")
     named("block", name, *BUNKER[name])
+# The siren (plan 11): a copper bulb's states, lit while it wails.
+write(A / "blockstates" / "siren.json", {"variants": {
+    "lit=false": {"model": "big_nukes:block/siren"}, "lit=true": {"model": "big_nukes:block/siren_on"}}})
+for model in ("siren", "siren_on"):
+    write(A / "models" / "block" / f"{model}.json", {"parent": "minecraft:block/cube_bottom_top", "textures": {
+        "top": "big_nukes:block/siren_top", "bottom": "big_nukes:block/siren_top", "side": f"big_nukes:block/{model}_side"}})
+block_item("siren")
+loot("siren", "big_nukes:siren")
+named("block", "siren", "Siren", "Сирена")
 # The ration: an item of the code's own.
 write(A / "items" / "ration.json", {"model": {"type": "minecraft:model", "model": "big_nukes:item/ration"}})
 write(A / "models" / "item" / "ration.json", {"parent": "minecraft:item/generated", "textures": {"layer0": "big_nukes:item/ration"}})
@@ -274,11 +283,11 @@ named("item", "ration", "Ration", "Паёк")
 # The blocks declared in code are there only with the native half: their entries are optional,
 # so the assets half alone still loads its tags (and with them its data).
 def entry(n):
-    code = n in FACING or n in TABLE or n in CUBE or n in WALLS or n in BUNKER
+    code = n in FACING or n in TABLE or n in CUBE or n in WALLS or n in BUNKER or n == "siren"
     return {"id": f"big_nukes:{n}", "required": False} if code else f"big_nukes:{n}"
 
 
-pickaxe = [entry(n) for n in [*FACING, *TABLE, *CUBE, "uranium_ore", "deepslate_uranium_ore", *WALLS, *BUNKER]]
+pickaxe = [entry(n) for n in [*FACING, *TABLE, *CUBE, "uranium_ore", "deepslate_uranium_ore", *WALLS, *BUNKER, "siren"]]
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "mineable" / "pickaxe.json", {"values": pickaxe})
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "mineable" / "shovel.json", {"values": ["big_nukes:ash"]})
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "needs_iron_tool.json",

@@ -235,5 +235,12 @@
   "big_nukes.tip.splitting_missile.2": "Они падают треугольником вокруг цели, его сторона — «Разлёт» на пульте (40–120, пусто — 80).",
   "big_nukes.console.spread": "Разлёт от %s до %s блоков",
   "big_nukes.screen.console.spread": "Разлёт",
-  "item.big_nukes.splitting_missile": "Разделяющаяся ракета"
+  "item.big_nukes.splitting_missile": "Разделяющаяся ракета",
+  "big_nukes.tip.siren": "Воет, когда в 64 блоках запускают ракету и пока ракета летит к цели в пределах 256 блоков.",
+  "block.big_nukes.siren": "Сирена",
+  "big_nukes.toast.launched": "Ракета запущена",
+  "big_nukes.toast.launched.text": "Цель %s %s, удар через %s с",
+  "big_nukes.toast.inbound": "Ракета летит сюда!",
+  "big_nukes.toast.inbound.text": "Удар рядом через %s с. В укрытие",
+  "subtitles.big_nukes.siren": "Воет сирена"
 }

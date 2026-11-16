@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "lit=false": {
+      "model": "big_nukes:block/siren"
+    },
+    "lit=true": {
+      "model": "big_nukes:block/siren_on"
+    }
+  }
+}

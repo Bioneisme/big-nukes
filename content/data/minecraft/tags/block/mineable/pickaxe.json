@@ -109,6 +109,10 @@
     {
       "id": "big_nukes:bunker_lamp",
       "required": false
+    },
+    {
+      "id": "big_nukes:siren",
+      "required": false
     }
   ]
 }

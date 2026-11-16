@@ -1755,6 +1755,34 @@ def bunker_lamp(t, rng, lit):
             t.set(cx + 1, cy + 1, CAGE[0])
 
 
+def siren(t, rng, part):
+    """The siren: a steel box with a round horn's grille on each side and a red lamp ring round it, lit while it
+    wails; its top a vented plate."""
+    n = t.n
+    R = casing(t, rng, (96, 100, 108), EDGE)
+    if part == "top":
+        for y in range(6, n - 6, 4):
+            groove(t, 6, y, n - 6, y + 1, R)
+        for x, y in ((3, 3), (n - 5, 3), (3, n - 5), (n - 5, n - 5)):
+            rivet(t, x, y, R, 2)
+        return
+    lit = part == "on_side"
+    cx = cy = n / 2
+    lamp = REDGLOW if lit else ramp((110, 30, 26), dark=0.6, light=0.3)
+    ring(t, cx, cy, 11.0, 14.0, lamp, mid=3.4 if lit else 2.0)
+    t.paint(disc(cx, cy, 11.0), INK[2])
+    for r in (3.0, 6.0, 9.0):
+        for x, y in disc(cx, cy, r + 1.0, r):
+            t.set(x, y, DARK_STEEL[3] if (x - cx) + (y - cy) < 0 else DARK_STEEL[1])
+    t.paint(disc(cx, cy, 2.0), DARK_STEEL[4])
+    for x, y in ((2, 2), (n - 4, 2), (2, n - 4), (n - 4, n - 4)):
+        rivet(t, x, y, R, 2)
+    scratches(t, rng, 4, 2, 2, n - 2, n - 2)
+
+
+add("block", "siren_top", 32, siren, "top")
+add("block", "siren_side", 32, siren, "side")
+add("block", "siren_on_side", 32, siren, "on_side")
 add("block", "bunker_lamp", 32, bunker_lamp, False)
 add("block", "bunker_lamp_lit", 32, bunker_lamp, True)
 

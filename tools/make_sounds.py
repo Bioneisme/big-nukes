@@ -148,6 +148,19 @@ def ear_ringing():
     return normalize(tone * env, 0.45)
 
 
+def siren_wail():
+    """The siren, 2 s: a tone rising from 420 to 880 Hz and falling back, with its odd harmonics for a horn's
+    edge, a little tremolo, in and out softly so its wails join end to end."""
+    n = seconds(2.0)
+    t = np.arange(n) / RATE
+    f = 420 + 460 * np.sin(np.pi * t / 2.0) ** 2
+    phase = 2 * np.pi * np.cumsum(f) / RATE
+    tone = np.sin(phase) + 0.35 * np.sin(3 * phase) + 0.15 * np.sin(5 * phase)
+    tone *= 1 + 0.08 * np.sin(2 * np.pi * 7 * t)
+    env = np.minimum(np.minimum(t / 0.08, 1.0), np.minimum((2.0 - t) / 0.08, 1.0))
+    return normalize(tone * env, 0.7)
+
+
 def write(name, x):
     os.makedirs(OUT, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -170,6 +183,7 @@ SOUNDS = {
     "missile_launch": missile_launch,
     "bomber_flyby": bomber_flyby,
     "ear_ringing": ear_ringing,
+    "siren_wail": siren_wail,
 }
 
 if __name__ == "__main__":

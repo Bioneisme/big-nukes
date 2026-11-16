@@ -235,5 +235,12 @@
   "big_nukes.tip.splitting_missile.2": "They fall on a triangle round the target, its side the console's Spread (40 to 120, 80 if empty).",
   "big_nukes.console.spread": "The spread is %s to %s blocks",
   "big_nukes.screen.console.spread": "Spread",
-  "item.big_nukes.splitting_missile": "Splitting Missile"
+  "item.big_nukes.splitting_missile": "Splitting Missile",
+  "big_nukes.tip.siren": "Wails while a missile is launched within 64 blocks, and while one is on its way to a target within 256.",
+  "block.big_nukes.siren": "Siren",
+  "big_nukes.toast.launched": "Missile launched",
+  "big_nukes.toast.launched.text": "To %s %s, impact in %s s",
+  "big_nukes.toast.inbound": "Missile incoming!",
+  "big_nukes.toast.inbound.text": "Impact nearby in %s s. Take cover",
+  "subtitles.big_nukes.siren": "Siren wails"
 }

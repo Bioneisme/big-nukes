@@ -158,13 +158,14 @@ pub fn guide_give(name: &str) -> String {
 }
 
 /// What each block and item says under its name about how to use it: lang keys, one line each.
-const TIPS: [(&str, &[&str]); 49] = [
+const TIPS: [(&str, &[&str]); 50] = [
     ("big_nukes:demolition_charge", &["big_nukes.tip.demolition_charge", "big_nukes.tip.demolition_charge.2"]),
     ("big_nukes:tactical_warhead", &["big_nukes.tip.tactical_warhead", "big_nukes.tip.tactical_warhead.2"]),
     ("big_nukes:atomic_bomb", &["big_nukes.tip.atomic_bomb", "big_nukes.tip.atomic_bomb.2"]),
     ("big_nukes:neutron_bomb", &["big_nukes.tip.neutron_bomb", "big_nukes.tip.neutron_bomb.2"]),
     ("big_nukes:dirty_bomb", &["big_nukes.tip.dirty_bomb", "big_nukes.tip.dirty_bomb.2"]),
     (SPLITTING_MISSILE, &["big_nukes.tip.splitting_missile", "big_nukes.tip.splitting_missile.2"]),
+    (SIREN, &["big_nukes.tip.siren"]),
     ("big_nukes:fuse_detonator", &["big_nukes.tip.fuse_detonator"]),
     ("big_nukes:keypad_detonator", &["big_nukes.tip.keypad_detonator", "big_nukes.tip.keypad_detonator.2"]),
     ("big_nukes:receiver_detonator", &["big_nukes.tip.receiver_detonator"]),
@@ -464,7 +465,7 @@ pub struct Assembly {
     pub parts: &'static [(&'static str, u32)],
 }
 
-pub const ASSEMBLIES: [Assembly; 23] = [
+pub const ASSEMBLIES: [Assembly; 24] = [
     Assembly { result: "big_nukes:nuclear_charge", count: 1, parts: &[(ENRICHED_URANIUM, 1), ("minecraft:tnt", 4)] },
     Assembly { result: "big_nukes:bomb_casing", count: 1, parts: &[("minecraft:iron_block", 4), ("minecraft:redstone", 4)] },
     Assembly {
@@ -503,6 +504,7 @@ pub const ASSEMBLIES: [Assembly; 23] = [
         parts: &[("big_nukes:bomb_casing", 2), ("minecraft:iron_block", 3), ("minecraft:blaze_powder", 4)],
     },
     Assembly { result: SPLITTING_MISSILE, count: 1, parts: &[(MISSILE, 1), ("big_nukes:tactical_warhead", 3)] },
+    Assembly { result: SIREN, count: 1, parts: &[("minecraft:iron_ingot", 4), ("minecraft:note_block", 1), ("minecraft:redstone", 2)] },
     Assembly {
         result: STRIKE_BEACON,
         count: 1,
@@ -1565,6 +1567,9 @@ pub struct Saved {
     /// The chunks the flights keep loaded, held by the game's chunk tickets (`/forceload` before 0.2.0).
     #[serde(default)]
     pub forced: Vec<Forced>,
+    /// The sirens' alarms: round a pad that launched and round a missile's target.
+    #[serde(default)]
+    pub alarms: Vec<Alarm>,
     /// Whether `forced` is held by chunk tickets: false in a world from before 0.2.0, whose chunks the mod
     /// held with `/forceload` (`Saved::to_tickets`).
     #[serde(default)]
@@ -1596,6 +1601,7 @@ impl Default for Saved {
             consoles: BTreeMap::new(),
             beacons: Vec::new(),
             forced: Vec::new(),
+            alarms: Vec::new(),
             tickets: false,
             cleans: Vec::new(),
             walls: BTreeMap::new(),
@@ -1887,7 +1893,7 @@ pub const BOMB_GRAVITY: f64 = 0.08;
 pub const LAUNCH_PAD: &str = "big_nukes:launch_pad";
 pub const LAUNCH_CONSOLE: &str = "big_nukes:launch_console";
 pub const STRIKE_BEACON: &str = "big_nukes:strike_beacon";
-pub const SILO_BLOCKS: [&str; 4] = [LAUNCH_PAD, SILO_HATCH, LAUNCH_CONSOLE, STRIKE_BEACON];
+pub const SILO_BLOCKS: [&str; 5] = [LAUNCH_PAD, SILO_HATCH, LAUNCH_CONSOLE, STRIKE_BEACON, SIREN];
 /// The pad's slots: the missile and its warhead. Its menu type is
 /// content/data/big_nukes/horizon/menu/launch_pad.json, named as the block.
 pub const PAD_MISSILE_SLOT: usize = 0;
@@ -2918,6 +2924,116 @@ impl Saved {
             }
         }
         free
+    }
+}
+
+// ---- notices and the siren (plan 11) ------------------------------------------------
+//
+// A launch is told as a toast (Horizon's `add_toast`): to the one who launched, when it lands, and to the players
+// round each target, that a missile is coming. Sirens wail round the pad a while and round each target until the
+// missile lands: the world keeps the alarms, and a siren's block wails while one covers it.
+
+/// The mod message that carries a `Notice` to a window.
+pub const NOTICE_CHANNEL: &str = "big_nukes:notice";
+pub const SIREN: &str = "big_nukes:siren";
+pub const SIREN_WAIL: &str = "big_nukes:siren.wail";
+/// How far round a pad that launched the sirens wail, and for how long.
+pub const SIREN_REACH: i32 = 64;
+pub const SIREN_TICKS: u64 = 200;
+/// How far round a missile's target the sirens wail and the players are told, until it lands.
+pub const TARGET_ALARM_REACH: i32 = 256;
+/// A wail's length: a siren starts one this often while its alarm lasts.
+pub const WAIL_EVERY: u64 = 40;
+
+/// What a window is told of a launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Notice {
+    /// To the one who launched: where to, and the seconds to the impact.
+    Launched { seconds: u32, to: [i32; 2] },
+    /// To one near a target: the seconds to the impact.
+    Inbound { seconds: u32 },
+}
+
+impl Notice {
+    fn seconds(flight: &Flight, now: u64) -> u32 {
+        (flight.lands_at().saturating_sub(now) / SECOND) as u32
+    }
+
+    pub fn launched(flight: &Flight, now: u64) -> Notice {
+        Notice::Launched { seconds: Self::seconds(flight, now), to: flight.to }
+    }
+
+    pub fn inbound(flight: &Flight, now: u64) -> Notice {
+        Notice::Inbound { seconds: Self::seconds(flight, now) }
+    }
+}
+
+/// A toast as `add_toast` takes it: its id, the item it shows, and its title and line as lang keys with the
+/// line's arguments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Toast {
+    pub id: &'static str,
+    pub icon: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    pub args: Vec<String>,
+    pub challenge: bool,
+}
+
+pub fn toast_of(notice: &Notice) -> Toast {
+    match *notice {
+        Notice::Launched { seconds, to } => Toast {
+            id: "big_nukes:notice/launched",
+            icon: MISSILE,
+            title: "big_nukes.toast.launched",
+            description: "big_nukes.toast.launched.text",
+            args: vec![to[0].to_string(), to[1].to_string(), seconds.to_string()],
+            challenge: false,
+        },
+        Notice::Inbound { seconds } => Toast {
+            id: "big_nukes:notice/inbound",
+            icon: MISSILE,
+            title: "big_nukes.toast.inbound",
+            description: "big_nukes.toast.inbound.text",
+            args: vec![seconds.to_string()],
+            challenge: true,
+        },
+    }
+}
+
+/// A siren's alarm: every siren within `reach` blocks of `at` across the ground wails until `until`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Alarm {
+    pub dimension: String,
+    pub at: [i32; 3],
+    pub reach: i32,
+    pub until: u64,
+}
+
+impl Saved {
+    /// The alarms of a launch: round its pad for `SIREN_TICKS`, round its target until it lands.
+    pub fn alarm_for(&mut self, flight: &Flight) {
+        let now = self.tick;
+        self.alarms.push(Alarm { dimension: flight.dimension.clone(), at: flight.from, reach: SIREN_REACH, until: now + SIREN_TICKS });
+        let target = [flight.to[0], flight.from[1], flight.to[1]];
+        self.alarms.push(Alarm { dimension: flight.dimension.clone(), at: target, reach: TARGET_ALARM_REACH, until: flight.lands_at() });
+    }
+
+    /// Whether a siren at `pos` wails now.
+    pub fn alarm_at(&self, dimension: &str, pos: [i32; 3]) -> bool {
+        let now = self.tick;
+        self.alarms.iter().any(|a| {
+            a.dimension == dimension
+                && now < a.until
+                && f64::from(pos[0] - a.at[0]).hypot(f64::from(pos[2] - a.at[2])) <= f64::from(a.reach)
+        })
+    }
+
+    /// The alarms that are over go; whether any did.
+    pub fn prune_alarms(&mut self) -> bool {
+        let (now, before) = (self.tick, self.alarms.len());
+        self.alarms.retain(|a| now < a.until);
+        self.alarms.len() != before
     }
 }
 
@@ -7251,7 +7367,7 @@ mod tests {
     fn assembly_recipes_name_known_items() {
         let known: BTreeSet<&str> = ITEMS.iter().map(|i| i.0).chain(BombKind::ALL.map(BombKind::id)).chain(WALL_BLOCKS).collect();
         let results: BTreeSet<&str> = ASSEMBLIES.iter().map(|a| a.result).collect();
-        let wanted: BTreeSet<&str> = [CHARGE, "big_nukes:bomb_casing", MISSILE, SPLITTING_MISSILE, STRIKE_BEACON, DECONTAMINATOR, RATION]
+        let wanted: BTreeSet<&str> = [CHARGE, "big_nukes:bomb_casing", MISSILE, SPLITTING_MISSILE, STRIKE_BEACON, DECONTAMINATOR, RATION, SIREN]
             .into_iter()
             .chain(BombKind::ALL.map(BombKind::id))
             .chain(SUNBREAKER_PARTS)
@@ -11586,4 +11702,60 @@ mod warhead_tests {
         let old = r#"{"console":[1,2,3],"x":"5","z":"6","code":"123","camera":true}"#;
         assert_eq!(read_launch(old.as_bytes()).map(|m| m.spread), Some(String::new()));
     }
+
+    // ---- notices and the siren (plan 11, task 5) ---------------------------------
+
+    #[test]
+    fn a_launch_tells_its_seconds_to_impact() {
+        let mut saved = Saved::default();
+        saved.tick = 1000;
+        let f = saved.launch(OW, [0, 65, 0], [1600, 0], BombKind::Atomic, 75).unwrap();
+        let n = Notice::launched(&f, 1000);
+        assert_eq!(n, Notice::Launched { seconds: ((f.lands_at() - 1000) / SECOND) as u32, to: [1600, 0] });
+        assert_eq!(Notice::inbound(&f, f.lands_at() - 200), Notice::Inbound { seconds: 10 });
+        assert_eq!(Notice::inbound(&f, f.lands_at() + 5), Notice::Inbound { seconds: 0 });
+    }
+
+    #[test]
+    fn a_notice_reads_back_and_makes_a_toast() {
+        for n in [Notice::Launched { seconds: 42, to: [-5, 7] }, Notice::Inbound { seconds: 9 }] {
+            let back: Notice = serde_json::from_slice(&serde_json::to_vec(&n).unwrap()).unwrap();
+            assert_eq!(back, n);
+            let t = toast_of(&n);
+            assert!(t.id.starts_with("big_nukes:notice/"), "{}", t.id);
+            assert!(t.title.starts_with("big_nukes.toast.") && t.description.starts_with("big_nukes.toast."));
+            assert!(ITEMS.iter().any(|i| i.0 == t.icon), "{}", t.icon);
+        }
+        assert_eq!(toast_of(&Notice::Launched { seconds: 42, to: [-5, 7] }).args, ["-5", "7", "42"]);
+        assert!(toast_of(&Notice::Inbound { seconds: 9 }).challenge, "an incoming missile is the loud one");
+    }
+
+    #[test]
+    fn a_launch_sounds_the_sirens_by_the_pad_and_the_target() {
+        let mut saved = Saved::default();
+        saved.tick = 100;
+        let f = saved.launch(OW, [0, 65, 0], [1600, 0], BombKind::Atomic, 75).unwrap();
+        saved.alarm_for(&f);
+        assert!(saved.alarm_at(OW, [SIREN_REACH, 70, 0]), "by the pad");
+        assert!(!saved.alarm_at(OW, [SIREN_REACH + 1, 70, 0]), "a siren past 64 blocks of the pad stays quiet");
+        assert!(saved.alarm_at(OW, [1600 + TARGET_ALARM_REACH, 70, 0]), "by the target");
+        assert!(!saved.alarm_at(OW, [1600, 70, TARGET_ALARM_REACH + 1]));
+        assert!(!saved.alarm_at("minecraft:the_nether", [0, 70, 0]));
+        saved.tick = 100 + SIREN_TICKS;
+        assert!(!saved.alarm_at(OW, [0, 70, 0]), "the pad's wails a while");
+        assert!(saved.alarm_at(OW, [1600, 70, 0]), "the target's until the missile lands");
+        saved.tick = f.lands_at();
+        assert!(!saved.alarm_at(OW, [1600, 70, 0]));
+        saved.prune_alarms();
+        assert!(saved.alarms.is_empty());
+    }
+
+    #[test]
+    fn a_world_saved_before_sirens_has_no_alarms() {
+        let mut json = serde_json::to_value(Saved::default()).unwrap();
+        json.as_object_mut().unwrap().remove("alarms");
+        assert!(serde_json::from_value::<Saved>(json).unwrap().alarms.is_empty());
+        assert!(tips(SIREN).len() == 1 && ASSEMBLIES.iter().any(|a| a.result == SIREN));
+    }
 }
+
