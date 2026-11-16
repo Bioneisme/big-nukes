@@ -124,7 +124,7 @@ impl BombKind {
 
 /// The items: id, how many stack, and whether they are rare. Each copies its
 /// `template` with the `components` patch.
-pub const ITEMS: [(&str, u8, bool); 20] = [
+pub const ITEMS: [(&str, u8, bool); 21] = [
     ("big_nukes:raw_uranium", 64, false),
     ("big_nukes:enriched_uranium", 64, true),
     (WEAPONS_GRADE_URANIUM, 64, true),
@@ -143,6 +143,7 @@ pub const ITEMS: [(&str, u8, bool); 20] = [
     (GEIGER_COUNTER, 1, false),
     (MISSILE, 1, true),
     (SPLITTING_MISSILE, 1, true),
+    (TRINITITE_SHARD, 64, false),
     (GUIDE, 1, false),
     (RATION, 16, false),
 ];
@@ -158,7 +159,7 @@ pub fn guide_give(name: &str) -> String {
 }
 
 /// What each block and item says under its name about how to use it: lang keys, one line each.
-const TIPS: [(&str, &[&str]); 50] = [
+const TIPS: [(&str, &[&str]); 54] = [
     ("big_nukes:demolition_charge", &["big_nukes.tip.demolition_charge", "big_nukes.tip.demolition_charge.2"]),
     ("big_nukes:tactical_warhead", &["big_nukes.tip.tactical_warhead", "big_nukes.tip.tactical_warhead.2"]),
     ("big_nukes:atomic_bomb", &["big_nukes.tip.atomic_bomb", "big_nukes.tip.atomic_bomb.2"]),
@@ -200,10 +201,14 @@ const TIPS: [(&str, &[&str]); 50] = [
     (WALL_BLOCKS[1], &["big_nukes.tip.armored_concrete", "big_nukes.tip.wall"]),
     (WALL_BLOCKS[2], &["big_nukes.tip.lead_shield", "big_nukes.tip.multilayer"]),
     (WALL_BLOCKS[3], &["big_nukes.tip.blast_damper", "big_nukes.tip.multilayer"]),
-    (WALL_BLOCKS[4], &["big_nukes.tip.cracked_wall"]),
+    (WALL_BLOCKS[4], &["big_nukes.tip.radiation_glass", "big_nukes.tip.wall"]),
     (WALL_BLOCKS[5], &["big_nukes.tip.cracked_wall"]),
     (WALL_BLOCKS[6], &["big_nukes.tip.cracked_wall"]),
     (WALL_BLOCKS[7], &["big_nukes.tip.cracked_wall"]),
+    (WALL_BLOCKS[8], &["big_nukes.tip.cracked_wall"]),
+    (WALL_BLOCKS[9], &["big_nukes.tip.cracked_wall"]),
+    (TRINITITE, &["big_nukes.tip.trinitite"]),
+    (TRINITITE_SHARD, &["big_nukes.tip.trinitite_shard"]),
     (HERMETIC_DOOR, &["big_nukes.tip.hermetic_door"]),
     (FUEL_GENERATOR, &["big_nukes.tip.fuel_generator"]),
     (AIR_FILTER, &["big_nukes.tip.air_filter", "big_nukes.tip.air_filter.2"]),
@@ -465,7 +470,7 @@ pub struct Assembly {
     pub parts: &'static [(&'static str, u32)],
 }
 
-pub const ASSEMBLIES: [Assembly; 24] = [
+pub const ASSEMBLIES: [Assembly; 25] = [
     Assembly { result: "big_nukes:nuclear_charge", count: 1, parts: &[(ENRICHED_URANIUM, 1), ("minecraft:tnt", 4)] },
     Assembly { result: "big_nukes:bomb_casing", count: 1, parts: &[("minecraft:iron_block", 4), ("minecraft:redstone", 4)] },
     Assembly {
@@ -504,6 +509,7 @@ pub const ASSEMBLIES: [Assembly; 24] = [
         parts: &[("big_nukes:bomb_casing", 2), ("minecraft:iron_block", 3), ("minecraft:blaze_powder", 4)],
     },
     Assembly { result: SPLITTING_MISSILE, count: 1, parts: &[(MISSILE, 1), ("big_nukes:tactical_warhead", 3)] },
+    Assembly { result: RADIATION_GLASS, count: 4, parts: &[("minecraft:glass", 4), (TRINITITE_SHARD, 4), (WALL_BLOCKS[2], 1)] },
     Assembly { result: SIREN, count: 1, parts: &[("minecraft:iron_ingot", 4), ("minecraft:note_block", 1), ("minecraft:redstone", 2)] },
     Assembly {
         result: STRIKE_BEACON,
@@ -1183,18 +1189,35 @@ const ASH_STAND_IN: &str = "minecraft:coarse_dirt";
 impl ChunkEdit {
     /// The edit for a game without the ash block: coarse dirt in its place.
     pub fn without_ash(mut self) -> Self {
-        for p in self.palette.iter_mut().filter(|p| *p == ASH) {
-            *p = ASH_STAND_IN.to_string();
+        for p in self.palette.iter_mut() {
+            if p == ASH {
+                *p = ASH_STAND_IN.to_string();
+            } else if p == TRINITITE {
+                *p = TRINITITE_STAND_IN.to_string();
+            }
         }
         self
     }
 }
 
-const PALETTE: [&str; 3] = ["minecraft:air", ASH, "minecraft:fire"];
+/// The glass the heat makes of sand at the crater's rim: a block of the assets half, which drops shards.
+pub const TRINITITE: &str = "big_nukes:trinitite";
+pub const TRINITITE_SHARD: &str = "big_nukes:trinitite_shard";
+/// The trinitite's stand-in without the assets half.
+const TRINITITE_STAND_IN: &str = "minecraft:green_stained_glass";
+/// The rim of the core, as a share of the border's distance past `CORE`, where sand turns to trinitite.
+pub const TRINITITE_BAND: f64 = 0.1;
+/// The smallest blast that makes trinitite: a tactical warhead's.
+pub const TRINITITE_MIN_RADIUS: u32 = 50;
+/// The share of the rim's ground (not sand) that turns to trinitite instead of ash.
+const TRINITITE_GROUND: f64 = 0.35;
+
+const PALETTE: [&str; 4] = ["minecraft:air", ASH, "minecraft:fire", TRINITITE];
 const AIR: u32 = 0;
 const SCORCHED: u32 = 1;
 const FLAME: u32 = 2;
-const FILTERS: [&str; 14] = [
+const TRINITITE_AT: u32 = 3;
+const FILTERS: [&str; 16] = [
     "#minecraft:leaves",
     "#minecraft:logs",
     "#minecraft:impermeable",
@@ -1209,6 +1232,8 @@ const FILTERS: [&str; 14] = [
     "minecraft:large_fern",
     "minecraft:dead_bush",
     "minecraft:vine",
+    "#minecraft:sand",
+    "minecraft:sandstone",
 ];
 const LEAVES: u32 = 0;
 const LOGS: u32 = 1;
@@ -1218,6 +1243,8 @@ const WATER: u32 = 4;
 const EMPTY: u32 = 5;
 /// Plants, named one by one: `#minecraft:replaceable` would take water and lava too.
 const PLANTS: std::ops::Range<u32> = 6..14;
+const SAND: u32 = 14;
+const SANDSTONE: u32 = 15;
 
 fn edit() -> ChunkEdit {
     ChunkEdit {
@@ -1272,7 +1299,14 @@ pub fn plan_chunk(blast: &Blast, chunk: [i32; 2], walls: &[Wall]) -> ([ChunkEdit
                         r.surface = Some(s);
                         surface.runs.push(r);
                     };
-                    on(Surface::MotionBlockingNoLeaves, -1, 1, SCORCHED, GROUND);
+                    // At the rim of a large enough blast's core, sand turns to trinitite, and some ground with it.
+                    let rim = blast.effect == Effect::Blast && blast.radius >= TRINITITE_MIN_RADIUS && d < CORE + TRINITITE_BAND;
+                    if rim {
+                        on(Surface::MotionBlockingNoLeaves, -1, 1, TRINITITE_AT, SAND);
+                        on(Surface::MotionBlockingNoLeaves, -1, 1, TRINITITE_AT, SANDSTONE);
+                    }
+                    let glassed = rim && chance(blast.seed, x, z, 3) < TRINITITE_GROUND;
+                    on(Surface::MotionBlockingNoLeaves, -1, 1, if glassed { TRINITITE_AT } else { SCORCHED }, GROUND);
                     on(Surface::WorldSurface, -3, 3, AIR, WATER);
                     if chance(blast.seed, x, z, 1) < FIRE {
                         on(Surface::MotionBlockingNoLeaves, 0, 1, FLAME, EMPTY);
@@ -4033,22 +4067,29 @@ pub enum WallKind {
     Armored,
     Lead,
     Damper,
+    /// Radiation glass: a window that holds as armored concrete and, like tinted glass, keeps the sky's light out.
+    Glass,
     /// Either half of the hermetic door: it holds as armored concrete, cracked too, but has no cracked block
     /// (cracked, it looks the same: the registry knows) and is no layer of a multilayer wall.
     Door,
 }
 
 /// Every wall's block and its cracked block.
-pub const WALL_BLOCKS: [&str; 8] = [
+pub const WALL_BLOCKS: [&str; 10] = [
     "big_nukes:reinforced_concrete",
     "big_nukes:armored_concrete",
     "big_nukes:lead_shield",
     "big_nukes:blast_damper",
+    RADIATION_GLASS,
     "big_nukes:cracked_reinforced_concrete",
     "big_nukes:cracked_armored_concrete",
     "big_nukes:cracked_lead_shield",
     "big_nukes:cracked_blast_damper",
+    "big_nukes:cracked_radiation_glass",
 ];
+/// How many kinds of wall `WALL_BLOCKS` holds: each whole, then each cracked.
+const WALL_KINDS: usize = 5;
+pub const RADIATION_GLASS: &str = "big_nukes:radiation_glass";
 
 /// Each block of a multilayer wall holds this much.
 pub const MULTILAYER_STRENGTH: f64 = 700.0;
@@ -4057,7 +4098,7 @@ pub const CRACKS_UP_TO: f64 = 1.5;
 
 impl WallKind {
     /// The walls of `WALL_BLOCKS`, each with its cracked block: all but the door.
-    pub const ALL: [WallKind; 4] = [WallKind::Reinforced, WallKind::Armored, WallKind::Lead, WallKind::Damper];
+    pub const ALL: [WallKind; WALL_KINDS] = [WallKind::Reinforced, WallKind::Armored, WallKind::Lead, WallKind::Damper, WallKind::Glass];
 
     fn index(self) -> usize {
         self as usize
@@ -4069,14 +4110,14 @@ impl WallKind {
 
     /// Its cracked block; the door has none: cracked, it stays as it is.
     pub fn cracked_id(self) -> &'static str {
-        if self == WallKind::Door { HERMETIC_DOOR } else { WALL_BLOCKS[4 + self.index()] }
+        if self == WallKind::Door { HERMETIC_DOOR } else { WALL_BLOCKS[WALL_KINDS + self.index()] }
     }
 
     /// The wave's strength (`wave_strength`) the whole wall holds alone.
     pub fn strength(self) -> f64 {
         match self {
             WallKind::Reinforced => 40.0,
-            WallKind::Armored | WallKind::Door => 200.0,
+            WallKind::Armored | WallKind::Door | WallKind::Glass => 200.0,
             WallKind::Lead | WallKind::Damper => 60.0,
         }
     }
@@ -4084,7 +4125,7 @@ impl WallKind {
     /// What vanilla's explosions (TNT, creepers) make of the whole wall; the cracked one has half.
     pub fn explosion_resistance(self) -> f32 {
         match self {
-            WallKind::Armored | WallKind::Door => 1200.0,
+            WallKind::Armored | WallKind::Door | WallKind::Glass => 1200.0,
             WallKind::Reinforced | WallKind::Lead | WallKind::Damper => 600.0,
         }
     }
@@ -4095,7 +4136,7 @@ impl WallKind {
             return Some((WallKind::Door, false));
         }
         let i = WALL_BLOCKS.iter().position(|b| *b == id)?;
-        Some((WallKind::ALL[i % 4], i >= 4))
+        Some((WallKind::ALL[i % WALL_KINDS], i >= WALL_KINDS))
     }
 
     fn concrete(self) -> bool {
@@ -4190,7 +4231,7 @@ fn series_at(walls: &dyn Fn([i32; 3]) -> Option<WallKind>, pos: [i32; 3], axis: 
         WallKind::Reinforced | WallKind::Armored => &[0, 3],
         WallKind::Lead => &[1],
         WallKind::Damper => &[2],
-        WallKind::Door => &[],
+        WallKind::Door | WallKind::Glass => &[],
     };
     places.iter().any(|&k| (0..4).all(|i| i == k || walls(at(i - k)).is_some_and(|w| layer(i, w))))
 }
@@ -5844,7 +5885,12 @@ mod tests {
                 assert_eq!((&bare.filters, &bare.runs), (&edit.filters, &edit.runs));
                 assert_eq!(bare.palette.len(), edit.palette.len());
                 for (was, is) in edit.palette.iter().zip(&bare.palette) {
-                    assert_eq!(is, if was == ASH { "minecraft:coarse_dirt" } else { was.as_str() });
+                    let stand_in = match was.as_str() {
+                        ASH => "minecraft:coarse_dirt",
+                        TRINITITE => TRINITITE_STAND_IN,
+                        other => other,
+                    };
+                    assert_eq!(is, stand_in);
                 }
                 assert!(!bare.palette.iter().any(|p| p == ASH));
             }
@@ -6368,7 +6414,7 @@ mod tests {
     // ---- what the mod adds (plan 4, Task 1) ---------------------------------------------
 
     /// Blocks the content half declares in files: the ores and the ash.
-    const FILE_BLOCKS: [&str; 3] = ["big_nukes:uranium_ore", "big_nukes:deepslate_uranium_ore", "big_nukes:ash"];
+    const FILE_BLOCKS: [&str; 4] = ["big_nukes:uranium_ore", "big_nukes:deepslate_uranium_ore", "big_nukes:ash", TRINITITE];
 
     fn name(id: &str) -> &str {
         id.strip_prefix("big_nukes:").unwrap()
@@ -6528,9 +6574,9 @@ mod tests {
             counts += drawn.iter().filter(|d| matches!(d, GuideDraw::Text(t, _, GUIDE_HEADING) if t == "4")).count();
             g.next();
         }
-        // The reflectors and the bunker's walls, lamps and rations come four to a recipe.
+        // The reflectors, the bunker's walls and radiation glass, lamps and rations come four to a recipe.
         assert_eq!(counts, ASSEMBLIES.iter().filter(|a| a.count == 4).count());
-        assert_eq!(counts, 7);
+        assert_eq!(counts, 8);
         // The commands' chapter names every limit.
         for lang in [&en, &ru] {
             let steps: Vec<String> = MAXPOWER_STEPS.iter().map(u32::to_string).collect();
@@ -7270,8 +7316,10 @@ mod tests {
             made.insert(a.result.to_owned());
         }
         // Mined, made in the centrifuge, or cracked by a blast.
-        let not_crafted: Vec<&str> =
-            ["big_nukes:raw_uranium", "big_nukes:enriched_uranium", WEAPONS_GRADE_URANIUM].into_iter().chain(WallKind::ALL.map(WallKind::cracked_id)).collect();
+        let not_crafted: Vec<&str> = ["big_nukes:raw_uranium", "big_nukes:enriched_uranium", WEAPONS_GRADE_URANIUM, TRINITITE_SHARD]
+            .into_iter()
+            .chain(WallKind::ALL.map(WallKind::cracked_id))
+            .collect();
         let crafted: BTreeSet<String> = known.iter().filter(|id| !not_crafted.contains(id)).map(|id| id.to_string()).collect();
         assert_eq!(made, crafted);
     }
@@ -10452,7 +10500,7 @@ mod bunker_tests {
         assert_eq!(wall_fate(1050.0, &a, true), WallFate::Cracks);
         assert_eq!(wall_fate(1051.0, &a, true), WallFate::Breaks);
         let strengths: Vec<f64> = WallKind::ALL.iter().map(|k| k.strength()).collect();
-        assert_eq!(strengths, [40.0, 200.0, 60.0, 60.0]);
+        assert_eq!(strengths, [40.0, 200.0, 60.0, 60.0, 200.0]);
         assert_eq!(MULTILAYER_STRENGTH, 700.0);
     }
 
@@ -10479,7 +10527,7 @@ mod bunker_tests {
             assert_eq!(w.block(), k.cracked_id());
         }
         assert_eq!(WallKind::of_block("minecraft:stone"), None);
-        assert_eq!(WALL_BLOCKS.len(), 8);
+        assert_eq!(WALL_BLOCKS.len(), 10);
     }
 
     #[test]
@@ -11250,7 +11298,7 @@ mod bunker_tests {
     #[test]
     fn the_walls_hold_off_vanilla_explosions() {
         let resistance: Vec<f32> = WallKind::ALL.iter().map(|k| k.explosion_resistance()).collect();
-        assert_eq!(resistance, [600.0, 1200.0, 600.0, 600.0]);
+        assert_eq!(resistance, [600.0, 1200.0, 600.0, 600.0, 1200.0]);
     }
 
     #[test]
@@ -11802,3 +11850,91 @@ mod warhead_tests {
     }
 }
 
+// ---- the consequences (plan 12) -----------------------------------------------------
+#[cfg(test)]
+mod consequence_tests {
+    use super::*;
+
+    const OW: &str = "minecraft:overworld";
+
+    fn blast(radius: u32, effect: Effect) -> Blast {
+        Blast { id: 1, dimension: OW.into(), center: [0, 64, 0], radius, seed: 7, world: World::OVERWORLD, effect }
+    }
+
+    /// The surface runs of column (x, 0) of a blast.
+    fn surface_at(b: &Blast, x: i32) -> Vec<Run> {
+        let ([_, surface], _) = plan_chunk(b, chunk_of(x, 0), &[]);
+        surface.runs.into_iter().filter(|r| r.x == x && r.z == 0).collect()
+    }
+
+    /// The first column out along +x past `d` of the border.
+    fn out_to(b: &Blast, d: f64) -> i32 {
+        (0..4 * b.radius as i32).find(|&x| edge(b, x, 0) >= d).expect("within reach")
+    }
+
+    #[test]
+    fn the_core_rim_turns_sand_to_trinitite() {
+        let b = blast(250, Effect::Blast);
+        let x = out_to(&b, CORE + 0.01);
+        assert!(edge(&b, x, 0) < CORE + TRINITITE_BAND);
+        let runs = surface_at(&b, x);
+        assert!(runs.iter().any(|r| r.block == TRINITITE_AT && r.only == Some(SAND)), "{runs:?}");
+        assert!(runs.iter().any(|r| r.block == TRINITITE_AT && r.only == Some(SANDSTONE)), "{runs:?}");
+        // The trinitite goes before the ash, so sand turns to glass and not to ash.
+        let glass = runs.iter().position(|r| r.block == TRINITITE_AT).unwrap();
+        let ash = runs.iter().position(|r| r.block == SCORCHED);
+        assert!(ash.is_none_or(|a| glass < a));
+        // Further out the middle ring is ash only.
+        let far = out_to(&b, CORE + TRINITITE_BAND + 0.05);
+        assert!(surface_at(&b, far).iter().all(|r| r.block != TRINITITE_AT));
+        // Over the rim some ground turns to trinitite instead of ash.
+        let rim: Vec<i32> = (0..4 * 250).filter(|&x| (CORE..CORE + TRINITITE_BAND).contains(&edge(&b, x, 0))).collect();
+        let ground = rim.iter().filter(|&&x| surface_at(&b, x).iter().any(|r| r.block == TRINITITE_AT && r.only == Some(GROUND))).count();
+        assert!(ground > 0 && ground < rim.len(), "{ground} of {}", rim.len());
+        let ([edit, _], _) = plan_chunk(&b, chunk_of(x, 0), &[]);
+        assert_eq!(edit.palette[TRINITITE_AT as usize], TRINITITE);
+        assert!(edit.without_ash().palette.iter().all(|p| p != TRINITITE), "a stand-in without the assets half");
+    }
+
+    #[test]
+    fn a_small_or_neutron_blast_makes_no_trinitite() {
+        for b in [blast(TRINITITE_MIN_RADIUS - 1, Effect::Blast), blast(120, Effect::Neutron), blast(8, Effect::Dirty)] {
+            for x in 0..2 * b.radius as i32 {
+                assert!(surface_at(&b, x).iter().all(|r| r.block != TRINITITE_AT), "{b:?} at {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn radiation_glass_holds_as_armored_concrete() {
+        assert_eq!(WALL_BLOCKS.len(), 10);
+        assert_eq!(WallKind::Glass.id(), RADIATION_GLASS);
+        assert_eq!(WallKind::Glass.cracked_id(), "big_nukes:cracked_radiation_glass");
+        assert_eq!(WallKind::Glass.strength(), WallKind::Armored.strength());
+        assert_eq!(WallKind::Glass.explosion_resistance(), WallKind::Armored.explosion_resistance());
+        assert_eq!(WallKind::of_block(RADIATION_GLASS), Some((WallKind::Glass, false)));
+        assert_eq!(WallKind::of_block("big_nukes:cracked_radiation_glass"), Some((WallKind::Glass, true)));
+        assert!(!WallKind::Glass.concrete(), "no layer of a multilayer wall");
+        assert!(ASSEMBLIES.iter().any(|a| a.result == RADIATION_GLASS && a.count == 4 && a.parts.contains(&(TRINITITE_SHARD, 4))));
+    }
+
+    #[test]
+    fn walls_saved_by_0_3_0_keep_their_kinds() {
+        let old = [
+            ("big_nukes:reinforced_concrete", WallKind::Reinforced, false),
+            ("big_nukes:armored_concrete", WallKind::Armored, false),
+            ("big_nukes:lead_shield", WallKind::Lead, false),
+            ("big_nukes:blast_damper", WallKind::Damper, false),
+            ("big_nukes:cracked_reinforced_concrete", WallKind::Reinforced, true),
+            ("big_nukes:cracked_armored_concrete", WallKind::Armored, true),
+            ("big_nukes:cracked_lead_shield", WallKind::Lead, true),
+            ("big_nukes:cracked_blast_damper", WallKind::Damper, true),
+        ];
+        for (id, kind, cracked) in old {
+            assert_eq!(WallKind::of_block(id), Some((kind, cracked)), "{id}");
+            assert_eq!(if cracked { kind.cracked_id() } else { kind.id() }, id);
+        }
+        let json = r#"{"pos":[1,2,3],"kind":"Damper","cracked":true}"#;
+        assert_eq!(serde_json::from_str::<Wall>(json).unwrap().block(), "big_nukes:cracked_blast_damper");
+    }
+}

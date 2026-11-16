@@ -53,12 +53,15 @@ pub(in crate::game) fn blocks(blocks: &mut Vec<Block>) {
             rules::WallKind::Armored => (12.0, None),
             rules::WallKind::Lead => (5.0, Some("minecraft:iron_block")),
             rules::WallKind::Damper => (2.5, Some("minecraft:white_wool")),
+            rules::WallKind::Glass => (8.0, Some("minecraft:glass")),
             // Not among them: the door is declared below, as a door.
             rules::WallKind::Door => continue,
         };
+        // Radiation glass is tinted glass: seen through, but it keeps the sky's light out, so a roof of it shelters.
+        let template = if kind == rules::WallKind::Glass { "minecraft:tinted_glass" } else { "minecraft:stone" };
         let resistance = kind.explosion_resistance();
-        blocks.push(block(kind.id(), "minecraft:stone", hardness, resistance, sounds));
-        blocks.push(block(kind.cracked_id(), "minecraft:stone", hardness / 2.0, resistance / 2.0, sounds));
+        blocks.push(block(kind.id(), template, hardness, resistance, sounds));
+        blocks.push(block(kind.cracked_id(), template, hardness / 2.0, resistance / 2.0, sounds));
     }
     let door = rules::WallKind::Door.explosion_resistance();
     blocks.push(block(rules::HERMETIC_DOOR, "minecraft:iron_door", 10.0, door, None));

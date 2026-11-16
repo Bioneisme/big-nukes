@@ -36,10 +36,12 @@
     "big_nukes:armored_concrete",
     "big_nukes:lead_shield",
     "big_nukes:blast_damper",
+    "big_nukes:radiation_glass",
     "big_nukes:cracked_reinforced_concrete",
     "big_nukes:cracked_armored_concrete",
     "big_nukes:cracked_lead_shield",
     "big_nukes:cracked_blast_damper",
+    "big_nukes:cracked_radiation_glass",
     "big_nukes:hermetic_door",
     "big_nukes:fuel_generator",
     "big_nukes:air_filter",
@@ -52,6 +54,8 @@
     "big_nukes:missile",
     "big_nukes:splitting_missile",
     "big_nukes:strike_beacon",
-    "big_nukes:ash"
+    "big_nukes:ash",
+    "big_nukes:trinitite",
+    "big_nukes:trinitite_shard"
   ]
 }

@@ -242,5 +242,12 @@
   "big_nukes.toast.launched.text": "To %s %s, impact in %s s",
   "big_nukes.toast.inbound": "Missile incoming!",
   "big_nukes.toast.inbound.text": "Impact nearby in %s s. Take cover",
-  "subtitles.big_nukes.siren": "Siren wails"
+  "subtitles.big_nukes.siren": "Siren wails",
+  "big_nukes.tip.radiation_glass": "A window that holds a blast as armored concrete and, as a roof, keeps radiation out.",
+  "big_nukes.tip.trinitite": "Sand melted to glass at the rim of a crater. Mine it for shards.",
+  "big_nukes.tip.trinitite_shard": "Slightly radioactive. Assembly table: 4 glass, 4 shards and a lead shield make 4 radiation glass.",
+  "block.big_nukes.trinitite": "Trinitite",
+  "item.big_nukes.trinitite_shard": "Trinitite Shard",
+  "block.big_nukes.radiation_glass": "Radiation Glass",
+  "block.big_nukes.cracked_radiation_glass": "Cracked Radiation Glass"
 }

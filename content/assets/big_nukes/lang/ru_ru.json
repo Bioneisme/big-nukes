@@ -242,5 +242,12 @@
   "big_nukes.toast.launched.text": "Цель %s %s, удар через %s с",
   "big_nukes.toast.inbound": "Ракета летит сюда!",
   "big_nukes.toast.inbound.text": "Удар рядом через %s с. В укрытие",
-  "subtitles.big_nukes.siren": "Воет сирена"
+  "subtitles.big_nukes.siren": "Воет сирена",
+  "big_nukes.tip.radiation_glass": "Окно, которое держит взрыв как армированный бетон и, будучи крышей, не пропускает радиацию.",
+  "big_nukes.tip.trinitite": "Песок, расплавленный в стекло на краю воронки. Добывается ради осколков.",
+  "big_nukes.tip.trinitite_shard": "Слабо радиоактивен. Сборочный стол: 4 стекла, 4 осколка и свинцовый экран дают 4 радиозащитных стекла.",
+  "block.big_nukes.trinitite": "Тринитит",
+  "item.big_nukes.trinitite_shard": "Осколок тринитита",
+  "block.big_nukes.radiation_glass": "Радиозащитное стекло",
+  "block.big_nukes.cracked_radiation_glass": "Треснувшее радиозащитное стекло"
 }

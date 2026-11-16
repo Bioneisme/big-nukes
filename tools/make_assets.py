@@ -36,6 +36,7 @@ FILES = {
     "uranium_ore": ("minecraft:iron_ore", "Uranium Ore", "Урановая руда", "big_nukes:raw_uranium"),
     "deepslate_uranium_ore": ("minecraft:deepslate_iron_ore", "Deepslate Uranium Ore", "Глубинная урановая руда", "big_nukes:raw_uranium"),
     "ash": ("minecraft:coarse_dirt", "Ash", "Пепел", "big_nukes:ash"),
+    "trinitite": ("minecraft:green_stained_glass", "Trinitite", "Тринитит", "big_nukes:trinitite_shard"),
 }
 ITEMS = {
     "raw_uranium": ("Raw Uranium", "Рудный уран"),
@@ -57,6 +58,7 @@ ITEMS = {
     "splitting_missile": ("Splitting Missile", "Разделяющаяся ракета"),
     "guide": ("Big Nukes Guide", "Руководство Big Nukes"),
     "iodine_tablets": ("Iodine Tablets", "Таблетки йода"),
+    "trinitite_shard": ("Trinitite Shard", "Осколок тринитита"),
 }
 
 
@@ -181,10 +183,12 @@ WALLS = {
     "armored_concrete": ("Armored Concrete", "Армированный бетон"),
     "lead_shield": ("Lead Shield", "Свинцовый экран"),
     "blast_damper": ("Blast Damper", "Демпфер"),
+    "radiation_glass": ("Radiation Glass", "Радиозащитное стекло"),
     "cracked_reinforced_concrete": ("Cracked Reinforced Concrete", "Треснувший железобетон"),
     "cracked_armored_concrete": ("Cracked Armored Concrete", "Треснувший армированный бетон"),
     "cracked_lead_shield": ("Cracked Lead Shield", "Треснувший свинцовый экран"),
     "cracked_blast_damper": ("Cracked Blast Damper", "Треснувший демпфер"),
+    "cracked_radiation_glass": ("Cracked Radiation Glass", "Треснувшее радиозащитное стекло"),
 }
 BUNKER = {
     "hermetic_door": ("Hermetic Door", "Гермодверь"),
@@ -265,6 +269,16 @@ for name in ("fuel_generator", "air_filter", "bunker_lamp"):
     block_item(name)
     loot(name, f"big_nukes:{name}")
     named("block", name, *BUNKER[name])
+# Trinitite drops 1 to 3 shards, the block itself with silk touch.
+write(D / "loot_table" / "blocks" / "trinitite.json", {
+    "type": "minecraft:block",
+    "pools": [{"rolls": 1, "entries": [{"type": "minecraft:alternatives", "children": [
+        {"type": "minecraft:item", "name": "big_nukes:trinitite", "conditions": [{"condition": "minecraft:match_tool", "predicate": {
+            "predicates": {"minecraft:enchantments": [{"enchantments": "minecraft:silk_touch", "levels": {"min": 1}}]}}}]},
+        {"type": "minecraft:item", "name": "big_nukes:trinitite_shard", "functions": [
+            {"function": "minecraft:set_count", "count": {"type": "minecraft:uniform", "min": 1, "max": 3}}]}]}]}],
+    "random_sequence": "big_nukes:blocks/trinitite",
+})
 # The siren (plan 11): a copper bulb's states, lit while it wails.
 write(A / "blockstates" / "siren.json", {"variants": {
     "lit=false": {"model": "big_nukes:block/siren"}, "lit=true": {"model": "big_nukes:block/siren_on"}}})
@@ -287,7 +301,7 @@ def entry(n):
     return {"id": f"big_nukes:{n}", "required": False} if code else f"big_nukes:{n}"
 
 
-pickaxe = [entry(n) for n in [*FACING, *TABLE, *CUBE, "uranium_ore", "deepslate_uranium_ore", *WALLS, *BUNKER, "siren"]]
+pickaxe = [entry(n) for n in [*FACING, *TABLE, *CUBE, "uranium_ore", "deepslate_uranium_ore", *WALLS, *BUNKER, "siren", "trinitite"]]
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "mineable" / "pickaxe.json", {"values": pickaxe})
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "mineable" / "shovel.json", {"values": ["big_nukes:ash"]})
 write(ROOT / "data" / "minecraft" / "tags" / "block" / "needs_iron_tool.json",

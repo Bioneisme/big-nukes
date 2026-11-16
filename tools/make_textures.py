@@ -661,6 +661,31 @@ add("block", "deepslate_uranium_ore", 32, deepslate_uranium_ore)
 add("block", "ash", 32, ash)
 
 
+def trinitite(t, rng):
+    """Sand melted into green glass: glassy clots of greens, dark bubbles and light streaks, a little seen through."""
+    n = t.n
+    G = [(28, 70, 40, 235), (46, 108, 58, 235), (72, 146, 76, 235), (112, 184, 100, 235), (170, 222, 150, 235)]
+    f = vnoise(n, rng, 4)
+    for y in range(n):
+        for x in range(n):
+            t.set(x, y, pick(G, 0.6 + f[y][x] * 3.2, x, y, 0.4))
+    for _ in range(14):
+        cx, cy, r = rng.randrange(n), rng.randrange(n), rng.choice((1.0, 1.5, 2.0))
+        for x, y in disc(cx, cy, r):
+            if t.ok(x, y):
+                t.set(x, y, G[0])
+        if t.ok(int(cx - r), int(cy - r)):
+            t.set(int(cx - r), int(cy - r), G[4])
+    for _ in range(5):
+        x, y = rng.randrange(n), rng.randrange(n)
+        for k in range(rng.randrange(3, 7)):
+            if t.ok(x + k, y - k // 2):
+                t.set(x + k, y - k // 2, G[4])
+
+
+add("block", "trinitite", 32, trinitite)
+
+
 # ================================================================ blocks: the machines
 def label_plate(t, x0, y0, x1, y1, R=None):
     """A small enamel plate held on by its corners."""
@@ -1461,11 +1486,35 @@ def blast_damper(t, rng):
     lines_box(t, 0, 0, n, n, edge, edge)
 
 
+def radiation_glass(t, rng):
+    """Dark green-grey glass, seen through, in a lead frame with a cross bar and a rivet at each corner."""
+    n = t.n
+    pane = vnoise(n, rng, 3)
+    for y in range(n):
+        for x in range(n):
+            v = 0.5 + (pane[y][x] - 0.5) * 0.4
+            t.set(x, y, (int(52 + 30 * v), int(74 + 34 * v), int(66 + 30 * v), 150))
+    for i in range(4, n - 4):
+        if i % 9 < 4:
+            t.set(i, n - 1 - i, (200, 226, 214, 170))
+    LEAD = ramp((84, 88, 96), dark=0.5, light=0.4)
+    for i in range(n):
+        for k in (0, 1):
+            for x, y in ((i, k), (i, n - 1 - k), (k, i), (n - 1 - k, i)):
+                t.set(x, y, LEAD[3 if k == 0 else 1])
+        for c in (n // 2 - 1, n // 2):
+            t.set(i, c, LEAD[2])
+            t.set(c, i, LEAD[2])
+    for x, y in ((2, 2), (n - 4, 2), (2, n - 4), (n - 4, n - 4)):
+        rivet(t, x, y, LEAD, 2)
+
+
 WALLS = {
     "reinforced_concrete": reinforced_concrete,
     "armored_concrete": armored_concrete,
     "lead_shield": lead_shield,
     "blast_damper": blast_damper,
+    "radiation_glass": radiation_glass,
 }
 
 
@@ -2484,6 +2533,26 @@ def flying_sheet(t, rng, quarters):
 
 add("item", "missile", 64, missile)
 add("item", "splitting_missile", 64, missile, True)
+
+
+def trinitite_shard(t, rng):
+    """A jagged shard of green glass, lit on its upper faces."""
+    n = t.n
+    G = [(30, 76, 42, 255), (50, 116, 62, 255), (78, 156, 82, 255), (120, 196, 108, 255), (190, 236, 170, 255)]
+    pts = [(n * 0.30, n * 0.12), (n * 0.62, n * 0.28), (n * 0.86, n * 0.62), (n * 0.58, n * 0.90), (n * 0.22, n * 0.70),
+           (n * 0.16, n * 0.40)]
+    shard = poly(pts)
+    for x, y in shard:
+        v = 3.2 - (x + y) / n * 1.6 + rng.uniform(-0.3, 0.3)
+        t.set(x, y, pick(G, v, x, y, 0.4))
+    for k in range(int(n * 0.4)):
+        x, y = int(n * 0.34 + k * 0.6), int(n * 0.22 + k)
+        if (x, y) in shard:
+            t.set(x, y, G[4])
+    item_outline(t)
+
+
+add("item", "trinitite_shard", 32, trinitite_shard)
 add("item", "missile_model", 64, flying_sheet,
     [((234, 234, 228), "paint"), ((200, 36, 32), "paint"), ((60, 62, 66), "nozzle"), ((22, 22, 24), "flat")])
 add("item", "bomber_model", 64, flying_sheet,

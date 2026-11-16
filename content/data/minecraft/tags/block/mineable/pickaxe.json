@@ -79,6 +79,10 @@
       "required": false
     },
     {
+      "id": "big_nukes:radiation_glass",
+      "required": false
+    },
+    {
       "id": "big_nukes:cracked_reinforced_concrete",
       "required": false
     },
@@ -92,6 +96,10 @@
     },
     {
       "id": "big_nukes:cracked_blast_damper",
+      "required": false
+    },
+    {
+      "id": "big_nukes:cracked_radiation_glass",
       "required": false
     },
     {
@@ -113,6 +121,7 @@
     {
       "id": "big_nukes:siren",
       "required": false
-    }
+    },
+    "big_nukes:trinitite"
   ]
 }
