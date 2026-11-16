@@ -1985,6 +1985,13 @@ pub(in crate::game) fn player_tick(game: &mut Game<'_>) {
     // Taken each tick, so a creative player's iodine doesn't linger.
     let iodine = decon::iodine_on(who.uuid);
     if matches!(who.game_mode, 1 | 3) {
+        // No dose for them, but the fallout's ash falls round them too.
+        let ash = state(game).is_some_and(|g| {
+            g.as_ref().is_some_and(|st| st.saved.tick % rules::SECOND == 0 && st.saved.fallout_at(&who.dimension, who.position))
+        });
+        if ash {
+            fall_ash(game, &who);
+        }
         return;
     }
     let worn = [EquipmentSlot::Head, EquipmentSlot::Chest, EquipmentSlot::Legs, EquipmentSlot::Feet]
@@ -2015,14 +2022,19 @@ pub(in crate::game) fn player_tick(game: &mut Game<'_>) {
     let ash = st.saved.fallout_at(&who.dimension, who.position);
     drop(guard);
     if ash {
-        let [x, y, z] = who.position;
-        game.native_run_command(&format!(
-            "execute in {} run particle minecraft:ash {x:.1} {:.1} {z:.1} 8 3 8 0 160 normal {}",
-            who.dimension,
-            y + 5.0,
-            rules::uuid_text(who.uuid)
-        ));
+        fall_ash(game, &who);
     }
+}
+
+/// The fallout's ash round `who`, for them to see.
+fn fall_ash(game: &mut Game<'_>, who: &NativeServerPlayer) {
+    let [x, y, z] = who.position;
+    game.native_run_command(&format!(
+        "execute in {} run particle minecraft:ash {x:.1} {:.1} {z:.1} 8 3 8 0 160 normal {}",
+        who.dimension,
+        y + 5.0,
+        rules::uuid_text(who.uuid)
+    ));
 }
 
 /// A player died: their dose goes. Heard in a queue, as the state may be locked.
