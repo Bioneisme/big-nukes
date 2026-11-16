@@ -45,6 +45,8 @@ they are.
 At the rim of a tactical warhead's or larger crater, sand and sandstone melt into **trinitite**, green glass that some
 of the ground turns to as well. Mine it for trinitite shards.
 
+![A tactical warhead's crater on a sandstone plain, its rim glassed into green trinitite](docs/images/trinitite-rim.jpg)
+
 A blast's wave sets off every bomb it reaches. Chunks that aren't loaded when the wave passes are finished when they
 load.
 
@@ -140,6 +142,8 @@ weapons-grade uranium makes you sick. A roof doesn't help, the hazmat suit does.
 
 **Nuclear winter.** After a Sunbreaker the overworld's sky is grey and it rains or snows for three days.
 
+![The nuclear winter: grey rain over the hills](docs/images/winter.jpg)
+
 ### The decontaminator
 
 Put any furnace fuel in it. It burns it 4 times as fast as a furnace, and while it burns its circle grows a block every
@@ -160,6 +164,8 @@ touches nothing, and a roof that holds keeps the blast off whoever is under it.
 | Armored Concrete | An atomic bomb away from the center of its crater |
 | Multilayer wall | A Sunbreaker away from its center |
 | Radiation Glass | As armored concrete; as a roof it shelters, since the sky's light doesn't pass |
+
+![A bunker wall of armored concrete with a radiation-glass window](docs/images/glass-window.jpg)
 
 A **multilayer wall** is four blocks in a row out from the blast: concrete (reinforced or armored), a **Lead Shield**,
 a **Blast Damper** and concrete again. A roof laid in that order from the top down counts too. A lead shield or a damper
