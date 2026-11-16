@@ -1986,6 +1986,18 @@ pub(in crate::game) fn player_tick(game: &mut Game<'_>) {
             held.push((who.uuid, Held::Armour { slot: 103 - i as i32 }, now));
         }
     }
+    // In a fresh plume the fallout's ash comes down round the player, once a second.
+    let ash = st.saved.fallout_at(&who.dimension, who.position);
+    drop(guard);
+    if ash {
+        let [x, y, z] = who.position;
+        game.native_run_command(&format!(
+            "execute in {} run particle minecraft:ash {x:.1} {:.1} {z:.1} 8 3 8 0 160 normal {}",
+            who.dimension,
+            y + 5.0,
+            rules::uuid_text(who.uuid)
+        ));
+    }
 }
 
 /// A player died: their dose goes. Heard in a queue, as the state may be locked.

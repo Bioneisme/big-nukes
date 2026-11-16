@@ -3296,6 +3296,28 @@ pub struct Zone {
     pub start: u64,
     pub half_life: u64,
     pub floor: f64,
+    /// The way the wind blew at the blast, in whole degrees (`wind_way`): the fallout's plume goes down it. None
+    /// for a neutron blast's, and for a zone saved before there were plumes.
+    #[serde(default)]
+    pub wind: Option<u16>,
+}
+
+/// How far a plume reaches down the wind, in its zone's radii.
+pub const PLUME_LENGTH: f64 = 1.6;
+/// A plume's background at the zone's center, as a share of its peak, falling to nothing at its end.
+const PLUME_PEAK: f64 = 0.6;
+/// How long ash falls in a plume after its blast: five minutes.
+pub const FALLOUT_TICKS: u64 = 6000;
+
+/// The wind at a blast of `seed`, in whole degrees: kept so, it reads back from a world's file as it was saved.
+pub fn wind_of(seed: u64) -> u16 {
+    (mix(seed ^ 0x77_1d) % 360) as u16
+}
+
+/// The way across the ground a wind of `degrees` blows, a unit.
+pub fn wind_way(degrees: u16) -> [f64; 2] {
+    let a = f64::from(degrees).to_radians();
+    [a.cos(), a.sin()]
 }
 
 impl Zone {
@@ -3314,10 +3336,35 @@ impl Zone {
     pub fn at(&self, pos: [f64; 3], now: u64) -> f64 {
         let d2: f64 = (0..3).map(|i| (pos[i] - (self.center[i] as f64 + 0.5)).powi(2)).sum();
         let r2 = self.radius * self.radius;
-        if d2 >= r2 {
+        let round = if d2 < r2 { self.peak * (1.0 - d2 / r2) } else { 0.0 };
+        let here = round.max(self.plume(pos));
+        if here > 0.0 { here * self.fade(now) } else { 0.0 }
+    }
+
+    /// The plume's part at `pos` before the fade: from the center down the wind for `PLUME_LENGTH` radii, widening
+    /// from 0.3 to 0.6 of the radius, `PLUME_PEAK` of the peak at the center falling to nothing at its end, and no
+    /// higher or lower than the zone reaches.
+    fn plume(&self, pos: [f64; 3]) -> f64 {
+        let Some(w) = self.wind.map(wind_way) else { return 0.0 };
+        let c: [f64; 3] = std::array::from_fn(|i| self.center[i] as f64 + 0.5);
+        let (dx, dy, dz) = (pos[0] - c[0], pos[1] - c[1], pos[2] - c[2]);
+        let length = PLUME_LENGTH * self.radius;
+        let along = dx * w[0] + dz * w[1];
+        if dy.abs() >= self.radius || along <= 0.0 || along >= length {
             return 0.0;
         }
-        self.peak * (1.0 - d2 / r2) * self.fade(now)
+        let t = along / length;
+        let width = self.radius * (0.3 + 0.3 * t);
+        let across = (dx * w[1] - dz * w[0]).abs();
+        if across >= width {
+            return 0.0;
+        }
+        self.peak * PLUME_PEAK * (1.0 - t) * (1.0 - (across / width).powi(2))
+    }
+
+    /// Whether `pos` is in the plume while its ash still falls.
+    fn ash_falls(&self, pos: [f64; 3], now: u64) -> bool {
+        self.age(now) < FALLOUT_TICKS && self.plume(pos) > 0.0
     }
 
     /// Whether the zone has faded out for good: one with a floor never does.
@@ -3352,6 +3399,7 @@ pub fn zone_of(blast: &Blast, now: u64) -> Option<Zone> {
         start: now,
         half_life,
         floor: 0.0,
+        wind: (blast.effect != Effect::Neutron).then(|| wind_of(blast.seed)),
     };
     match blast.effect {
         Effect::Neutron => {
@@ -3374,6 +3422,7 @@ pub fn zone_of(blast: &Blast, now: u64) -> Option<Zone> {
         start: now,
         half_life: if big { BIG_HALF_LIFE } else { HALF_LIFE },
         floor: if big { BIG_FLOOR } else { 0.0 },
+        wind: Some(wind_of(blast.seed)),
     })
 }
 
@@ -3508,6 +3557,11 @@ impl Saved {
             self.doses.remove(&key);
         }
         Some(bg)
+    }
+
+    /// Whether ash falls at `pos` in `dimension`: in a plume, for `FALLOUT_TICKS` after its blast.
+    pub fn fallout_at(&self, dimension: &str, pos: [f64; 3]) -> bool {
+        self.zones.iter().any(|z| z.dimension == dimension && z.ash_falls(pos, self.tick))
     }
 
     /// `rad` given to the player at once, as a neutron blast gives it, on top of their dose.
@@ -8020,7 +8074,8 @@ mod tests {
         let z = zone_of(&blast([0, 64, 0], 120, 1, World::OVERWORLD), 1000).unwrap();
         assert_eq!((z.dimension.as_str(), z.center, z.start, z.half_life), (OW, [0, 64, 0], 1000, 12_000));
         assert!(close(z.radius, 144.0) && close(z.peak, 10.0) && close(z.floor, 0.0), "{z:?}");
-        let zones = [z];
+        // The round part alone: the plume down the wind is the consequences' tests'.
+        let zones = [Zone { wind: None, ..z }];
         let at = |pos: [f64; 3], now: u64| background(&zones, &[], OW, pos, now);
         let mid = [0.5, 64.5, 0.5];
         assert!(close(at(mid, 1000), 10.0));
@@ -9851,7 +9906,7 @@ mod decon_tests {
 
     /// A zone of peak 10 rad a second, 300 blocks across, from `start`, that doesn't fade.
     fn zone(center: [i32; 3], start: u64) -> Zone {
-        Zone { dimension: OW.into(), center, radius: 300.0, peak: 10.0, start, half_life: u64::MAX, floor: 1.0 }
+        Zone { dimension: OW.into(), center, radius: 300.0, peak: 10.0, start, half_life: u64::MAX, floor: 1.0, wind: None }
     }
 
     fn clean(center: [i32; 3], radius: u32, start: u64) -> Clean {
@@ -11167,7 +11222,7 @@ mod bunker_tests {
         assert_eq!(shelter(false, true), 0.05);
         assert_eq!(shelter(true, true), 0.05);
         // The dose takes the sheltered background: twenty times less in a sealed room.
-        let zone = Zone { dimension: OW.into(), center: [0, 64, 0], radius: 300.0, peak: 40.0, start: 0, half_life: u64::MAX, floor: 1.0 };
+        let zone = Zone { dimension: OW.into(), center: [0, 64, 0], radius: 300.0, peak: 40.0, start: 0, half_life: u64::MAX, floor: 1.0, wind: None };
         let mut open = Saved { zones: vec![zone.clone()], ..Saved::default() };
         let mut inside = Saved { zones: vec![zone], ..Saved::default() };
         let (me, at) = (7u128, [0.5, 64.5, 0.5]);
@@ -11937,4 +11992,75 @@ mod consequence_tests {
         let json = r#"{"pos":[1,2,3],"kind":"Damper","cracked":true}"#;
         assert_eq!(serde_json::from_str::<Wall>(json).unwrap().block(), "big_nukes:cracked_blast_damper");
     }
+
+    // ---- the fallout plume (task 2) ------------------------------------------------
+
+    fn at_offset(z: &Zone, along: f64, across: f64, w: [f64; 2]) -> [f64; 3] {
+        let c = [z.center[0] as f64 + 0.5, z.center[1] as f64 + 0.5, z.center[2] as f64 + 0.5];
+        [c[0] + w[0] * along + w[1] * across, c[1], c[2] + w[1] * along - w[0] * across]
+    }
+
+    #[test]
+    fn the_wind_is_a_unit_and_turns_with_the_seed() {
+        for seed in [1, 7, 99, 123_456] {
+            let w = wind_way(wind_of(seed));
+            assert!(((w[0] * w[0] + w[1] * w[1]).sqrt() - 1.0).abs() < 1e-9);
+        }
+        assert_ne!(wind_of(1), wind_of(2));
+    }
+
+    #[test]
+    fn the_plume_reaches_downwind_not_upwind() {
+        let z = zone_of(&blast(250, Effect::Blast), 0).unwrap();
+        assert_eq!(z.wind, Some(wind_of(7)), "a wave's zone has a wind");
+        let w = wind_way(z.wind.unwrap());
+        let r = z.radius;
+        // Past the round zone, down the wind: the plume.
+        let down = at_offset(&z, 1.2 * r, 0.0, w);
+        assert!(z.at(down, 0) > 0.0);
+        // The same distance up the wind, or across it: nothing.
+        assert_eq!(z.at(at_offset(&z, -1.2 * r, 0.0, w), 0), 0.0);
+        assert_eq!(z.at(at_offset(&z, 0.0, 1.2 * r, w), 0), 0.0);
+        // It thins along the way and ends.
+        assert!(z.at(at_offset(&z, 1.4 * r, 0.0, w), 0) < z.at(down, 0));
+        assert_eq!(z.at(at_offset(&z, PLUME_LENGTH * r + 1.0, 0.0, w), 0), 0.0);
+        // It fades with the zone.
+        assert!(z.at(down, z.half_life) < z.at(down, 0));
+        // In the round part it adds nothing above the round zone's own.
+        let near = at_offset(&z, 0.0, 0.0, w);
+        assert_eq!(z.at(near, 0), z.peak);
+    }
+
+    #[test]
+    fn a_neutron_zone_has_no_plume_and_a_dirty_one_has() {
+        assert!(zone_of(&blast(120, Effect::Neutron), 0).unwrap().wind.is_none());
+        assert!(zone_of(&blast(8, Effect::Dirty), 0).unwrap().wind.is_some());
+    }
+
+    #[test]
+    fn a_zone_saved_without_wind_is_round() {
+        let z = zone_of(&blast(250, Effect::Blast), 0).unwrap();
+        let mut json = serde_json::to_value(&z).unwrap();
+        json.as_object_mut().unwrap().remove("wind");
+        let old: Zone = serde_json::from_value(json).unwrap();
+        assert!(old.wind.is_none());
+        let w = wind_way(z.wind.unwrap());
+        assert_eq!(old.at(at_offset(&z, 1.2 * z.radius, 0.0, w), 0), 0.0);
+    }
+
+    #[test]
+    fn fallout_falls_in_the_plume_for_five_minutes() {
+        let mut saved = Saved::default();
+        saved.blast(OW, [0, 64, 0], 250).unwrap();
+        let z = saved.zones[0].clone();
+        let w = wind_way(z.wind.unwrap());
+        let down = at_offset(&z, 1.2 * z.radius, 0.0, w);
+        let up = at_offset(&z, -1.2 * z.radius, 0.0, w);
+        assert!(saved.fallout_at(OW, down));
+        assert!(!saved.fallout_at(OW, up));
+        assert!(!saved.fallout_at("minecraft:the_nether", down));
+        saved.tick = FALLOUT_TICKS;
+        assert!(!saved.fallout_at(OW, down), "the ash is down after five minutes");
+    }
 }
+
