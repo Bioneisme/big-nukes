@@ -113,6 +113,8 @@ chat(f"setblock {ax + 1} {ay - 1} {az - 1} big_nukes:air_filter")
 chat(f"setblock {ax + 1} {ay + 1} {az + 1} big_nukes:bunker_lamp")
 chat(f"setblock {ax - 2} {ay} {az} big_nukes:hermetic_door[half=upper,facing=east]")
 chat(f"setblock {ax - 2} {ay - 1} {az} big_nukes:hermetic_door[half=lower,facing=east]")
+# The registry reaches the world's file at the mod's next save, every 10 seconds.
+ctl("wait", 220)
 registry = [tuple(w["pos"]) for ws in saved().get("walls", {}).values() for w in ws]
 check("the walls are in the registry", len(registry) > 0, json.dumps(saved().get("walls"))[:200])
 check("both halves of the door are walls", {(ax - 2, ay - 1, az), (ax - 2, ay, az)} <= set(registry), str(len(registry)))
