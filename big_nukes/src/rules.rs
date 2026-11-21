@@ -1,6 +1,5 @@
-// Big Nukes' rules: no game type here, so they build and test on their own.
-// The bundle adds this file to the game as `game::big_nukes`; the glue
-// (`game::big_nukes_glue`, glue.rs) connects it to the game.
+// Big Nukes' rules: no game type here (but the NBT `Tag` the game hands a consume effect), so they build and test
+// on their own. The rest of the crate (`lib.rs` and its modules) connects them to the game through `mod_api`.
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -302,10 +301,39 @@ pub fn components(id: &str) -> BTreeMap<String, serde_json::Value> {
     c
 }
 
-/// How many rad an anti-rad effect takes off, from the JSON its item declares:
-/// none unless it is a positive number.
-pub fn anti_rad_amount(effect: &serde_json::Value) -> Option<f64> {
-    effect["amount"].as_f64().filter(|a| a.is_finite() && *a > 0.0)
+/// How many rad an anti-rad effect takes off, from the effect's NBT as the game hands it to the consume hook
+/// (the item's JSON, `json_tag`): none unless it is a positive number.
+pub fn anti_rad_amount(effect: &mod_api::Tag) -> Option<f64> {
+    use mod_api::Tag;
+    let amount = match effect.get("amount")? {
+        Tag::Byte(n) => f64::from(*n),
+        Tag::Short(n) => f64::from(*n),
+        Tag::Int(n) => f64::from(*n),
+        Tag::Long(n) => *n as f64,
+        Tag::Float(bits) => f64::from(f32::from_bits(*bits)),
+        Tag::Double(bits) => f64::from_bits(*bits),
+        _ => return None,
+    };
+    Some(amount).filter(|a| a.is_finite() && *a > 0.0)
+}
+
+/// A JSON value as NBT, as the game reads an item's component patch: an integer an int (a long past it), any other
+/// number a double, a bool a byte, an array a list, an object a compound. A null is an empty compound.
+pub fn json_tag(value: &serde_json::Value) -> mod_api::Tag {
+    use mod_api::Tag;
+    use serde_json::Value;
+    match value {
+        Value::Null => Tag::Compound(Default::default()),
+        Value::Bool(b) => Tag::Byte(i8::from(*b)),
+        Value::Number(n) => match (n.as_i64(), n.as_f64()) {
+            (Some(i), _) => i32::try_from(i).map_or(Tag::Long(i), Tag::Int),
+            (None, Some(f)) => Tag::Double(f.to_bits()),
+            (None, None) => Tag::Double(0f64.to_bits()),
+        },
+        Value::String(s) => Tag::String(s.as_str().into()),
+        Value::Array(a) => Tag::List(a.iter().map(json_tag).collect()),
+        Value::Object(o) => Tag::Compound(o.iter().map(|(k, v)| (k.as_str().into(), json_tag(v))).collect()),
+    }
 }
 
 // ---- the centrifuge -------------------------------------------------------------
@@ -3546,7 +3574,7 @@ pub fn mob_harm(background: f64) -> Option<u32> {
 
 /// What a carried item gives off, in rad a second for each one: the uranium, the Sunbreaker's core and the
 /// trinitite. A bomb's casing keeps its charge in.
-const CARRIED: [(&str, f64); 5] =
+pub const CARRIED: [(&str, f64); 5] =
     [(RAW_URANIUM, 0.002), (ENRICHED_URANIUM, 0.01), (WEAPONS_GRADE_URANIUM, 0.04), (SUNBREAKER_CORE, 0.5), (TRINITITE_SHARD, 0.005)];
 /// The most a player's inventory gives off.
 pub const CARRIED_MOST: f64 = 3.0;
@@ -6296,7 +6324,19 @@ mod tests {
         let (en, ru) = (language("en_us"), language("ru_ru"));
         let used: BTreeSet<String> = [
             "src/rules.rs",
-            "../mixins/big_nukes_native/glue.rs",
+            "src/lib.rs",
+            "src/core.rs",
+            "src/world.rs",
+            "src/rad.rs",
+            "src/client.rs",
+            "src/machines.rs",
+            "src/bombs.rs",
+            "src/guide.rs",
+            "src/silo.rs",
+            "src/bunker.rs",
+            "src/decon.rs",
+            "src/events.rs",
+            // TODO(stage 2): drop each old module once its port in src/ uses its keys.
             "../mixins/big_nukes_native/silo.rs",
             "../mixins/big_nukes_native/decon.rs",
             "../mixins/big_nukes_native/bunker.rs",
@@ -7984,11 +8024,13 @@ mod tests {
         let effects = drink["on_consume_effects"].as_array().unwrap();
         assert_eq!(effects.len(), 1);
         assert_eq!(effects[0]["type"], ANTI_RADIATION);
-        assert_eq!(anti_rad_amount(&effects[0]), Some(300.0));
+        assert_eq!(anti_rad_amount(&json_tag(&effects[0])), Some(300.0));
         assert_eq!(c["minecraft:use_remainder"], serde_json::json!({"id": "minecraft:glass_bottle", "count": 1}));
         // The hook reads only a positive amount.
-        assert_eq!(anti_rad_amount(&serde_json::json!({"type": ANTI_RADIATION})), None);
-        assert_eq!(anti_rad_amount(&serde_json::json!({"type": ANTI_RADIATION, "amount": -5})), None);
+        assert_eq!(anti_rad_amount(&json_tag(&serde_json::json!({"type": ANTI_RADIATION}))), None);
+        assert_eq!(anti_rad_amount(&json_tag(&serde_json::json!({"type": ANTI_RADIATION, "amount": -5}))), None);
+        // The game may hand the amount over as any number tag.
+        assert_eq!(anti_rad_amount(&json_tag(&serde_json::json!({"amount": 300}))), Some(300.0));
     }
 
     #[test]
@@ -9938,13 +9980,11 @@ mod flight_tests {
                 assert_eq!(pad_load(Some(missile), Some(warhead)).is_ok(), takes, "{missile} {warhead}");
             }
         }
-        // Its menu, named as the block, and the window's slot rules, which can't reach the rules and name them.
+        // Its menu, named as the block, and the menu's slot rules, which take what the pad takes.
         let menu = json(&format!("data/big_nukes/horizon/menu/{}.json", LAUNCH_PAD.strip_prefix("big_nukes:").unwrap()));
         assert_eq!(menu["slots"], PAD_SLOTS);
-        let slot_rules = read("../mixins/big_nukes_native/slot_rules.rs");
-        for id in [LAUNCH_PAD, MISSILE, atomic, tactical] {
-            assert!(slot_rules.contains(&format!("\"{id}\"")), "slot_rules.rs doesn't name {id}");
-        }
+        let slot_rules = read("src/machines.rs");
+        assert!(slot_rules.contains("rules::LAUNCH_PAD => rules::pad_takes("), "the launch pad's slot rules are pad_takes");
     }
 
     #[test]
