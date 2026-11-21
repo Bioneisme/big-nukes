@@ -8134,7 +8134,7 @@ mod tests {
 
     #[test]
     fn uranium_ore_is_generated_deep_and_rare() {
-        let feature: serde_json::Value = serde_json::from_str(&file("data/big_nukes/worldgen/configured_feature/ore_uranium.json")).unwrap();
+        let feature: serde_json::Value = serde_json::from_str(&file("data/big_nukes/worldgen/feature/ore_uranium.json")).unwrap();
         let states: Vec<&str> = feature["targets"].as_array().unwrap().iter().map(|t| t["state"].as_str().unwrap()).collect();
         assert_eq!(states, ["big_nukes:uranium_ore", "big_nukes:deepslate_uranium_ore"]);
         let placed: serde_json::Value = serde_json::from_str(&file("data/big_nukes/worldgen/placed_feature/ore_uranium.json")).unwrap();
