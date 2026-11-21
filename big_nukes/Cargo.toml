@@ -1,0 +1,19 @@
+[package]
+name = "mod-big_nukes"
+version = "0.4.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Big Nukes for Horizon: bombs whose shockwave rolls across the land."
+
+[dependencies]
+# The pinned SDK's API crate, fetched into .horizon/sdk/ by any `cargo horizon-mod` command (the
+# launcher builds against its own copy of the same build).
+horizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Checks the renderer's WGSL in the tests, with the naga of Horizon's wgpu 30.
+[dev-dependencies]
+naga = { version = "30.0.1", features = ["wgsl-in"] }

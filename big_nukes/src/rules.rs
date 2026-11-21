@@ -6278,7 +6278,7 @@ mod tests {
     }
 
     fn language(code: &str) -> BTreeMap<String, String> {
-        let path = format!("content/assets/big_nukes/lang/{code}.json");
+        let path = format!("assets/big_nukes/lang/{code}.json");
         serde_json::from_str(&file(&path)).unwrap()
     }
 
@@ -6295,13 +6295,12 @@ mod tests {
     fn every_line_is_in_both_languages_with_the_same_arguments() {
         let (en, ru) = (language("en_us"), language("ru_ru"));
         let used: BTreeSet<String> = [
-            "mixins/big_nukes_native/runtime.rs",
-            "mixins/big_nukes_native/glue.rs",
-            "mixins/big_nukes_native/silo.rs",
-            "mixins/big_nukes_native/decon.rs",
-            "mixins/big_nukes_native/bunker.rs",
-            "mixins/big_nukes_native/events.rs",
-            "content/data/big_nukes/function/check.mcfunction",
+            "src/rules.rs",
+            "../mixins/big_nukes_native/glue.rs",
+            "../mixins/big_nukes_native/silo.rs",
+            "../mixins/big_nukes_native/decon.rs",
+            "../mixins/big_nukes_native/bunker.rs",
+            "../mixins/big_nukes_native/events.rs",
         ]
         .iter()
         .flat_map(|s| keys_in(file(s).split("#[cfg(test)]").next().unwrap()))
@@ -6320,7 +6319,6 @@ mod tests {
                     || key.starts_with("death.attack.big_nukes.")
                     || key.starts_with("subtitles.big_nukes.")
                     || key.starts_with("itemGroup.big_nukes.")
-                    || key == "big_nukes.mod.description"
                     || used.contains(key),
                 "{key} is used nowhere"
             );
@@ -6331,7 +6329,7 @@ mod tests {
     #[test]
     fn the_assets_bring_the_marker() {
         let (namespace, name) = super::ASSETS_MARKER.split_once(':').unwrap();
-        assert!(exists(&format!("content/data/{namespace}/loot_table/{name}.json")), "{name}");
+        assert!(exists(&format!("data/{namespace}/loot_table/{name}.json")), "{name}");
     }
 
     // ---- blast geometry (Task 2) -------------------------------------------
@@ -6869,7 +6867,7 @@ mod tests {
 
     #[test]
     fn every_sound_event_has_its_files() {
-        let sounds: serde_json::Value = serde_json::from_str(&file("content/assets/big_nukes/sounds.json")).unwrap();
+        let sounds: serde_json::Value = serde_json::from_str(&file("assets/big_nukes/sounds.json")).unwrap();
         let click = GEIGER_CLICK.strip_prefix("big_nukes:").unwrap();
         let silo = [MISSILE_LAUNCH, BOMBER_FLYBY].map(|e| e.strip_prefix("big_nukes:").unwrap());
         for event in ["blast.near", "blast.far", "wave.roar", click].into_iter().chain(silo) {
@@ -6877,7 +6875,7 @@ mod tests {
             assert!(entry.is_object(), "{event} isn't declared");
             for s in entry["sounds"].as_array().unwrap() {
                 let name = s["name"].as_str().unwrap().strip_prefix("big_nukes:").unwrap();
-                assert!(std::path::Path::new(&format!("{}/content/assets/big_nukes/sounds/{name}.ogg", env!("CARGO_MANIFEST_DIR"))).exists(), "{name}");
+                assert!(std::path::Path::new(&format!("{}/assets/big_nukes/sounds/{name}.ogg", env!("CARGO_MANIFEST_DIR"))).exists(), "{name}");
             }
         }
         for d in [10.0, 200.0, 2000.0] {
@@ -7002,7 +7000,7 @@ mod tests {
 
     #[test]
     fn the_sky_shader_validates() {
-        let source = file("mixins/big_nukes_native/sky.rs");
+        let source = file("../mixins/big_nukes_native/sky.rs");
         let start = source.find("const SHADER: &str = r#\"").expect("sky.rs holds the shader") + "const SHADER: &str = r#\"".len();
         let end = start + source[start..].find("\"#;").expect("the shader ends");
         let module = naga::front::wgsl::parse_str(&source[start..end]).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source[start..end])));
@@ -7063,7 +7061,7 @@ mod tests {
         assert_eq!(components(GUIDE)["!minecraft:enchantable"], serde_json::json!({}));
         assert_eq!(guide_give("Steve"), "give Steve big_nukes:guide");
         assert_eq!(guide_give("@s"), "give @s big_nukes:guide");
-        let recipe: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/recipe/guide.json")).unwrap();
+        let recipe: serde_json::Value = serde_json::from_str(&file("data/big_nukes/recipe/guide.json")).unwrap();
         assert_eq!(recipe["type"], "minecraft:crafting_shapeless");
         assert_eq!(recipe["ingredients"], serde_json::json!(["minecraft:book", RAW_URANIUM]));
         assert_eq!(recipe["result"], serde_json::json!({"id": GUIDE, "count": 1}));
@@ -7412,7 +7410,7 @@ mod tests {
         assert!(TAB_STEP > TAB_SIZE[1]);
         assert!(TAB_X > TAB_OPEN_X && TAB_X + TAB_SIZE[0] > 0.0, "a bookmark tucks under the cover");
         // Every part the screen draws is in the texture.
-        let size = png_size("content/assets/big_nukes/textures/gui/guide.png");
+        let size = png_size("assets/big_nukes/textures/gui/guide.png");
         assert_eq!(size, (GUIDE_TEXTURE[0] as u32, GUIDE_TEXTURE[1] as u32));
         let mut parts = vec![[0.0, 0.0, BOOK_SIZE[0], BOOK_SIZE[1]], SLOT_SRC, RECIPE_ARROW_SRC];
         for hover in [false, true] {
@@ -7783,7 +7781,7 @@ mod tests {
 
     #[test]
     fn every_block_and_item_is_in_the_creative_tab() {
-        let tab: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/horizon/creative_tab/big_nukes.json")).unwrap();
+        let tab: serde_json::Value = serde_json::from_str(&file("data/big_nukes/horizon/creative_tab/big_nukes.json")).unwrap();
         let listed: Vec<&str> = tab["items"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
         let mut all: Vec<&str> = [CENTRIFUGE, ASSEMBLY_TABLE, DECONTAMINATOR].into_iter().chain(BombKind::ALL.map(BombKind::id)).chain(SUNBREAKER_PARTS).chain(SILO_BLOCKS).chain(FILE_BLOCKS).chain(WALL_BLOCKS).chain(BUNKER_BLOCKS).chain(EVENT_BLOCKS).collect();
         all.extend(ITEMS.iter().map(|i| i.0));
@@ -7804,16 +7802,16 @@ mod tests {
         let all: BTreeSet<&str> = blocks.iter().chain(&items).copied().collect();
         assert_eq!(all.len(), blocks.len() + items.len(), "an id is declared twice");
         let en = language("en_us");
-        let base = "content/assets/big_nukes";
+        let base = "assets/big_nukes";
         for b in &blocks {
             let n = name(b);
-            for f in [format!("{base}/blockstates/{n}.json"), format!("{base}/items/{n}.json"), format!("content/data/big_nukes/loot_table/blocks/{n}.json")] {
+            for f in [format!("{base}/blockstates/{n}.json"), format!("{base}/items/{n}.json"), format!("data/big_nukes/loot_table/blocks/{n}.json")] {
                 assert!(exists(&f), "{f}");
             }
             assert!(en.contains_key(&format!("block.big_nukes.{n}")), "{b} has no name");
         }
         for b in FILE_BLOCKS {
-            let decl: serde_json::Value = serde_json::from_str(&file(&format!("content/data/big_nukes/horizon/block/{}.json", name(b)))).unwrap();
+            let decl: serde_json::Value = serde_json::from_str(&file(&format!("data/big_nukes/horizon/block/{}.json", name(b)))).unwrap();
             assert!(decl["template"].as_str().unwrap().starts_with("minecraft:"), "{b}");
         }
         for i in &items {
@@ -7831,13 +7829,13 @@ mod tests {
             assert_eq!(png_size(&format!("{base}/textures/entity/equipment/{layer}/hazmat.png")), (64, 32), "{layer}");
         }
         // The radiation's mark: a harmful effect with a name and an 18x18 icon.
-        let effect: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/horizon/mob_effect/radiation.json")).unwrap();
+        let effect: serde_json::Value = serde_json::from_str(&file("data/big_nukes/horizon/mob_effect/radiation.json")).unwrap();
         assert_eq!(effect["category"], "harmful");
         assert!(effect["color"].as_u64().unwrap() <= 0xFF_FFFF);
         assert_eq!(effect.as_object().unwrap().len(), 2, "a mob effect takes a category and a colour only");
         assert!(en.contains_key("effect.big_nukes.radiation"));
         assert_eq!(png_size(&format!("{base}/textures/mob_effect/radiation.png")), (18, 18));
-        let pickaxe: serde_json::Value = serde_json::from_str(&file("content/data/minecraft/tags/block/mineable/pickaxe.json")).unwrap();
+        let pickaxe: serde_json::Value = serde_json::from_str(&file("data/minecraft/tags/block/mineable/pickaxe.json")).unwrap();
         // Entries of blocks declared in code are optional: the assets half alone must still load.
         let mined: Vec<&str> = pickaxe["values"]
             .as_array()
@@ -7857,7 +7855,7 @@ mod tests {
         for b in blocks.iter().filter(|b| **b != "big_nukes:ash") {
             assert!(mined.contains(b), "{b} isn't mined with a pickaxe");
         }
-        let shovel: serde_json::Value = serde_json::from_str(&file("content/data/minecraft/tags/block/mineable/shovel.json")).unwrap();
+        let shovel: serde_json::Value = serde_json::from_str(&file("data/minecraft/tags/block/mineable/shovel.json")).unwrap();
         assert_eq!(shovel["values"], serde_json::json!(["big_nukes:ash"]));
         // Every texture a model names is drawn.
         for dir in ["block", "item"] {
@@ -7888,7 +7886,7 @@ mod tests {
             .chain(EVENT_BLOCKS)
             .collect();
         let known_id = |id: &str| id.starts_with("minecraft:") || known.contains(id);
-        let dir = format!("{}/content/data/big_nukes/recipe", env!("CARGO_MANIFEST_DIR"));
+        let dir = format!("{}/data/big_nukes/recipe", env!("CARGO_MANIFEST_DIR"));
         let mut made = BTreeSet::new();
         for e in std::fs::read_dir(dir).unwrap() {
             let path = e.unwrap().path();
@@ -8109,14 +8107,14 @@ mod tests {
 
     #[test]
     fn uranium_ore_is_generated_deep_and_rare() {
-        let feature: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/worldgen/configured_feature/ore_uranium.json")).unwrap();
+        let feature: serde_json::Value = serde_json::from_str(&file("data/big_nukes/worldgen/configured_feature/ore_uranium.json")).unwrap();
         let states: Vec<&str> = feature["targets"].as_array().unwrap().iter().map(|t| t["state"].as_str().unwrap()).collect();
         assert_eq!(states, ["big_nukes:uranium_ore", "big_nukes:deepslate_uranium_ore"]);
-        let placed: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/worldgen/placed_feature/ore_uranium.json")).unwrap();
+        let placed: serde_json::Value = serde_json::from_str(&file("data/big_nukes/worldgen/placed_feature/ore_uranium.json")).unwrap();
         let p = placed["placement"].as_array().unwrap();
         assert_eq!(p[0]["count"], 2);
         assert_eq!(p[2]["height"]["max_inclusive"]["absolute"], 16);
-        let modifier: serde_json::Value = serde_json::from_str(&file("content/data/big_nukes/neoforge/biome_modifier/add_uranium.json")).unwrap();
+        let modifier: serde_json::Value = serde_json::from_str(&file("data/big_nukes/neoforge/biome_modifier/add_uranium.json")).unwrap();
         assert_eq!((modifier["features"].as_str(), modifier["step"].as_str()), (Some("big_nukes:ore_uranium"), Some("underground_ores")));
     }
 
@@ -8621,7 +8619,7 @@ mod tests {
     #[test]
     fn the_keypad_menu_has_the_bombs_slot_and_data() {
         let (namespace, name) = KEYPAD_MENU.split_once(':').unwrap();
-        let menu: serde_json::Value = serde_json::from_str(&file(&format!("content/data/{namespace}/horizon/menu/{name}.json"))).unwrap();
+        let menu: serde_json::Value = serde_json::from_str(&file(&format!("data/{namespace}/horizon/menu/{name}.json"))).unwrap();
         assert_eq!(menu["slots"], BOMB_SLOTS);
         assert_eq!(menu["data_slots"], PAD_DATA);
     }
@@ -9941,9 +9939,9 @@ mod flight_tests {
             }
         }
         // Its menu, named as the block, and the window's slot rules, which can't reach the rules and name them.
-        let menu = json(&format!("content/data/big_nukes/horizon/menu/{}.json", LAUNCH_PAD.strip_prefix("big_nukes:").unwrap()));
+        let menu = json(&format!("data/big_nukes/horizon/menu/{}.json", LAUNCH_PAD.strip_prefix("big_nukes:").unwrap()));
         assert_eq!(menu["slots"], PAD_SLOTS);
-        let slot_rules = read("mixins/big_nukes_native/slot_rules.rs");
+        let slot_rules = read("../mixins/big_nukes_native/slot_rules.rs");
         for id in [LAUNCH_PAD, MISSILE, atomic, tactical] {
             assert!(slot_rules.contains(&format!("\"{id}\"")), "slot_rules.rs doesn't name {id}");
         }
@@ -10027,8 +10025,8 @@ mod flight_tests {
 
     #[test]
     fn the_flying_models_are_items_of_their_own_out_of_the_tab() {
-        let base = "content/assets/big_nukes";
-        let tab = read("content/data/big_nukes/horizon/creative_tab/big_nukes.json");
+        let base = "assets/big_nukes";
+        let tab = read("data/big_nukes/horizon/creative_tab/big_nukes.json");
         let en = json(&format!("{base}/lang/en_us.json"));
         for (id, scale, long, wide) in [(MISSILE_MODEL, MISSILE_SCALE, 6.0, 1.0), (BOMBER_MODEL, BOMBER_SCALE, 12.0, 12.0)] {
             let n = id.strip_prefix("big_nukes:").unwrap();
@@ -10170,10 +10168,10 @@ mod flight_tests {
         // Seconds, rounded up, from the ticks.
         assert_eq!(ConsoleState::counting(41).data()[1], 3);
         assert_eq!(ConsoleState::locked(1).data()[1], 1);
-        let menu = json("content/data/big_nukes/horizon/menu/console.json");
+        let menu = json("data/big_nukes/horizon/menu/console.json");
         assert_eq!((menu["slots"].as_u64(), menu["data_slots"].as_u64()), (Some(1), Some(CONSOLE_DATA as u64)));
         // Every line it shows or answers is in both languages, with its arguments.
-        let (en, ru) = (json("content/assets/big_nukes/lang/en_us.json"), json("content/assets/big_nukes/lang/ru_ru.json"));
+        let (en, ru) = (json("assets/big_nukes/lang/en_us.json"), json("assets/big_nukes/lang/ru_ru.json"));
         let mut lines: Vec<Reply> = states.iter().map(ConsoleState::line).collect();
         lines.extend(
             [
@@ -10890,7 +10888,7 @@ mod decon_tests {
     }
 
     fn language(code: &str) -> BTreeMap<String, String> {
-        serde_json::from_str(&file(&format!("content/assets/big_nukes/lang/{code}.json"))).unwrap()
+        serde_json::from_str(&file(&format!("assets/big_nukes/lang/{code}.json"))).unwrap()
     }
 
     #[test]
@@ -10902,7 +10900,7 @@ mod decon_tests {
         assert_eq!(eat["consume_seconds"], 0.8, "16 ticks, as dried kelp");
         assert_eq!(eat["animation"], "eat");
         assert_eq!(eat["sound"], "minecraft:entity.generic.eat");
-        let recipe = json("content/data/big_nukes/recipe/iodine_tablets.json");
+        let recipe = json("data/big_nukes/recipe/iodine_tablets.json");
         assert_eq!(recipe["type"], "minecraft:crafting_shapeless");
         let mut parts: Vec<&str> = recipe["ingredients"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
         parts.sort();
@@ -10910,13 +10908,13 @@ mod decon_tests {
         assert_eq!(recipe["result"], serde_json::json!({"id": IODINE, "count": 2}));
         // Its effect: a beneficial one with a name and an 18x18 icon.
         let (ns, name) = IODINE_EFFECT.split_once(':').unwrap();
-        let effect = json(&format!("content/data/{ns}/horizon/mob_effect/{name}.json"));
+        let effect = json(&format!("data/{ns}/horizon/mob_effect/{name}.json"));
         assert_eq!(effect["category"], "beneficial");
         assert!(effect["color"].as_u64().unwrap() <= 0xFF_FFFF);
         assert_eq!(effect.as_object().unwrap().len(), 2);
         let (en, ru) = (language("en_us"), language("ru_ru"));
         assert!(en.contains_key(&format!("effect.{ns}.{name}")) && ru.contains_key(&format!("effect.{ns}.{name}")));
-        assert_eq!(png_size(&format!("content/assets/{ns}/textures/mob_effect/{name}.png")), (18, 18));
+        assert_eq!(png_size(&format!("assets/{ns}/textures/mob_effect/{name}.png")), (18, 18));
     }
 
     #[test]
@@ -10934,15 +10932,15 @@ mod decon_tests {
         assert_eq!(remainder("minecraft:lava_bucket"), Some("minecraft:bucket"));
         assert_eq!(remainder("minecraft:iron_block"), None);
         let (ns, name) = DECONTAMINATOR.split_once(':').unwrap();
-        let menu = json(&format!("content/data/{ns}/horizon/menu/{name}.json"));
+        let menu = json(&format!("data/{ns}/horizon/menu/{name}.json"));
         assert_eq!(menu["slots"], DECON_SLOTS);
         assert_eq!(menu["data_slots"], Decontaminator::default().data(0.0).len());
         assert_eq!(menu["results"], serde_json::json!([]));
         assert_eq!(DECON_FUEL_SLOT, 0);
         // Its screen: a furnace's panel, the lit flame right of it and the full bar under it.
-        assert_eq!(png_size("content/assets/big_nukes/textures/gui/decontaminator.png"), (192, 176));
+        assert_eq!(png_size("assets/big_nukes/textures/gui/decontaminator.png"), (192, 176));
         assert!(RADIUS_BAR <= 176 - 2 * 8);
-        let tab = json("content/data/big_nukes/horizon/creative_tab/big_nukes.json");
+        let tab = json("data/big_nukes/horizon/creative_tab/big_nukes.json");
         let listed: Vec<&str> = tab["items"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
         let at = |id: &str| listed.iter().position(|l| *l == id).unwrap();
         assert!(at(ANTI_RAD) < at(IODINE) && at(IODINE) < at(DECONTAMINATOR), "with the radiation's things");
@@ -11870,7 +11868,7 @@ mod bunker_tests {
     }
 
     fn language(code: &str) -> BTreeMap<String, String> {
-        serde_json::from_value(json(&format!("content/assets/big_nukes/lang/{code}.json"))).unwrap()
+        serde_json::from_value(json(&format!("assets/big_nukes/lang/{code}.json"))).unwrap()
     }
 
     #[test]
@@ -11921,17 +11919,17 @@ mod bunker_tests {
 
     #[test]
     fn the_door_drops_once_and_the_blocks_have_their_models() {
-        let loot = json("content/data/big_nukes/loot_table/blocks/hermetic_door.json");
+        let loot = json("data/big_nukes/loot_table/blocks/hermetic_door.json");
         assert_eq!(loot["pools"][0]["entries"][0]["condition"]["state"], serde_json::json!({"half": "lower"}));
-        let states = json("content/assets/big_nukes/blockstates/hermetic_door.json");
+        let states = json("assets/big_nukes/blockstates/hermetic_door.json");
         assert_eq!(states["variants"].as_object().unwrap().len(), 32, "facing, half, hinge and open");
-        let lamp = json("content/assets/big_nukes/blockstates/bunker_lamp.json");
+        let lamp = json("assets/big_nukes/blockstates/bunker_lamp.json");
         assert_eq!(lamp["variants"]["lit=true"]["model"], "big_nukes:block/bunker_lamp_lit");
-        let generator = json("content/assets/big_nukes/blockstates/fuel_generator.json");
+        let generator = json("assets/big_nukes/blockstates/fuel_generator.json");
         assert_eq!(generator["variants"]["facing=east,lit=true"], serde_json::json!({"model": "big_nukes:block/fuel_generator_on", "y": 90}));
         for k in WallKind::ALL {
             let (ns, name) = k.cracked_id().split_once(':').unwrap();
-            let loot = json(&format!("content/data/{ns}/loot_table/blocks/{name}.json"));
+            let loot = json(&format!("data/{ns}/loot_table/blocks/{name}.json"));
             assert_eq!(loot["pools"][0]["entries"][0]["name"], k.cracked_id(), "a cracked wall drops itself");
         }
     }
@@ -11966,7 +11964,7 @@ mod bunker_tests {
     fn the_generator_and_the_filter_have_their_menus() {
         for (block, slots, data) in [(FUEL_GENERATOR, GENERATOR_SLOTS, Generator::default().data().len()), (AIR_FILTER, FILTER_SLOTS, filter_data(true, Some(9)).len())] {
             let (ns, name) = block.split_once(':').unwrap();
-            let menu = json(&format!("content/data/{ns}/horizon/menu/{name}.json"));
+            let menu = json(&format!("data/{ns}/horizon/menu/{name}.json"));
             assert_eq!(menu["slots"], slots, "{block}");
             assert_eq!(menu["data_slots"], data, "{block}");
             assert_eq!(menu["results"], serde_json::json!([]), "{block}");
