@@ -10,7 +10,7 @@ The same input gives the same files; hand-written files (recipes, worldgen) are 
 import json
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1] / "content"
+ROOT = Path(__file__).resolve().parents[1] / "big_nukes"
 A = ROOT / "assets" / "big_nukes"
 D = ROOT / "data" / "big_nukes"
 

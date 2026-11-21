@@ -3,7 +3,7 @@
 
     python tools/make_sounds.py [name ...]
 
-Writes content/assets/big_nukes/sounds/*.ogg (mono, 44.1 kHz, Vorbis) with numpy and ffmpeg, or only the
+Writes big_nukes/assets/big_nukes/sounds/*.ogg (mono, 44.1 kHz, Vorbis) with numpy and ffmpeg, or only the
 named ones. The same seed gives the same samples; Vorbis gives each file a new stream serial, so a sound
 that is already there is best left out.
 """
@@ -16,7 +16,7 @@ import wave
 import numpy as np
 
 RATE = 44100
-OUT = os.path.join(os.path.dirname(__file__), "..", "content", "assets", "big_nukes", "sounds")
+OUT = os.path.join(os.path.dirname(__file__), "..", "big_nukes", "assets", "big_nukes", "sounds")
 rng = np.random.default_rng(26_3)
 
 

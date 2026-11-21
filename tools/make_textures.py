@@ -25,7 +25,7 @@ from pathlib import Path
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-TEX = ROOT / "content" / "assets" / "big_nukes" / "textures"
+TEX = ROOT / "big_nukes" / "assets" / "big_nukes" / "textures"
 CLEAR = (0, 0, 0, 0)
 
 
