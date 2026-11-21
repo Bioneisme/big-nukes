@@ -7038,19 +7038,7 @@ mod tests {
 
     // ---- the shader (plan 3, Task 3) ------------------------------------------------
 
-    #[test]
-    fn the_sky_shader_validates() {
-        let source = file("../mixins/big_nukes_native/sky.rs");
-        let start = source.find("const SHADER: &str = r#\"").expect("sky.rs holds the shader") + "const SHADER: &str = r#\"".len();
-        let end = start + source[start..].find("\"#;").expect("the shader ends");
-        let module = naga::front::wgsl::parse_str(&source[start..end]).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source[start..end])));
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
-            .validate(&module)
-            .unwrap_or_else(|e| panic!("{e:?}"));
-        for entry in ["vs", "fs"] {
-            assert!(module.entry_points.iter().any(|e| e.name == entry), "{entry}");
-        }
-    }
+    // The sky's WGSL is validated by tools/wgsl-check (naga isn't a dependency of the package).
 
     #[test]
     fn the_newest_blasts_are_drawn_first() {

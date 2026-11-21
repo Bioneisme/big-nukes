@@ -1,0 +1,9 @@
+[package]
+name = "big-nukes-wgsl-check"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Validates the sky's WGSL (big_nukes/src/sky.rs) with the naga of Horizon's wgpu 30: cargo run --manifest-path tools/wgsl-check/Cargo.toml"
+
+[dependencies]
+naga = { version = "30.0.1", features = ["wgsl-in"] }

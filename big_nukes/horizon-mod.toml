@@ -16,3 +16,18 @@ namespaces = ["big_nukes"]
 game = "26.3"
 horizon = "8f83e5c85ae3b9a117f742e8d91170c5c9080a06"
 mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
+
+# The mushroom clouds and dust rings: a pass of the mod's own over the finished world (src/sky.rs holds the shader).
+[[native.mixin]]
+id = "sky"
+target = "horizon_mod_render::render::world_drawn"
+kind = "HEAD"
+helper = "src/mixins/world_drawn.rs"
+bindings = [{ name = "world", ty = "&mut WorldDrawn<'_>", value = "&mut *world" }]
+
+[[native.mixin]]
+id = "sky-needs"
+target = "horizon_mod_render::render::render_needs"
+kind = "HEAD"
+helper = "src/mixins/render_needs.rs"
+bindings = [{ name = "needs", ty = "&mut RenderNeeds", value = "&mut *needs" }]
