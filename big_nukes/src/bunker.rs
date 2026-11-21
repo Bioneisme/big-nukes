@@ -7,7 +7,7 @@
 //! them. The lamp is a copper bulb, whose light follows its `lit`.
 
 use crate::core::{self, Pl, argb, lock};
-use crate::{decon, events, rules};
+use crate::{decon, rules};
 use mod_api::{
     Block, BlockProperties, BlockUpdateFlags, ClientHost, DrawContext, HostBlockStates, LevelRef, LightLayer, MenuQuickMoveEvent,
     ModBlockEntityView, ModContainer, Screen, ServerHost, SoundSource, Tag,
@@ -566,5 +566,4 @@ pub(crate) fn forget() {
     lock(&SHELTER).clear();
     lock(&DOOR_PRESSES).clear();
     TICK.store(0, Ordering::Relaxed);
-    events::forget();
 }

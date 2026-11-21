@@ -25,7 +25,7 @@ pub mod sky;
 mod world;
 
 use mod_api::{
-    ApplyEffectTickEvent, BlockChangedEvent, BlockKey, BlocksEvent, CameraPoseEvent, CameraShakeEvent, ChunkLoadEvent,
+    BlockChangedEvent, BlockKey, BlocksEvent, CameraPoseEvent, CameraShakeEvent, ChunkLoadEvent,
     ChunkUnloadEvent, ClientHost, ClientLevelUnloadEvent, ClientTickPostEvent, ComponentTypesEvent, ConsumeEffectEvent,
     EffectKey, Flow, GuiLayerPostEvent, GuiRenderPostEvent, Hooks, HostSide, IPayloadContext, IPayloadHandler,
     InteractionResult, ItemKey, ItemPart, ItemTooltipEvent, ItemsEvent, LevelHost, LevelTickPostEvent, ParticleKey,
@@ -33,7 +33,7 @@ use mod_api::{
     RegisterCommandsEvent, Registrar, RegistrationContext, RenderFogEvent, RenderFramePreEvent, RightClickBlockEvent,
     RunModCommandEvent, ScreenCharTypedPreEvent, ScreenKeyPressedPreEvent, ScreenMouseButtonPressedPreEvent,
     ScreenMouseScrolledPreEvent, ScreenRenderPostEvent, ServerHost, ServerStoppingEvent, ServerTickEvent,
-    ShouldApplyEffectTickThisTickEvent, TicketController, UseItemEvent, UseOnEvent, ValidateTicketsEvent,
+    TicketController, UseItemEvent, UseOnEvent, ValidateTicketsEvent,
     WorldLifecycleEvent,
 };
 use std::{
@@ -207,14 +207,6 @@ impl Hooks for Mod {
 
     fn player_died(&self, _: &mut dyn ServerHost, event: &mut PlayerDiedEvent<'_>) {
         rad::player_died(event.player);
-    }
-
-    fn should_apply_effect_tick_this_tick(&self, host: &dyn mod_api::Host, event: &mut ShouldApplyEffectTickThisTickEvent) {
-        decon::effect_applies(host, event);
-    }
-
-    fn apply_effect_tick(&self, host: &dyn mod_api::Host, event: &mut ApplyEffectTickEvent<'_>) {
-        decon::effect_tick(host, event);
     }
 
     /// The end of a level's tick: its mobs in the zones are hurt, and the waves of its dimension move on.

@@ -867,6 +867,7 @@ pub(crate) fn close_world() {
     silo::forget();
     decon::forget();
     bunker::forget();
+    events::forget();
 }
 
 /// A block changed, by any means: a bomb that is no longer there is forgotten. Runs for every change in the world,

@@ -6336,11 +6336,8 @@ mod tests {
             "src/bunker.rs",
             "src/decon.rs",
             "src/events.rs",
-            // TODO(stage 2): drop each old module once its port in src/ uses its keys.
-            "../mixins/big_nukes_native/silo.rs",
-            "../mixins/big_nukes_native/decon.rs",
-            "../mixins/big_nukes_native/bunker.rs",
-            "../mixins/big_nukes_native/events.rs",
+            "src/silo_flights.rs",
+            "src/silo_window.rs",
         ]
         .iter()
         .flat_map(|s| keys_in(file(s).split("#[cfg(test)]").next().unwrap()))

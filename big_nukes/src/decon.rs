@@ -4,9 +4,9 @@
 use crate::core::{self, Pl, argb, lock};
 use crate::{keys, rules};
 use mod_api::{
-    ActiveEffect, ApplyEffectTickEvent, Block, ClientHost, Compound, Direction, DrawContext, Heightmap, Host, HostTransaction,
+    ActiveEffect, Block, ClientHost, Compound, Direction, DrawContext, Heightmap, Host, HostTransaction,
     ItemResource, ItemStack, LevelRef, MenuQuickMoveEvent, ModBlockEntityView, ModContainer, Screen, ServerHost,
-    ShouldApplyEffectTickThisTickEvent, Tag, ITEMS,
+    Tag, ITEMS,
 };
 use std::sync::{
     Mutex,
@@ -329,13 +329,6 @@ pub(crate) fn server_tick(host: &mut dyn ServerHost) {
 pub(crate) fn iodine_on(host: &dyn ServerHost, who: &Pl) -> bool {
     crate::rad::has_effect(host, who, keys().iodine)
 }
-
-/// Whether a content mod's effect acts this tick (`should_apply_effect_tick_this_tick`). Nothing: `iodine_on` reads
-/// the effect itself, and the old glue's tick (which only told the player's tick that it was on) has no work left.
-pub(crate) fn effect_applies(_host: &dyn Host, _event: &mut ShouldApplyEffectTickThisTickEvent) {}
-
-/// A content mod's effect acts (`apply_effect_tick`, a read-only host). Nothing: see `effect_applies`.
-pub(crate) fn effect_tick(_host: &dyn Host, _event: &mut ApplyEffectTickEvent<'_>) {}
 
 /// The world closing: what is queued goes.
 pub(crate) fn forget() {
