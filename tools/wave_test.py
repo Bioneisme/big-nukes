@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import time
+import play
 
 GAME, VERSION = sys.argv[1:3]
 ONLY = set(sys.argv[3:])
@@ -55,7 +56,7 @@ def block(x, y, z):
 
 
 def launch(world):
-    r = ctl("launch", "--world", world, "--seed", "12345", "--creative", "--wait", "--offscreen", timeout=280)
+    r = play.launch(ctl, world, "12345")
     print(" launch:", str(r)[:100], flush=True)
     ctl("wait", 40)
     chat("gamerule advance_time false")

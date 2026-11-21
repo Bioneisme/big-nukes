@@ -15,6 +15,7 @@ import sys
 import time
 
 from PIL import Image, ImageStat
+import play
 
 GAME, VERSION = sys.argv[1:3]
 ONLY = set(sys.argv[3:])
@@ -93,7 +94,7 @@ def chat_log_since(n):
 
 def launch(world):
     shutil.rmtree(os.path.join(GAME, "saves", world), ignore_errors=True)
-    ctl("launch", "--world", world, "--seed", "12345", "--creative", "--wait", "--offscreen", timeout=280)
+    play.launch(ctl, world, "12345")
     ctl("wait", 60)
     chat("gamerule advance_time false")
     chat("gamerule advance_weather false")

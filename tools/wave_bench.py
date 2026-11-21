@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import time
+import play
 
 GAME, VERSION = sys.argv[1:3]
 RADII = [int(r) for r in sys.argv[3:]] or [50, 250, 1000]
@@ -48,7 +49,7 @@ def log_lines():
 def bench(radius):
     world = f"bn-bench-{radius}"
     shutil.rmtree(os.path.join(GAME, "saves", world), ignore_errors=True)
-    ctl("launch", "--world", world, "--seed", "12345", "--creative", "--wait", "--offscreen", timeout=280)
+    play.launch(ctl, world, "12345")
     ctl("wait", 200)
     chat("gamerule advance_time false")
     chat("gamerule advance_weather false")

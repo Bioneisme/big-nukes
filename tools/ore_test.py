@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+import play
 
 GAME, VERSION = sys.argv[1:3]
 CTL = os.path.join(os.environ["APPDATA"], "horizon-launcher", "versions", VERSION, "horizon-ctl.exe")
@@ -46,7 +47,7 @@ def world(name, setting):
     with open(LIST, "w", encoding="utf-8", newline="\n") as f:
         f.write(setting)
     shutil.rmtree(os.path.join(GAME, "saves", name), ignore_errors=True)
-    r = ctl("launch", "--world", name, "--seed", "4242", "--creative", "--wait", "--offscreen", timeout=280)
+    r = play.launch(ctl, name, "4242")
     ctl("wait", 60)
     return r
 

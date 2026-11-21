@@ -5,7 +5,8 @@ sums them up. Each check's output goes to target/all-tests/NAME.log.
     python tools/run_all.py INSTANCE [NAME ...]
 
 INSTANCE is a launcher instance id (bn-auto-test); NAMEs pick checks (silo bunker ...), all by default.
-The halves checks take the instance's mods apart and run on their own: halves_test.py, rad_halves_test.py.
+Each check starts the game through the launcher's Play (tools/play.py), with the launcher's real data folder in
+HORIZON_LAUNCHER_HOME (default D:\Games\horizon-launcher).
 """
 import json
 import os
@@ -36,6 +37,8 @@ def main():
     game = os.path.join(os.environ["APPDATA"], "horizon", "instances", instance)
     build = version(instance)
     env = {k: v for k, v in os.environ.items() if k != "HORIZON_HOME"}
+    env["BN_INSTANCE"] = instance
+    env.setdefault("HORIZON_LAUNCHER_HOME", "D:\Games\horizon-launcher")
     # A control socket of the instance's own, so a game the player has open never takes the checks' commands.
     env["HORIZON_CONTROL"] = os.path.join(tempfile.gettempdir(), f"horizon-control-{instance}.json")
     os.makedirs(LOGS, exist_ok=True)

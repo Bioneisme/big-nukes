@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import time
+import play
 
 GAME, VERSION = sys.argv[1:3]
 CTL = os.path.join(os.environ["APPDATA"], "horizon-launcher", "versions", VERSION, "horizon-ctl.exe")
@@ -68,7 +69,7 @@ def entity_health(selector):
 
 
 def open_world():
-    ctl("launch", "--world", WORLD, "--seed", "12345", "--creative", "--wait", "--offscreen", timeout=280)
+    play.launch(ctl, WORLD, "12345")
     ctl("wait", 60)
     for _ in range(60):
         player = ctl("state").get("player") or {}

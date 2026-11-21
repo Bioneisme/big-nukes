@@ -38,7 +38,7 @@ def check(name, ok, detail=""):
 with open(TAB, encoding="utf-8") as f:
     items = json.load(f)["items"]
 shutil.rmtree(os.path.join(GAME, "saves", "bn-icons"), ignore_errors=True)
-ctl("launch", "--world", "bn-icons", "--seed", "12345", "--creative", "--wait", "--offscreen", timeout=280)
+play.launch(ctl, "bn-icons", "12345")
 ctl("wait", 60)
 ctl("command", "gamemode survival")
 ctl("command", "clear @s")
@@ -55,6 +55,7 @@ ctl("wait", 10)
 # The mod's tab comes after vanilla's, on the creative screen's second page: the arrow over the
 # tabs turns it (GUI scale 2: 86 GUI pixels right of the middle, 71 down), then the first tab there.
 from PIL import Image
+import play
 probe = os.path.join(SHOTS, "icons-creative.png")
 ctl("screenshot", probe)
 w, h = Image.open(probe).size

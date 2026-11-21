@@ -15,6 +15,7 @@ import sys
 import time
 
 from PIL import Image, ImageChops, ImageStat
+import play
 
 GAME, VERSION = sys.argv[1:3]
 ONLY = set(sys.argv[3:])
@@ -72,7 +73,7 @@ def stand(cx, cy, cz, yaw):
 
 def world(name):
     shutil.rmtree(os.path.join(GAME, "saves", name), ignore_errors=True)
-    ctl("launch", "--world", name, "--seed", "12345", "--creative", "--wait", "--offscreen", timeout=280)
+    play.launch(ctl, name, "12345")
     ctl("wait", 60)
     for line in ("gamerule advance_time false", "gamerule advance_weather false", "time set noon", "weather clear"):
         chat(line)
