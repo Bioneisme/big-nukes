@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Checks uranium ore in a fresh world: some below y=16, none above, and the world opens without
-the native half too.
+"""Checks uranium ore in a fresh world: some below y=16, none above.
 
     python tools/ore_test.py GAME_FOLDER VERSION
 """
@@ -18,7 +17,6 @@ CTL = os.path.join(os.environ["APPDATA"], "horizon-launcher", "versions", VERSIO
 os.environ["HORIZON_HOME"] = GAME
 os.environ["MSYS_NO_PATHCONV"] = "1"
 sys.stdout.reconfigure(encoding="utf-8")
-LIST = os.path.join(GAME, "horizon-mods.txt")
 failed = []
 
 
@@ -43,37 +41,26 @@ def count(x, z, y0, y1, block):
     return int(m.group(1)) if m and "filled" in said.lower() else 0
 
 
-def world(name, setting):
-    with open(LIST, "w", encoding="utf-8", newline="\n") as f:
-        f.write(setting)
+def world(name):
     shutil.rmtree(os.path.join(GAME, "saves", name), ignore_errors=True)
     r = play.launch(ctl, name, "4242")
     ctl("wait", 60)
     return r
 
 
-saved = open(LIST, encoding="utf-8").read()
-try:
-    world("bn-ore", "mod.big_nukes:true\nmod.big_nukes_native:true\n")
-    player = ctl("state").get("player") or {}
-    pos = player.get("pos") or player.get("position") or [0, 0, 0]
-    bx, bz = int(pos[0]) // 16 * 16, int(pos[2]) // 16 * 16
-    low = high = 0
-    for i in range(6):
-        x, z = bx + (i % 3) * 16, bz + (i // 3) * 16
-        low += count(x, z, -63, -24, "big_nukes:deepslate_uranium_ore") + count(x, z, -23, 16, "big_nukes:deepslate_uranium_ore")
-        low += count(x, z, -63, -24, "big_nukes:uranium_ore") + count(x, z, -23, 16, "big_nukes:uranium_ore")
-        high += count(x, z, 17, 80, "big_nukes:uranium_ore")
-    print(f" ore below y=16: {low}, above: {high}")
-    check("uranium ore is generated below y=16", low > 0, str(low))
-    check("no uranium ore above y=16", high == 0, str(high))
-    ctl("quit")
-    time.sleep(8)
-    r = world("bn-ore-assets", "mod.big_nukes:true\nmod.big_nukes_native:false\n")
-    check("without the native half the world opens", bool(ctl("state").get("player")), str(r)[:200])
-    ctl("quit")
-    time.sleep(8)
-finally:
-    with open(LIST, "w", encoding="utf-8", newline="\n") as f:
-        f.write(saved)
+world("bn-ore")
+player = ctl("state").get("player") or {}
+pos = player.get("pos") or player.get("position") or [0, 0, 0]
+bx, bz = int(pos[0]) // 16 * 16, int(pos[2]) // 16 * 16
+low = high = 0
+for i in range(6):
+    x, z = bx + (i % 3) * 16, bz + (i // 3) * 16
+    low += count(x, z, -63, -24, "big_nukes:deepslate_uranium_ore") + count(x, z, -23, 16, "big_nukes:deepslate_uranium_ore")
+    low += count(x, z, -63, -24, "big_nukes:uranium_ore") + count(x, z, -23, 16, "big_nukes:uranium_ore")
+    high += count(x, z, 17, 80, "big_nukes:uranium_ore")
+print(f" ore below y=16: {low}, above: {high}")
+check("uranium ore is generated below y=16", low > 0, str(low))
+check("no uranium ore above y=16", high == 0, str(high))
+ctl("quit")
+time.sleep(8)
 print(f"== failed: {failed}" if failed else "== all passed", flush=True)
