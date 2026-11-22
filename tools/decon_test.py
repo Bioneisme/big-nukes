@@ -74,12 +74,16 @@ def open_world():
 
 
 def pad(x, y, z):
-    """Glass under (x, y, z) once its chunk loads, the player then on it."""
+    """Glass under (x, y, z) once its chunk loads, the player then on it. The glass is looked at, not the fill's
+    answer: a slow load can leave no glass, and a player switched to survival over nothing falls to their death."""
     chat(f"tp @s {x + 0.5} {y + 2} {z + 0.5}")
-    for _ in range(20):
+    for _ in range(60):
         ctl("wait", 20)
-        if "not loaded" not in chat(f"fill {x - 2} {y - 1} {z - 2} {x + 2} {y - 1} {z + 2} minecraft:glass"):
+        chat(f"fill {x - 2} {y - 1} {z - 2} {x + 2} {y - 1} {z + 2} minecraft:glass")
+        if "glass" in str(ctl("block", x, y - 1, z).get("block")):
             break
+    else:
+        raise RuntimeError(f"no glass at {x} {y - 1} {z}")
     chat(f"tp @s {x + 0.5} {y} {z + 0.5}")
     ctl("wait", 5)
 
@@ -121,6 +125,8 @@ ctl("use-item", "--hold", 2)
 ctl("wait", 10)
 effects = json.dumps(ctl("effects"), ensure_ascii=False)
 check("a tablet gives the iodine effect", "iodine" in effects, effects[:300])
+if "iodine" not in effects:
+    print(" chat:", json.dumps(ctl("messages", 12), ensure_ascii=False)[:1200])
 ctl("wait", 200)
 shielded = rate(400)
 print(f" dose over 20 s: {bare:.1f} bare, {shielded:.1f} with iodine")
