@@ -144,6 +144,23 @@ weapons-grade uranium makes you sick. A roof doesn't help, the hazmat suit does.
 
 ![The nuclear winter: grey rain over the hills](docs/images/winter.jpg)
 
+### After the first blast
+
+From the world's first blast on, the world fights back:
+
+- **Radioactive storms.** Every 4 to 8 days a storm blows over the overworld for 3 to 5 minutes, with green fog and
+  ash. In the open it adds 2 rad a second, under a roof a quarter of that, in a sealed room nothing. Near a zone it brings a
+  pack of mutants.
+- **Mutants.** Zombies, skeletons, spiders and creepers in a zone turn into mutants: double health, half again the
+  damage, a little faster. They glow, give off radiation within 3 blocks and drop irradiated tissue, which makes
+  anti-rad.
+- **Falling satellites.** Every 10 to 20 days a satellite falls 150 to 400 blocks from a player, trailing smoke: a
+  blast of 8, a weak zone for a day and satellite debris to mine for uranium, iron and redstone.
+
+A **radar** powered by a burning fuel generator within 16 blocks warns the players within 256 blocks of a storm 2
+minutes ahead and of a satellite a minute before it falls. Right-click it for the next storm, a falling satellite and
+the missiles in flight.
+
 ### The decontaminator
 
 Put any furnace fuel in it. It burns it 4 times as fast as a furnace, and while it burns its circle grows a block every
@@ -195,7 +212,7 @@ alone is weak. TNT and creepers can't break any of these walls.
 - **Remote Detonator:** an ender pearl, four iron ingots, a stone button and redstone.
 - **Geiger Counter:** six iron ingots, glass, redstone and a raw uranium.
 - **Hazmat suit:** yellow wool in the shape of armour; the helmet has a glass pane.
-- **Anti-Rad:** a glass bottle, a golden carrot and redstone.
+- **Anti-Rad:** a glass bottle, a golden carrot (or irradiated tissue) and redstone.
 - **Iodine Tablets** (2): three dried kelp and sugar.
 - **Launch Pad:** four blocks of iron, four obsidian and a block of redstone.
 - **Silo Hatch:** eight iron trapdoors round redstone.
@@ -215,6 +232,7 @@ alone is weak. TNT and creepers can't break any of these walls.
 | Missile | 2 bomb casings, 3 blocks of iron, 4 blaze powder |
 | Splitting Missile | 1 missile, 3 tactical warheads |
 | Siren | 4 iron ingots, 1 note block, 2 redstone |
+| Radar | 2 blocks of iron, 4 redstone, 1 compass, 2 trinitite shards |
 | Radiation Glass (4) | 4 glass, 4 trinitite shards, 1 lead shield |
 | Strike Beacon | 4 iron ingots, 4 redstone, 1 compass |
 | Sunbreaker Core | 4 weapons-grade uranium, 4 nuclear charges, 1 block of diamond |
@@ -243,6 +261,8 @@ Operators have two commands:
 | `/bignukes blast <radius> [x y z]` | Sets off a blast of radius 8 to 1024, where you stand or at x y z |
 | `/bignukes maxpower` | Shows the largest blast this world allows |
 | `/bignukes maxpower <16\|50\|250\|1000\|1024>` | Sets it |
+| `/bignukes events [on\|off]` | Turns the storms, mutants and satellites on or off; `events <storm\|mutants\|satellite> [on\|off]` one of them |
+| `/bignukes events trigger <storm\|satellite>` | Starts one now |
 
 No blast over the limit goes off, the command's own included, and a bomb, a missile or a bomber says why. The limit
 starts at 1024, which allows everything. Each world keeps it in `horizon-big-nukes/waves.json`, in the world's folder.
@@ -251,7 +271,8 @@ Anyone can type `/bignukes guide`.
 ## Good to know
 
 - Every player needs the mod. It runs with your account's permissions, as every native mod does.
-- It is pinned to Horizon Nightly 2026-11-13 (9f42064).
+- It is pinned to Horizon Nightly 2026-11-21 (8f83e5c) and Horizon Mixins e59da90. The launcher builds it against that
+  Nightly's prebuilt game.
 - It is made for single player and play with friends: anyone can set off a bomb anywhere.
 - The ground past your render distance is changed when its chunks load; the cloud and the ring are seen from any
   distance.
