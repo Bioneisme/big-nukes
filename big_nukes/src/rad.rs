@@ -83,7 +83,8 @@ fn carried(host: &dyn ServerHost, player: PlayerRef) -> f64 {
 /// spectators take none.
 pub(crate) fn player_tick(host: &mut dyn ServerHost, player: PlayerRef) {
     let Some(who) = core::pl(host, player) else { return };
-    // Dead by any other blow (a blast, a fall): their dose goes, as `player_died` does for a LAN guest.
+    // A dead player's body still ticks until they respawn: no dose builds on it, and what it had goes, as
+    // `player_died` took it (else the dose they respawn with is what the body gathered in the zone after death).
     // (Read again: `Pl.health` reads 0 for a body the game couldn't find.)
     if host.living(player.entity()).and_then(|l| l.health(host)).is_some_and(|h| h <= 0.0) {
         player_died(who.uuid);
@@ -231,10 +232,6 @@ pub(crate) fn sicken(host: &mut dyn ServerHost, who: &Pl, stage: u8, damage: Opt
     run(host, &format!("effect give {name} {} 3 {} true", rules::RADIATION, stage - 1));
     if let Some(amount) = damage {
         hurt(host, who.player.entity(), amount as f32);
-        // Horizon tells `player_died` only of a LAN guest's death: the world's own player is seen dead here.
-        if host.living(who.player.entity()).and_then(|l| l.health(host)).is_some_and(|h| h <= 0.0) {
-            player_died(who.uuid);
-        }
     }
 }
 

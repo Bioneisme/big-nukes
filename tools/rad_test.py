@@ -87,10 +87,14 @@ def stand(x, y, z):
 def pad(x, y, z):
     """Glass under (x, y, z) once its chunk loads, so a survival player there doesn't fall."""
     stand(x, y + 2, z)
-    for _ in range(20):
+    # The glass is looked at, not the fill's answer: a slow load can leave none (as in decon_test).
+    for _ in range(60):
         ctl("wait", 20)
-        if "not loaded" not in chat(f"fill {x - 2} {y - 1} {z - 2} {x + 2} {y - 1} {z + 2} minecraft:glass"):
+        chat(f"fill {x - 2} {y - 1} {z - 2} {x + 2} {y - 1} {z + 2} minecraft:glass")
+        if "glass" in str(ctl("block", x, y - 1, z).get("block")):
             break
+    else:
+        raise RuntimeError(f"no glass at {x} {y - 1} {z}")
     stand(x, y, z)
     ctl("wait", 5)
 
@@ -106,14 +110,8 @@ ctl("wait", 300)
 zones = saved().get("zones", [])
 print(" zones:", json.dumps(zones)[:300])
 check("a blast of 250 leaves one zone", len(zones) == 1 and abs(zones[0].get("radius", 0) - 300) < 1, str(zones)[:200])
-# Wait for the center's chunk before laying the glass under the player: a fill there fails until it loads.
-stand(bx, by + 2, bz)
-for _ in range(20):
-    ctl("wait", 20)
-    if "not loaded" not in chat(f"fill {bx - 3} {by - 1} {bz - 3} {bx + 3} {by - 1} {bz + 3} minecraft:glass"):
-        break
-stand(bx, by, bz)
-ctl("wait", 5)
+# Glass under the player at the center, once its chunk loads.
+pad(bx, by, bz)
 chat("gamemode survival")
 chat("effect clear @s")
 ctl("wait", 200)
