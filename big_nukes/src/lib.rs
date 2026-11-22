@@ -15,6 +15,8 @@ mod core;
 mod decon;
 mod events;
 mod guide;
+mod hoppers;
+mod logging;
 mod machines;
 mod rad;
 // TODO(stage 2): many rules are only used by the stage-2 modules, still stubs; drop this allow once they are ported.
@@ -32,7 +34,7 @@ use mod_api::{
     PayloadBytes, PayloadHandleError, PayloadId, PlayerDiedEvent, PlayerLoggedInEvent, PlayerTickPostEvent,
     RegisterCommandsEvent, Registrar, RegistrationContext, RenderFogEvent, RenderFramePreEvent, RightClickBlockEvent,
     RunModCommandEvent, ScreenCharTypedPreEvent, ScreenKeyPressedPreEvent, ScreenMouseButtonPressedPreEvent,
-    ScreenMouseScrolledPreEvent, ScreenRenderPostEvent, ServerHost, ServerStoppingEvent, ServerTickEvent,
+    ScreenMouseScrolledPreEvent, ScreenRenderPostEvent, ServerHost, ServerStoppingEvent, ServerTickEvent, WorldSavedEvent,
     TicketController, UseItemEvent, UseOnEvent, ValidateTicketsEvent,
     WorldLifecycleEvent,
 };
@@ -83,6 +85,7 @@ struct Mod;
 #[mod_api::horizon_mod]
 impl Hooks for Mod {
     fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+        logging::init();
         // Full ids everywhere: a bare name would take the mod's id (big_nukes_native) as its namespace, and saved
         // worlds keep `big_nukes:...`.
         let blocks = world::blocks();
@@ -183,6 +186,10 @@ impl Hooks for Mod {
 
     fn server_stopping(&self, host: &mut dyn ServerHost, _: &mut ServerStoppingEvent) {
         world::server_stopping(host);
+    }
+
+    fn world_saved(&self, _: &mut dyn ServerHost, _: &mut WorldSavedEvent) {
+        world::world_saved();
     }
 
     fn server_tick(&self, host: &mut dyn ServerHost, event: &mut ServerTickEvent<'_>) {

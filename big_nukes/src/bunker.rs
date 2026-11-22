@@ -65,9 +65,9 @@ pub(crate) fn has_entity(block: &str) -> bool {
 /// A block's container (slots, faces, menu), read once at registration: the generator's fuel slot, as the
 /// decontaminator's, from every face; the filter's one slot hidden and shut to hoppers. The lamp has none.
 ///
-/// No hook filters what a hopper puts in (the old `container_accepts`): a hopper may put anything into the
-/// generator's slot. What doesn't burn there goes down into the container under it (`decon::spent_out`), as the
-/// decontaminator's does, so it can't stop the generator.
+/// A hopper puts only fuel into the generator's slot (`hoppers.rs`). What doesn't burn there anyway (put in by
+/// another way) goes down into the container under it (`decon::spent_out`), as the decontaminator's does, so it
+/// can't stop the generator.
 pub(crate) fn container(block: &str) -> Option<ModContainer> {
     match block {
         rules::FUEL_GENERATOR => Some(ModContainer {

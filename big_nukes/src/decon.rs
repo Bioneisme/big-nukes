@@ -29,9 +29,9 @@ pub(crate) fn blocks(blocks: &mut Vec<Block>, block: &dyn Fn(&str, &str, f32) ->
 
 /// The decontaminator's container (slots, faces, menu), read once at registration.
 ///
-/// No hook filters what a hopper puts in (the old `container_accepts`, fuel only): a hopper may put anything into
-/// the fuel slot. What doesn't burn goes on down into the container under the block (`spent_out`), as the bucket a
-/// lava bucket leaves always did; with nothing under it, it waits in the slot for a hand to take it.
+/// A hopper puts only fuel into the fuel slot (`hoppers.rs`). What doesn't burn there (a lava bucket's bucket, or
+/// what came in by another way) goes on down into the container under the block (`spent_out`); with nothing under
+/// it, it waits in the slot for a hand to take it.
 pub(crate) fn container() -> Option<ModContainer> {
     Some(ModContainer {
         slots: rules::DECON_SLOTS,

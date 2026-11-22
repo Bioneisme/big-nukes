@@ -171,6 +171,17 @@ pub(crate) fn server_stopping(host: &mut dyn ServerHost) {
     tell_everyone(host, &tr("big_nukes.save.lost", vec![lit(error)]));
 }
 
+/// The game saved the world (its autosave, `/save-all`, a pause): the state goes with it, so what the world holds
+/// and what the mod holds are of one moment. Not while the state is held: the periodic save takes it then.
+pub(crate) fn world_saved() {
+    let Ok(mut guard) = STATE.try_lock() else { return };
+    if let Some(st) = guard.as_mut()
+        && st.dirty
+    {
+        save(st);
+    }
+}
+
 /// The world's clock and the operator's limit.
 pub(crate) fn clock(host: &dyn ServerHost) -> Option<(u64, u32)> {
     let guard = state(host)?;
@@ -712,6 +723,10 @@ pub(crate) fn level_tick(host: &mut dyn ServerHost, level: LevelRef) {
         }
         worked.push(chunk);
         for (pos, kind) in rules::reached(&placed, blast, chunk) {
+            // A Sunbreaker is reached from each chunk of its structure: read with the first.
+            if reached.iter().any(|(p, _)| *p == pos) {
+                continue;
+            }
             if rules::BombKind::of_block(&block_at(host, level, pos)) == Some(kind) {
                 // A Sunbreaker goes off with what is left of its structure as the wave gets there.
                 let blocks = if kind == rules::BombKind::Sunbreaker { structure_now(host, level, pos) } else { HashMap::new() };

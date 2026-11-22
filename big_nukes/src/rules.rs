@@ -1775,16 +1775,26 @@ pub const REMOTE: &str = "big_nukes:remote";
 pub const LINK: &str = "big_nukes:link";
 
 /// The bombs of `placed` in `chunk` that `blast` sets off: within its radius of
-/// its center, in its dimension, its own bomb apart.
+/// its center, in its dimension, its own bomb apart. A Sunbreaker is in every
+/// chunk its structure reaches into, so it is read with the first of them the
+/// wave works, before that chunk's edits take the face toward the blast.
 pub fn reached(placed: &[Receiver], blast: &Blast, chunk: [i32; 2]) -> Vec<([i32; 3], BombKind)> {
     // A neutron blast has no wave to set a bomb off.
     if blast.effect == Effect::Neutron {
         return Vec::new();
     }
     let reach = f64::from(blast.radius).powi(2);
+    let within = |b: &Receiver| {
+        if b.kind != BombKind::Sunbreaker {
+            return chunk_of(b.pos[0], b.pos[2]) == chunk;
+        }
+        let [x0, z0] = chunk_of(b.pos[0] - 2, b.pos[2] - 2);
+        let [x1, z1] = chunk_of(b.pos[0] + 2, b.pos[2] + 2);
+        (x0..=x1).contains(&chunk[0]) && (z0..=z1).contains(&chunk[1])
+    };
     placed
         .iter()
-        .filter(|b| b.dimension == blast.dimension && b.pos != blast.center && chunk_of(b.pos[0], b.pos[2]) == chunk)
+        .filter(|b| b.dimension == blast.dimension && b.pos != blast.center && within(b))
         .filter(|b| (0..3).map(|i| f64::from(b.pos[i] - blast.center[i]).powi(2)).sum::<f64>() <= reach)
         .map(|b| (b.pos, b.kind))
         .collect()
@@ -12455,6 +12465,20 @@ mod warhead_tests {
     }
 
     // ---- review fixes (plan 11) ----------------------------------------------------
+
+    #[test]
+    fn a_sunbreaker_is_reached_with_the_first_chunk_of_its_structure() {
+        // Its core on a chunk's west edge, the blast to the west: the wave works the chunk with the shell's west
+        // face before the core's, and its edits take that face. The structure must be read there, while whole.
+        let sun = Receiver { dimension: OW.into(), pos: [144, 64, 0], kind: BombKind::Sunbreaker, power: None };
+        let blast = blast_of(BombKind::Atomic);
+        assert_eq!(reached(&[sun.clone()], &blast, chunk_of(143, 0)), vec![([144, 64, 0], BombKind::Sunbreaker)]);
+        assert_eq!(reached(&[sun.clone()], &blast, chunk_of(144, 0)).len(), 1);
+        assert!(reached(&[sun], &blast, chunk_of(120, 0)).is_empty());
+        // Another bomb is reached only with its own chunk.
+        let atomic = Receiver { dimension: OW.into(), pos: [144, 64, 0], kind: BombKind::Atomic, power: None };
+        assert!(reached(&[atomic], &blast, chunk_of(143, 0)).is_empty());
+    }
 
     #[test]
     fn a_neutron_blast_sets_off_no_bombs() {

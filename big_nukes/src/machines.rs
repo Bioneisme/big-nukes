@@ -55,6 +55,7 @@ pub(crate) fn register(r: &mut dyn Registrar, blocks: &[Block]) {
             r.block_container(&key, c);
         }
     }
+    crate::hoppers::register(r, container);
     for menu in MENUS {
         r.menu_part(menu, Menus);
     }
@@ -259,8 +260,7 @@ fn most_of(host: &dyn Host, item: &str) -> u32 {
 
 /// A furnace's sides: hoppers put raw uranium in from above and fuel from the sides, and take enriched uranium from
 /// below.
-// No hook filters what a hopper puts in (the old `container_accepts`): a slot only takes from its faces, and the
-// tick leaves what it can't work where it is.
+// What a hopper may put in each slot is `hoppers.rs`'s filter: raw uranium from above, fuel from the sides.
 fn centrifuge_container() -> ModContainer {
     let mut faces: [Vec<usize>; 6] = std::array::from_fn(|_| vec![rules::FUEL_SLOT]);
     faces[Direction::Down as usize] = vec![rules::OUTPUT_SLOT];
