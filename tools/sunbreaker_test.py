@@ -199,6 +199,14 @@ for _ in range(90):
         break
 stats = ctl("stats")
 print(" frames during the wave:", json.dumps(stats)[:600])
+# The wave finishes a chunk that wasn't loaded as it passed when the chunk loads: back near the second Sunbreaker,
+# until its blast's zone is there or no wave is left.
+chat(f"tp @s {sx - 150} 260 {sz} -90 10")
+for _ in range(60):
+    ctl("wait", 40)
+    data = saved()
+    if [z for z in data.get("zones", []) if z["center"][0] == bx] or not data.get("waves", {}).get("waves"):
+        break
 second = [z for z in saved().get("zones", []) if z["center"][0] == bx]
 check("the shell-only Sunbreaker in reach goes off too, at 600", bool(second) and abs(second[0]["radius"] - 720) < 1, json.dumps(saved().get("zones"))[:300])
 
