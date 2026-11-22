@@ -16,7 +16,6 @@ use mod_api::{
 };
 use std::{
     collections::{BTreeSet, HashMap},
-    fs,
     path::PathBuf,
     sync::Mutex,
     time::{Duration, Instant},
@@ -63,6 +62,9 @@ pub(crate) struct State {
     unforceload: Vec<(String, [i32; 2])>,
     /// Whether the players were told of the failing save (once until a save succeeds).
     save_told: bool,
+    /// Why nothing may be saved in this world: its state file didn't read and couldn't be kept aside, so a save
+    /// would write over it.
+    frozen: Option<String>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -83,10 +85,18 @@ pub(crate) fn state(host: &dyn ServerHost) -> Option<std::sync::MutexGuard<'stat
     let dir = host.world_dir()?.join(rules::DIR);
     let mut guard = lock(&STATE);
     if guard.as_ref().is_none_or(|s| s.dir != dir) {
-        let mut saved: rules::Saved = fs::read(dir.join("waves.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).map_err(|e| log::warn!("[big_nukes] waves.json: {e}")).ok())
-            .unwrap_or_default();
+        let (mut saved, frozen) = match rules::load_from(&dir) {
+            Ok((saved, note)) => {
+                if let Some(note) = note {
+                    log::warn!("[big_nukes] {note}");
+                }
+                (saved, None)
+            }
+            Err(e) => {
+                log::error!("[big_nukes] {e}; nothing is saved in this world");
+                (rules::Saved::default(), Some(e))
+            }
+        };
         log::info!("[big_nukes] Big Nukes {} in {}", rules::VERSION, dir.display());
         let wake = saved.to_wake();
         let old = !saved.tickets;
@@ -104,6 +114,7 @@ pub(crate) fn state(host: &dyn ServerHost) -> Option<std::sync::MutexGuard<'stat
             told: BTreeSet::new(),
             save_error: None,
             save_told: false,
+            frozen,
             regrab,
             regrab_tries: 0,
             unforceload,
@@ -135,6 +146,10 @@ pub(crate) fn state(host: &dyn ServerHost) -> Option<std::sync::MutexGuard<'stat
 /// Writes the state. A failed write leaves it dirty, so the periodic save tries again; the error is kept for the
 /// players to be told (`save_trouble`).
 pub(crate) fn save(st: &mut State) -> bool {
+    if let Some(why) = &st.frozen {
+        st.save_error = Some(why.clone());
+        return false;
+    }
     match rules::save_to(&st.saved, &mut st.dirty, &mut rules::Disk(&st.dir)) {
         Ok(()) => {
             if st.save_error.take().is_some() {

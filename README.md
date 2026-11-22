@@ -271,7 +271,7 @@ Anyone can type `/bignukes guide`.
 ## Good to know
 
 - Every player needs the mod. It runs with your account's permissions, as every native mod does.
-- It is pinned to Horizon Nightly 2026-11-21 (8f83e5c) and Horizon Mixins e59da90. The launcher builds it against that
+- It is pinned to Horizon Nightly 2026-11-22 (2b77287) and Horizon Mixins e59da90. The launcher builds it against that
   Nightly's prebuilt game.
 - It is made for single player and play with friends: anyone can set off a bomb anywhere.
 - The ground past your render distance is changed when its chunks load; the cloud and the ring are seen from any

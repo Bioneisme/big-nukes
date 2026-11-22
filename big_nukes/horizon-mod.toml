@@ -1,6 +1,6 @@
 id = "big_nukes_native"
 name = "Big Nukes"
-version = "0.4.0"
+version = "0.4.1"
 description = "Bombs whose shockwave rolls across the land: craters, fallout, sirens and bunkers."
 authors = ["bioneisme"]
 license = "MIT"
@@ -14,7 +14,7 @@ namespaces = ["big_nukes"]
 # Built by the launcher against this Horizon commit's prebuilt game.
 [native]
 game = "26.3"
-horizon = "8f83e5c85ae3b9a117f742e8d91170c5c9080a06"
+horizon = "2b77287de099c9316278ba7ac4d83590fdb7ef30"
 mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
 
 # The mushroom clouds and dust rings: a pass of the mod's own over the finished world (src/sky.rs holds the shader).

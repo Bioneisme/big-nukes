@@ -8,7 +8,7 @@ use std::{
 };
 
 pub const ID: &str = "big_nukes_native";
-pub const VERSION: &str = "0.4.0";
+pub const VERSION: &str = "0.4.1";
 /// The mod's folder in a world's folder.
 pub const DIR: &str = "horizon-big-nukes";
 /// A loot table only the assets half brings: the sign that it's installed.
@@ -1594,6 +1594,30 @@ impl Store for Disk<'_> {
         std::fs::write(&tmp, bytes)?;
         std::fs::rename(tmp, self.0.join(name))
     }
+}
+
+/// The state in the world's folder `dir`, and a note when its file didn't read. A
+/// missing file is a fresh state. A file that doesn't read is renamed aside first
+/// (`waves.json.broken`, then `-2`, `-3`...), so the fresh state's saves never write
+/// over it. Err when it couldn't be put aside: then nothing may be saved there.
+pub fn load_from(dir: &std::path::Path) -> Result<(Saved, Option<String>), String> {
+    let path = dir.join(SAVE_FILE);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Saved::default(), None)),
+        Err(e) => return Err(format!("{SAVE_FILE} can't be read: {e}")),
+    };
+    let error = match serde_json::from_slice(&bytes) {
+        Ok(saved) => return Ok((saved, None)),
+        Err(e) => e,
+    };
+    let aside = (1..)
+        .map(|n| if n == 1 { format!("{SAVE_FILE}.broken") } else { format!("{SAVE_FILE}.broken-{n}") })
+        .find(|name| !dir.join(name).exists())
+        .expect("a free name");
+    std::fs::rename(&path, dir.join(&aside))
+        .map_err(|e| format!("{SAVE_FILE} doesn't read ({error}) and couldn't be kept aside: {e}"))?;
+    Ok((Saved::default(), Some(format!("{SAVE_FILE} didn't read ({error}): kept as {aside}, and the world starts afresh"))))
 }
 
 /// Saves `saved`. `dirty` is cleared only when the write succeeds, and set when
@@ -12012,6 +12036,50 @@ mod bunker_tests {
         assert_eq!(filter_data(true, Some(100_000))[2], i16::MAX as i32);
         let big = Generator { burn: 40_000, burn_max: 40_000 };
         assert_eq!(big.data(), [i16::MAX as i32, i16::MAX as i32]);
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+
+    /// A fresh folder of its own under the system's temporary one.
+    fn folder(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("big_nukes-load-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_state_file_that_does_not_read_is_kept_aside_before_a_fresh_state_starts() {
+        let dir = folder("broken");
+        std::fs::write(dir.join(SAVE_FILE), b"{ not json").unwrap();
+        let (saved, note) = load_from(&dir).expect("kept aside");
+        assert_eq!(saved.tick, 0);
+        assert!(note.is_some_and(|n| n.contains("waves.json.broken")));
+        assert!(!dir.join(SAVE_FILE).exists(), "a save may now write a new one");
+        assert_eq!(std::fs::read(dir.join("waves.json.broken")).unwrap(), b"{ not json");
+        // A second one doesn't take the first one's place.
+        std::fs::write(dir.join(SAVE_FILE), b"[]").unwrap();
+        load_from(&dir).expect("kept aside");
+        assert_eq!(std::fs::read(dir.join("waves.json.broken")).unwrap(), b"{ not json");
+        assert_eq!(std::fs::read(dir.join("waves.json.broken-2")).unwrap(), b"[]");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_good_state_file_loads_and_a_missing_one_starts_fresh() {
+        let dir = folder("good");
+        let (fresh, note) = load_from(&dir).unwrap();
+        assert_eq!((fresh.tick, note), (0, None));
+        let mut saved = Saved::default();
+        saved.tick = 42;
+        std::fs::write(dir.join(SAVE_FILE), serde_json::to_vec(&saved).unwrap()).unwrap();
+        let (back, note) = load_from(&dir).unwrap();
+        assert_eq!((back.tick, note), (42, None));
+        assert!(dir.join(SAVE_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
