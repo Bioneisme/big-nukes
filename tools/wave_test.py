@@ -85,7 +85,7 @@ def mark(x, y, z, what):
 
 def refused():
     try:
-        with open(LOG, encoding="utf-8", errors="replace") as f:
+        with open(play.mod_log(), encoding="utf-8", errors="replace") as f:
             return [line.strip() for line in f if "[big_nukes]" in line and "refused" in line]
     except OSError:
         return ["no log"]

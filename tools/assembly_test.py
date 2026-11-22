@@ -158,7 +158,7 @@ def craft(pattern, key):
     return carried
 
 
-RECIPES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "content", "data", "big_nukes", "recipe")
+RECIPES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "big_nukes", "data", "big_nukes", "recipe")
 for name in ("assembly_table", "centrifuge", "fuse_detonator", "keypad_detonator", "receiver_detonator", "remote"):
     with open(os.path.join(RECIPES, f"{name}.json"), encoding="utf-8") as f:
         recipe = json.load(f)

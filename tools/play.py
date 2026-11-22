@@ -12,6 +12,13 @@ import time
 LAUNCHER = os.environ.get("HORIZON_LAUNCHER", "D:/Games/HorizonLauncher/horizon-launcher.exe")
 
 
+def mod_log():
+    """The launcher's output of the game the last launch started: the game's standard error, where the mod's own
+    log lines go (its `log` is not the game's: see big_nukes/src/logging.rs)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target",
+                        f"play-{os.environ['BN_INSTANCE']}.log")
+
+
 def _position(ctl):
     player = ctl("state", timeout=60).get("player") or {}
     return player.get("pos") or player.get("position")
@@ -32,7 +39,7 @@ def launch(ctl, world, seed="12345"):
     if socket:
         args += ["--arg", "--control-socket", "--arg", socket]
     env = {k: v for k, v in os.environ.items() if k != "HORIZON_HOME"}
-    log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", f"play-{instance}.log")
+    log = mod_log()
     os.makedirs(os.path.dirname(log), exist_ok=True)
     subprocess.Popen(args, env=env, stdout=open(log, "w"), stderr=subprocess.STDOUT)
     for _ in range(120):

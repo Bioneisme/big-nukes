@@ -63,7 +63,9 @@ for i, name in enumerate(BLOCKS):
     check(f"/setblock big_nukes:{name}", f"big_nukes:{name}" in got, got)
 ctl("quit")
 time.sleep(6)
-with open(LOG, encoding="utf-8", errors="replace") as f:
-    bad = [l for l in f if "big_nukes" in l and any(w in l.lower() for w in ("error", "warn", "unknown", "missing", "refus"))]
+bad = []
+for path in (LOG, play.mod_log()):  # the game's log, and the launcher's output, where the mod's own lines go
+    with open(path, encoding="utf-8", errors="replace") as f:
+        bad += [l for l in f if "big_nukes" in l and any(w in l.lower() for w in ("error", "warn", "unknown", "missing", "refus"))]
 check("no load warning about the mod's content", not bad, "".join(bad)[:600])
 print(f"== failed: {failed}" if failed else "== all passed", flush=True)

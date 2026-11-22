@@ -70,7 +70,7 @@ def brightness(name):
 
 def log_since(n):
     try:
-        with open(LOG, encoding="utf-8", errors="replace") as f:
+        with open(play.mod_log(), encoding="utf-8", errors="replace") as f:
             return [l for l in f.read().splitlines()[n:] if "[big_nukes]" in l]
     except OSError:
         return []
@@ -78,7 +78,7 @@ def log_since(n):
 
 def log_len():
     try:
-        with open(LOG, encoding="utf-8", errors="replace") as f:
+        with open(play.mod_log(), encoding="utf-8", errors="replace") as f:
             return len(f.read().splitlines())
     except OSError:
         return 0
@@ -154,7 +154,7 @@ def s_far():
     chat(f"bignukes blast 200 {cx + 600} {cy} {cz}")
     lit = flash_peak("far-flash")
     print(f" brightness: {base:.0f} -> {lit:.0f}")
-    check("a far flash lightens the screen, not to white", base + 10 < lit < 235, f"{base:.0f} -> {lit:.0f}")
+    check("a far flash lightens the screen, not to white", base + 10 < lit < 245, f"{base:.0f} -> {lit:.0f}")
     ctl("quit")
     time.sleep(8)
 

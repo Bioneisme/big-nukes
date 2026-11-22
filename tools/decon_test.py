@@ -7,6 +7,7 @@ standing in it gathers no dose, the ash in it turns to grass, and the circle is 
     python tools/decon_test.py GAME_FOLDER VERSION
 """
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -105,8 +106,10 @@ chat(f"bignukes blast 250 {bx} {by} {bz}")
 ctl("wait", 300)
 check("the blast leaves a zone", len(saved().get("zones", [])) == 1, json.dumps(saved().get("zones"))[:200])
 
-# Iodine: the dose's rate at a spot of the zone, without and with a tablet.
-pad(bx + 200, by, bz)
+# Iodine: the dose's rate at a spot of the zone, without and with a tablet. Upwind of the center: down the wind the
+# fallout's plume can kill before the tablet (the wind is the blast's own, `rules::wind_way`).
+wind = math.radians((saved().get("zones") or [{}])[0].get("wind", 0))
+pad(bx - round(200 * math.cos(wind)), by, bz - round(200 * math.sin(wind)))
 chat("gamemode survival")
 chat("effect clear @s")
 ctl("wait", 220)

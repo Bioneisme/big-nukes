@@ -82,7 +82,13 @@ chat(f"bignukes blast 16 {cx + 10} {y} {cz}")
 ctl("wait", 300)
 data = saved()
 check("the wave set the neutron bomb off", data.get("next_id", 0) == before + 2, str(data.get("next_id")))
-check("the glass broke", "minecraft:glass" not in block(*glass), block(*glass)[:150])
+# Back near the blast: 300 blocks out its chunks may be unloaded, and an unloaded block reads as air.
+chat(f"tp @s {cx} {y + 20} {cz} 0 90")
+for _ in range(20):
+    if ctl("block", *stone).get("loaded", True):
+        break
+    ctl("wait", 10)
+check("the glass broke", ctl("block", *glass).get("loaded", True) and "minecraft:glass" not in block(*glass), block(*glass)[:150])
 check("the stone bricks stand", "stone_bricks" in block(*stone), block(*stone)[:150])
 check("the cow died", "bn_cow" not in chat("execute if entity @e[tag=bn_cow] run say alive"), "")
 zones = data.get("zones", [])

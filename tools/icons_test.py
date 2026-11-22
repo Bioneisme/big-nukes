@@ -5,6 +5,7 @@ the mod's creative tab. Frames go to target/shots/icons-*.png.
     python tools/icons_test.py GAME_FOLDER VERSION
 """
 import json
+import play
 import os
 import shutil
 import subprocess
@@ -17,7 +18,7 @@ os.environ["HORIZON_HOME"] = GAME
 os.environ["MSYS_NO_PATHCONV"] = "1"
 sys.stdout.reconfigure(encoding="utf-8")
 SHOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "shots")
-TAB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "content", "data", "big_nukes", "horizon", "creative_tab", "big_nukes.json")
+TAB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "big_nukes", "data", "big_nukes", "horizon", "creative_tab", "big_nukes.json")
 failed = []
 
 
@@ -53,15 +54,14 @@ ctl("wait", 5)
 ctl("key", "e", "tap")
 ctl("wait", 10)
 # The mod's tab comes after vanilla's, on the creative screen's second page: the arrow over the
-# tabs turns it (GUI scale 2: 86 GUI pixels right of the middle, 71 down), then the first tab there.
+# tabs turns it (GUI scale 2: 86 GUI pixels right of the middle, 109 above it), then the first tab there.
 from PIL import Image
-import play
 probe = os.path.join(SHOTS, "icons-creative.png")
 ctl("screenshot", probe)
 w, h = Image.open(probe).size
-ctl("click-at", w // 4 + 86, 71)
+ctl("click-at", w // 4 + 86, h // 4 - 109)
 ctl("wait", 5)
-ctl("click-at", w // 4 - 85, 100)
+ctl("click-at", w // 4 - 85, h // 4 - 80)
 ctl("wait", 10)
 ctl("screenshot", os.path.join(SHOTS, "icons-tab.png"))
 
@@ -73,7 +73,7 @@ def visible():
 # More than five rows scroll: the wheel over the grid (GUI pixels) brings the rest up a row at a time.
 shown = visible()
 for _ in range(6):
-    ctl("scroll-at", w // 4, 180, -1)
+    ctl("scroll-at", w // 4, h // 4, -1)
     ctl("wait", 3)
     shown |= visible()
 ctl("screenshot", os.path.join(SHOTS, "icons-tab-scrolled.png"))

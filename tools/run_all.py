@@ -23,6 +23,20 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 LOGS = os.path.join(TOOLS, "..", "target", "all-tests")
 
 
+def simulate(game, chunks=16):
+    """The checks wait for fuses and waves from up to 150 blocks off: the instance must tick that far (a new one
+    simulates 6 chunks, 96 blocks)."""
+    path = os.path.join(game, "options.txt")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return
+    lines = [l for l in lines if not l.startswith("simulationDistance:")] + [f"simulationDistance:{chunks}"]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def version(instance):
     """The build the instance runs: horizon-ctl must come from its folder, or it starts an older native half."""
     with open(os.path.join(os.environ["APPDATA"], "horizon-launcher", "instances.json"), encoding="utf-8") as f:
@@ -42,6 +56,7 @@ def main():
     # A control socket of the instance's own, so a game the player has open never takes the checks' commands.
     env["HORIZON_CONTROL"] = os.path.join(tempfile.gettempdir(), f"horizon-control-{instance}.json")
     os.makedirs(LOGS, exist_ok=True)
+    simulate(game)
     print(f"{instance} on {build}", flush=True)
     results = []
     for name in names:

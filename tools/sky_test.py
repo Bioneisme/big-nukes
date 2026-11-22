@@ -95,7 +95,12 @@ def errors(since):
             lines = f.read().splitlines()[since:]
     except OSError:
         return ["no log"]
-    return [l for l in lines if "pipeline failed" in l or "wgpu" in l.lower() and "error" in l.lower() or "panicked" in l]
+    try:  # the mod's own warnings go to the launcher's output
+        with open(play.mod_log(), encoding="utf-8", errors="replace") as f:
+            lines += [l for l in f if "[big_nukes]" in l and "WARN" in l]
+    except OSError:
+        pass
+    return [l for l in lines if "[big_nukes]" in l and "WARN" in l or "pipeline failed" in l or "wgpu" in l.lower() and "error" in l.lower() or "panicked" in l]
 
 
 def log_len():

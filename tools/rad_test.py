@@ -157,8 +157,10 @@ check("drinking leaves a glass bottle", "minecraft:glass_bottle" in held, str(he
 stand(bx, by, bz)
 check("the anti-rad takes about 300 off", before > 200 and after < before - 200, f"{before:.0f} -> {after:.0f}")
 
-# Mobs in the zone are hurt.
+# Mobs in the zone are hurt. Not turned mutant (the events, from the first blast on, double a zombie's health in a
+# zone): that is events_test's.
 chat("gamemode creative")
+chat("bignukes events mutants off")
 chat(f"summon minecraft:cow {bx + 2} {by} {bz} {{NoAI:1b,Tags:[\"bn\"]}}")
 chat(f"summon minecraft:zombie {bx - 2} {by} {bz} {{NoAI:1b,PersistenceRequired:1b,Tags:[\"bn\"]}}")
 ctl("wait", 5)
